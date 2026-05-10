@@ -1,0 +1,27 @@
+[package]
+name = "ps-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky main binary: winit window, render loop, subsystem registration"
+
+[[bin]]
+name = "ps-app"
+path = "src/main.rs"
+
+[dependencies]
+ps-core.workspace        = true
+ps-postprocess.workspace = true
+
+wgpu.workspace      = true
+winit.workspace     = true
+pollster.workspace  = true
+
+glam.workspace      = true
+bytemuck.workspace  = true
+
+anyhow.workspace    = true
+tracing.workspace             = true
+tracing-subscriber.workspace  = true

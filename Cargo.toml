@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ps-core",
+    "crates/ps-postprocess",
+    "crates/ps-app",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# GPU + windowing
+wgpu       = "29"
+winit      = "0.30"
+pollster   = "0.3"
+
+# Math + GPU data layout
+glam      = { version = "0.32", features = ["serde", "bytemuck"] }
+bytemuck  = { version = "1", features = ["derive"] }
+half      = "2"
+
+# Serialisation
+serde     = { version = "1", features = ["derive"] }
+toml      = "0.8"
+
+# Time
+chrono    = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# Image IO
+image     = "0.25"
+
+# Concurrency / IPC
+crossbeam-channel = "0.5"
+
+# File watching
+notify    = "8"
+
+# Errors
+anyhow    = "1"
+thiserror = "2"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Local crates
+ps-core        = { path = "crates/ps-core" }
+ps-postprocess = { path = "crates/ps-postprocess" }
+
+[profile.dev]
+opt-level = 1            # debug builds with shader compilation are slow at -O0
+
+[profile.dev.package."*"]
+opt-level = 3            # third-party deps (wgpu, naga) compile faster + run faster

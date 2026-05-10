@@ -1,0 +1,91 @@
+# pedalsky.toml — engine root configuration
+# Copy this to the workspace root and adjust paths/values as needed.
+# Every value here is a default; UI sliders override at runtime.
+
+[window]
+width  = 1920
+height = 1080
+title  = "PedalSky"
+vsync  = true
+
+[world]
+# Default observer location. Overridable from the UI.
+latitude_deg       = 56.1922       # Dunblane, Scotland
+longitude_deg      = -3.9645
+ground_elevation_m = 60.0
+# Linear-sRGB ground albedo when the ground subsystem has no texture.
+ground_albedo      = [0.18, 0.18, 0.18]
+# Earth-like planet for atmospheric scattering geometry.
+ground_radius_m    = 6_360_000.0
+atmosphere_top_m   =   100_000.0
+
+[time]
+year   = 2026
+month  = 5
+day    = 10
+hour   = 14
+minute = 30
+second = 0
+timezone_offset_hours = 1.0    # Britain in May = +1 (BST)
+auto_advance          = false
+time_scale            = 1.0    # multiplier when auto_advance = true
+
+[render]
+hdr_format   = "Rgba16Float"
+depth_format = "Depth32Float"
+ev100        = 14.0            # photographic EV at ISO 100
+tone_mapper  = "ACESFilmic"    # ACESFilmic | Reinhard | Passthrough
+clear_color  = [0.0, 0.0, 0.0, 1.0]   # used only if no atmosphere subsystem
+
+# Subsystem on/off switches. Each "true" entry causes AppBuilder to
+# instantiate that subsystem and register it in the render graph.
+[render.subsystems]
+ground        = true
+atmosphere    = true
+clouds        = true
+precipitation = false
+wet_surface   = false
+# Phase 1 demo subsystems — exist purely to exercise the render-graph
+# executor and hot-reload path. They will be removed in Phase 5+.
+backdrop      = true
+tint          = false
+
+# Per-subsystem tuning defaults. The UI exposes every field of every
+# subsystem block; the values here are the at-startup state.
+[render.atmosphere]
+multi_scattering        = true
+sun_disk                = true
+sun_angular_radius_deg  = 0.27   # ≈ atan(R_sun / 1 AU)
+ozone_enabled           = true
+
+[render.clouds]
+cloud_steps           = 192       # raise to 256 for hero shots
+light_steps           = 6         # shadow steps to sun per density sample
+multi_scatter_octaves = 4
+detail_strength       = 0.35
+powder_strength       = 1.0
+reprojection          = "off"     # off | checker_2x2 | quad_4x4 (only "off" in v1)
+freeze_time           = false
+
+[render.precip]
+near_particle_count = 8000
+far_layers          = 3
+
+# Phase 1 demo: linear-sRGB clear colour for the BackdropSubsystem.
+[render.backdrop]
+color = [0.05, 0.07, 0.12]
+
+# Phase 1 demo: per-channel multiplier for the TintSubsystem.
+[render.tint]
+multiplier = [1.0, 1.0, 1.0]
+
+[paths]
+# Scene config — describes the weather state to render.
+weather        = "scenes/broken_cumulus_afternoon.toml"
+noise_cache    = "assets/noise"
+screenshot_dir = "screenshots"
+
+[debug]
+gpu_validation     = true     # leave on in debug builds
+shader_hot_reload  = true
+log_level          = "info"   # trace | debug | info | warn | error

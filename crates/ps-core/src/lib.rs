@@ -1,0 +1,29 @@
+//! PedalSky core: GPU primitives, configuration, world state, frame uniforms,
+//! the [`RenderSubsystem`] trait and the `AppBuilder`/`App` runtime that wires
+//! subsystems into a render graph.
+//!
+//! See `Pedalsky corrected implementation plan.md` at the workspace root for
+//! the architectural specification.
+
+#![deny(missing_docs)]
+
+pub mod app;
+pub mod camera;
+pub mod config;
+pub mod contexts;
+pub mod framebuffer;
+pub mod gpu;
+pub mod hot_reload;
+pub mod scene;
+pub mod subsystem;
+
+pub use app::{App, AppBuilder, AppError, SubsystemFactory};
+pub use config::{Config, ConfigError};
+pub use contexts::{
+    AtmosphereLuts, FrameUniforms, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
+    WeatherState, WorldState,
+};
+pub use framebuffer::HdrFramebufferImpl;
+pub use hot_reload::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};
+pub use scene::{CloudType, Scene, SceneError};
+pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};

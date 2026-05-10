@@ -1,0 +1,6 @@
+/target
+/screenshots
+/assets/noise/*.bin
+*.exr
+*.tmp
+.DS_Store

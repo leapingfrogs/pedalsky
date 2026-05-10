@@ -1,0 +1,56 @@
+# scenes/broken_cumulus_afternoon.toml
+#
+# A sunny afternoon with broken fair-weather cumulus, light WSW wind,
+# dry ground. Approximately replicating a typical mid-May afternoon
+# over central Scotland with a stable airmass and shallow convection.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 101430Z 24010KT 9999 BKN050 17/07 Q1018 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0    # 9999 in METAR (≥10 km)
+temperature_c  = 17.0
+dewpoint_c     = 7.0        # ~10 °C spread → dry, stable
+pressure_hpa   = 1018.0
+wind_dir_deg   = 240.0      # WSW
+wind_speed_mps = 5.0        # ~10 kt
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+snow_depth_m    = 0.0
+
+# Single layer of fair-weather cumulus, broken coverage.
+# (METAR cloud groups: BKN ≈ 5–7 oktas → coverage ≈ 0.6 conventionally,
+#  but this scene uses 0.5 to leave clear gaps for self-shadow testing.)
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2300.0
+coverage           = 0.5
+density_scale      = 1.0
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+# Optional gridded coverage for spatial variation. To enable, generate
+# a 128×128 f32 little-endian raw file with coverage in [0,1] and point
+# `data_path` at it. Omit the section entirely for uniform layer coverage.
+#
+# [clouds.coverage_grid]
+# extent_m  = 32000.0
+# size      = [128, 128]
+# data_path = "presets/coverage_broken_cumulus_128x128.bin"
+# # Optional companion u8 type-index file; defaults to layer.type.
+# # type_path = "presets/type_broken_cumulus_128x128.bin"
+
+# No wind field provided → engine synthesises a 1/7-power-law profile
+# with Ekman spiral from `[surface]` wind. (See plan §3.2.4.)
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
