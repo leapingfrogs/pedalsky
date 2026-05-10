@@ -18,15 +18,21 @@ pub mod hot_reload;
 pub mod scene;
 pub mod subsystem;
 pub mod time;
+pub mod weather;
 pub mod world;
 
 pub use app::{App, AppBuilder, AppError, SubsystemFactory};
 pub use config::{Config, ConfigError};
 pub use contexts::{
     AtmosphereLuts, FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext,
-    RenderContext, WeatherState, WorldState,
+    RenderContext,
 };
 pub use framebuffer::HdrFramebufferImpl;
 pub use hot_reload::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};
-pub use scene::{CloudType, Scene, SceneError};
+pub use scene::{
+    CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation, Scene,
+    SceneError, Surface, Wetness,
+};
 pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
+pub use weather::{AtmosphereParams, CloudLayerGpu, SurfaceParams, WeatherState, WeatherTextures};
+pub use world::WorldState;

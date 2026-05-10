@@ -18,6 +18,7 @@ ps-ground.workspace      = true
 ps-atmosphere.workspace  = true
 ps-clouds.workspace      = true
 ps-precip.workspace      = true
+ps-synthesis.workspace   = true
 ps-backdrop.workspace    = true
 ps-tint.workspace        = true
 
@@ -32,3 +33,7 @@ chrono.workspace    = true
 anyhow.workspace    = true
 tracing.workspace             = true
 tracing-subscriber.workspace  = true
+half.workspace      = true
+image.workspace     = true
+serde.workspace     = true
+serde_json.workspace = true

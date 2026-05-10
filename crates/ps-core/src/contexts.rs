@@ -89,13 +89,9 @@ impl FrameUniformsGpu {
     }
 }
 
-/// Synthesised weather state, GPU resources for clouds/precip/wet surface.
-///
-/// TODO: Phase 3 owns the real definition (atmosphere params, weather map,
-/// cloud-layer storage buffer, wind field, surface params, etc.).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WeatherState;
-
+/// Synthesised weather state. Defined in [`crate::weather`]; re-exported
+/// here so `PrepareContext` continues to refer to it from one place.
+pub use crate::weather::WeatherState;
 /// World state: clock, sun/moon position, observer location, TOA solar
 /// illuminance. Defined in [`crate::world`]; re-exported here so
 /// `PrepareContext` continues to refer to it from one place.

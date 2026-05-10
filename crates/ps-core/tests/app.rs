@@ -460,7 +460,7 @@ fn frame_actually_calls_prepare_and_passes_in_pass_stage_order() {
     let hdr = ps_core::HdrFramebufferImpl::new(gpu, (4, 4));
     let stub = build_stub_bind_group(&gpu.device);
     let world = ps_core::WorldState::default();
-    let weather = ps_core::WeatherState;
+    let weather = ps_core::WeatherState::stub_for_tests(gpu);
     let frame_uniforms = ps_core::FrameUniforms::default();
     let mut prepare_ctx = PrepareContext {
         device: &gpu.device,

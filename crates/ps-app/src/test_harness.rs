@@ -167,7 +167,7 @@ impl HeadlessApp {
         );
 
         let world = ps_core::WorldState::default();
-        let weather = ps_core::WeatherState;
+        let weather = ps_core::WeatherState::stub_for_tests(gpu);
         let mut prepare_ctx = PrepareContext {
             device: &gpu.device,
             queue: &gpu.queue,

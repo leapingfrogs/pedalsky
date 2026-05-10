@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
+use ps_app::config_initial_utc;
 use ps_app::main_helpers::{build_stub_bind_group, encode_frame_clear};
 use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
@@ -48,6 +49,12 @@ fn main() -> Result<()> {
     let workspace_root = workspace_root()?;
     info!(workspace_root = %workspace_root.display(), "starting ps-app");
 
+    // CLI: `--headless-dump <out_dir>` runs the Phase 3 §3.3 dump and exits.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(out_dir) = ps_app::headless_dump::parse_args(&argv) {
+        return ps_app::headless_dump::run(&workspace_root, &out_dir);
+    }
+
     let config_path = workspace_root.join("pedalsky.toml");
     let config =
         Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
@@ -73,7 +80,7 @@ fn main() -> Result<()> {
     );
 
     let event_loop = EventLoop::new().context("create EventLoop")?;
-    let mut shell = AppShell::new(config, config_path, scene_path);
+    let mut shell = AppShell::new(config, scene, config_path, scene_path);
     event_loop.run_app(&mut shell).context("event loop")?;
     Ok(())
 }
@@ -92,15 +99,17 @@ fn workspace_root() -> Result<PathBuf> {
 
 struct AppShell {
     config: Config,
+    scene: Scene,
     config_path: PathBuf,
     scene_path: PathBuf,
     state: Option<RunState>,
 }
 
 impl AppShell {
-    fn new(config: Config, config_path: PathBuf, scene_path: PathBuf) -> Self {
+    fn new(config: Config, scene: Scene, config_path: PathBuf, scene_path: PathBuf) -> Self {
         Self {
             config,
+            scene,
             config_path,
             scene_path,
             state: None,
@@ -129,6 +138,9 @@ struct RunState {
     tonemap_mode: TonemapMode,
     /// Simulated world clock + observer + sun + moon (Phase 2).
     world: ps_core::WorldState,
+    /// Synthesised weather state (Phase 3) — atmosphere, cloud layers,
+    /// surface params, weather map, wind field, top-down density mask.
+    weather: ps_core::WeatherState,
     start: Instant,
     last_frame: Instant,
     frame_index: u32,
@@ -160,6 +172,7 @@ impl ApplicationHandler for AppShell {
         match RunState::new(
             event_loop,
             &self.config,
+            &self.scene,
             &self.config_path,
             &self.scene_path,
         ) {
@@ -204,7 +217,7 @@ impl ApplicationHandler for AppShell {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        state.poll_hot_reload(&mut self.config);
+        state.poll_hot_reload(&mut self.config, &mut self.scene);
         state.window.request_redraw();
     }
 }
@@ -213,6 +226,7 @@ impl RunState {
     fn new(
         event_loop: &ActiveEventLoop,
         config: &Config,
+        scene: &Scene,
         config_path: &std::path::Path,
         scene_path: &std::path::Path,
     ) -> Result<Self> {
@@ -261,6 +275,18 @@ impl RunState {
             "WorldState initialised"
         );
 
+        // Phase 3: synthesise the GPU-resident weather state from the
+        // scene + config + world. Re-loaded by hot-reload on
+        // SceneChanged / ConfigChanged events.
+        let weather = ps_synthesis::synthesise(scene, config, &world, &windowed.gpu)
+            .context("synthesise WeatherState")?;
+        info!(
+            target: "ps_app",
+            cloud_layers = weather.cloud_layer_count,
+            haze_per_m = weather.haze_extinction_per_m.x,
+            "WeatherState synthesised"
+        );
+
         let now = Instant::now();
         let title_prefix = config.window.title.clone();
         Ok(Self {
@@ -277,6 +303,7 @@ impl RunState {
             ev100: config.render.ev100,
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
             world,
+            weather,
             start: now,
             last_frame: now,
             frame_index: 0,
@@ -416,7 +443,7 @@ impl RunState {
         }
     }
 
-    fn poll_hot_reload(&mut self, config: &mut Config) {
+    fn poll_hot_reload(&mut self, config: &mut Config, scene: &mut Scene) {
         loop {
             match self.hot_reload.events().try_recv() {
                 Ok(WatchEvent::ConfigChanged(path)) => {
@@ -435,20 +462,44 @@ impl RunState {
                             } else {
                                 info!("App::reconfigure applied");
                             }
+                            // Re-synthesise the weather state since
+                            // atmosphere params and ground albedo come
+                            // from the config too.
+                            self.resynthesise_weather(scene, &new_config);
                             *config = new_config;
                         }
                         Err(e) => warn!(error = %e, "ignoring invalid config update"),
                     }
                 }
                 Ok(WatchEvent::SceneChanged(path)) => {
-                    info!(
-                        ?path,
-                        "hot-reload: scene changed (Phase 3 will re-synthesise)"
-                    );
+                    info!(?path, "hot-reload: scene changed — re-synthesising weather");
+                    let load_result = Scene::load(&path).and_then(|s| s.validate().map(|_| s));
+                    match load_result {
+                        Ok(new_scene) => {
+                            *scene = new_scene;
+                            self.resynthesise_weather(scene, config);
+                        }
+                        Err(e) => warn!(error = %e, "ignoring invalid scene update"),
+                    }
                 }
                 Ok(WatchEvent::Error(msg)) => warn!(%msg, "hot-reload watcher error"),
                 Err(_) => break,
             }
+        }
+    }
+
+    /// Re-run the synthesis pipeline. On error keep the previous state.
+    fn resynthesise_weather(&mut self, scene: &Scene, config: &Config) {
+        match ps_synthesis::synthesise(scene, config, &self.world, &self.windowed_gpu.gpu) {
+            Ok(w) => {
+                self.weather = w;
+                info!(
+                    target: "ps_app",
+                    cloud_layers = self.weather.cloud_layer_count,
+                    "WeatherState re-synthesised"
+                );
+            }
+            Err(e) => warn!(error = %e, "synthesise failed; keeping previous WeatherState"),
         }
     }
 
@@ -518,12 +569,16 @@ impl RunState {
         // simulated UTC, sun position, moon position update accordingly).
         // `time_scale` and `paused` are wired through Phase 10 UI later.
         self.world.tick(dt as f64);
-        let weather = ps_core::WeatherState;
+        // Phase 3: refresh the per-frame sun direction / illuminance on
+        // the live WeatherState (cheap; full re-synthesis happens only on
+        // hot-reload).
+        self.weather.sun_direction = self.world.sun_direction_world;
+        self.weather.sun_illuminance = glam::Vec3::splat(self.world.toa_illuminance_lux);
         let mut prepare_ctx = PrepareContext {
             device: &self.windowed_gpu.gpu.device,
             queue: &self.windowed_gpu.gpu.queue,
             world: &self.world,
-            weather: &weather,
+            weather: &self.weather,
             frame_uniforms: &frame_uniforms,
             atmosphere_luts: None,
             dt_seconds: dt,
@@ -563,32 +618,6 @@ impl RunState {
         }
         Ok(())
     }
-}
-
-/// Convert `[time]` from the engine config into a UTC `DateTime`.
-///
-/// Plan §2: `[time]` carries local-civil components plus
-/// `timezone_offset_hours`; the renderer simulates against UTC
-/// internally. This converts naïvely (does not honour DST, since the
-/// config is a fixed civil instant — UI sliders later edit UTC directly).
-fn config_initial_utc(config: &Config) -> chrono::DateTime<chrono::Utc> {
-    use chrono::{Duration, TimeZone, Utc};
-    let local_naive = Utc
-        .with_ymd_and_hms(
-            config.time.year,
-            config.time.month,
-            config.time.day,
-            config.time.hour,
-            config.time.minute,
-            config.time.second,
-        )
-        .single()
-        .unwrap_or_else(|| {
-            tracing::warn!("[time] invalid civil instant — falling back to J2000.0");
-            Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).unwrap()
-        });
-    let offset_seconds = (config.time.timezone_offset_hours * 3_600.0).round() as i64;
-    local_naive - Duration::seconds(offset_seconds)
 }
 
 fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<App> {

@@ -8,4 +8,15 @@ publish.workspace = true
 description = "PedalSky weather data synthesis (Phase 3): scene → GPU-ready WeatherState"
 
 [dependencies]
-ps-core.workspace = true
+ps-core.workspace  = true
+wgpu.workspace     = true
+bytemuck.workspace = true
+glam.workspace     = true
+half.workspace     = true
+serde.workspace    = true
+anyhow.workspace   = true
+thiserror.workspace = true
+tracing.workspace  = true
+
+[dev-dependencies]
+chrono.workspace = true

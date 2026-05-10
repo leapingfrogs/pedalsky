@@ -1,0 +1,129 @@
+//! `synthesise` — Phase 3 entry point.
+//!
+//! Builds a [`ps_core::WeatherState`] from a parsed scene, the engine
+//! config, the current `WorldState`, and a `GpuContext`. Allocates GPU
+//! textures + storage buffer and uploads CPU-synthesised data via
+//! `queue.write_*`.
+
+use thiserror::Error;
+
+use ps_core::{
+    AtmosphereParams, CloudLayerGpu, Config, GpuContext, Scene, SurfaceParams, WeatherState,
+    WeatherTextures, WorldState,
+};
+
+use crate::cloud_layers::{check_non_overlap, synthesise_cloud_layers};
+use crate::density_mask::TopDownMask;
+use crate::haze_extinction_per_m;
+use crate::weather_map::WeatherMap;
+use crate::wind_field::WindField;
+
+/// Errors raised by [`synthesise`].
+#[derive(Debug, Error)]
+pub enum SynthesisError {
+    /// Two cloud layers overlap in altitude (plan §3.2.2).
+    #[error(
+        "cloud layers {a} and {b} overlap in altitude; v1 requires vertically disjoint layers"
+    )]
+    OverlappingCloudLayers {
+        /// Index of first overlapping layer.
+        a: usize,
+        /// Index of second overlapping layer.
+        b: usize,
+    },
+}
+
+/// Build a [`WeatherState`] from `scene` + `config` + `world`, allocating
+/// GPU resources via `gpu`.
+pub fn synthesise(
+    scene: &Scene,
+    config: &Config,
+    world: &WorldState,
+    gpu: &GpuContext,
+) -> Result<WeatherState, SynthesisError> {
+    // §3.2.2 cloud-layer envelope synthesis + non-overlap.
+    let cloud_layers = synthesise_cloud_layers(&scene.clouds.layers);
+    if let Err((a, b, _, _)) = check_non_overlap(&cloud_layers) {
+        return Err(SynthesisError::OverlappingCloudLayers { a, b });
+    }
+
+    // §3.2.1 visibility → Mie haze.
+    let haze = haze_extinction_per_m(scene.surface.visibility_m);
+
+    // §3.2 atmosphere params: physical defaults + config-driven overrides.
+    let atmosphere = AtmosphereParams {
+        planet_radius_m: config.world.ground_radius_m,
+        atmosphere_top_m: config.world.ground_radius_m + config.world.atmosphere_top_m,
+        ground_albedo: glam::Vec4::new(
+            config.world.ground_albedo[0],
+            config.world.ground_albedo[1],
+            config.world.ground_albedo[2],
+            0.0,
+        ),
+        haze_extinction_per_m: glam::Vec4::new(haze.x, haze.y, haze.z, 0.0),
+        ..AtmosphereParams::default()
+    };
+
+    // §3.2 surface scalars.
+    let surface = SurfaceParams {
+        visibility_m: scene.surface.visibility_m,
+        temperature_c: scene.surface.temperature_c,
+        dewpoint_c: scene.surface.dewpoint_c,
+        pressure_hpa: scene.surface.pressure_hpa,
+        wind_dir_deg: scene.surface.wind_dir_deg,
+        wind_speed_mps: scene.surface.wind_speed_mps,
+        ground_wetness: scene.surface.wetness.ground_wetness,
+        puddle_coverage: scene.surface.wetness.puddle_coverage,
+        snow_depth_m: scene.surface.wetness.snow_depth_m,
+        puddle_start: scene.surface.wetness.puddle_start,
+        _pad: [0.0; 2],
+    };
+
+    // §3.2.3 weather map.
+    let weather_map = WeatherMap::synthesise(scene, &scene.surface);
+    let (wm_tex, wm_view) = weather_map.upload(&gpu.device, &gpu.queue);
+
+    // §3.2.4 wind field.
+    let wind = WindField::synthesise(scene);
+    let (wf_tex, wf_view) = wind.upload(&gpu.device, &gpu.queue);
+
+    // §3.2.5 top-down density mask.
+    let mask = TopDownMask::synthesise(&cloud_layers);
+    let (m_tex, m_view) = mask.upload(&gpu.device, &gpu.queue);
+
+    // Cloud-layers storage buffer — at least one slot so the shader's
+    // array<...> binding is non-empty.
+    let cloud_layer_count = cloud_layers.len() as u32;
+    let buffer_data: Vec<CloudLayerGpu> = if cloud_layers.is_empty() {
+        vec![CloudLayerGpu::default()]
+    } else {
+        cloud_layers.clone()
+    };
+    let cloud_layers_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cloud-layers"),
+        size: std::mem::size_of_val::<[CloudLayerGpu]>(buffer_data.as_slice()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    gpu.queue
+        .write_buffer(&cloud_layers_buffer, 0, bytemuck::cast_slice(&buffer_data));
+
+    Ok(WeatherState {
+        atmosphere,
+        cloud_layers,
+        surface,
+        haze_extinction_per_m: haze,
+        sun_direction: world.sun_direction_world,
+        sun_illuminance: glam::Vec3::splat(world.toa_illuminance_lux),
+        textures: WeatherTextures {
+            weather_map: wm_tex,
+            weather_map_view: wm_view,
+            wind_field: wf_tex,
+            wind_field_view: wf_view,
+            top_down_density_mask: m_tex,
+            top_down_density_mask_view: m_view,
+        },
+        cloud_layers_buffer,
+        cloud_layer_count,
+    })
+}
