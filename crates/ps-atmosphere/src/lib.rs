@@ -17,6 +17,8 @@
 
 #![deny(missing_docs)]
 
+pub mod lut_overlay;
+
 use std::sync::{Arc, Mutex};
 
 use ps_core::{

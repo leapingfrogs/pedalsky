@@ -378,6 +378,12 @@ pub struct DebugConfig {
     /// Optional auto-exposure (off by default).
     #[serde(default)]
     pub auto_exposure: bool,
+    /// Phase 5 debug: draw the four atmosphere LUTs as a 2×2 grid on
+    /// top of the swapchain after tone-map. Useful when calibrating
+    /// the Hillaire integrator. Off by default; also enabled by the
+    /// `--lut-overlay` CLI flag.
+    #[serde(default)]
+    pub atmosphere_lut_overlay: bool,
 }
 
 impl Default for DebugConfig {
@@ -387,6 +393,7 @@ impl Default for DebugConfig {
             shader_hot_reload: true,
             log_level: "info".into(),
             auto_exposure: false,
+            atmosphere_lut_overlay: false,
         }
     }
 }

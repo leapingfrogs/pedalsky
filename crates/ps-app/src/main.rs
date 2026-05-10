@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
 use ps_app::config_initial_utc;
 use ps_app::main_helpers::encode_frame_clear;
-use ps_atmosphere::AtmosphereFactory;
+use ps_atmosphere::{AtmosphereFactory, lut_overlay::{LutOverlay, LutOverlayUniforms}};
 use ps_backdrop::BackdropFactory;
 use ps_clouds::CloudsFactory;
 use ps_core::{
@@ -55,9 +55,16 @@ fn main() -> Result<()> {
         return ps_app::headless_dump::run(&workspace_root, &out_dir);
     }
 
+    // CLI override: `--lut-overlay` flips `config.debug.atmosphere_lut_overlay`
+    // on independently of the config file.
+    let cli_lut_overlay = argv.iter().any(|a| a == "--lut-overlay");
+
     let config_path = workspace_root.join("pedalsky.toml");
-    let config =
+    let mut config =
         Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
+    if cli_lut_overlay {
+        config.debug.atmosphere_lut_overlay = true;
+    }
     config
         .validate_with_base(config_path.parent())
         .with_context(|| format!("validating {}", config_path.display()))?;
@@ -132,6 +139,10 @@ struct RunState {
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
     /// when `[render.subsystems].atmosphere = false`.
     atmosphere_luts: Option<std::sync::Arc<ps_core::AtmosphereLuts>>,
+    /// Phase 5 debug overlay drawing the four LUTs onto the swapchain.
+    /// `Some` when `[debug].atmosphere_lut_overlay = true` (or
+    /// `--lut-overlay`) AND atmosphere is enabled.
+    lut_overlay: Option<LutOverlay>,
 
     camera: ps_core::camera::FlyCamera,
     keys: KeyState,
@@ -258,6 +269,15 @@ impl RunState {
             .lock()
             .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
             .clone();
+        let lut_overlay = if config.debug.atmosphere_lut_overlay && atmosphere_luts.is_some() {
+            info!(target: "ps_app", "LUT overlay enabled");
+            Some(LutOverlay::new(
+                &windowed.gpu,
+                windowed.surface_config.format,
+            ))
+        } else {
+            None
+        };
 
         let camera = ps_core::camera::FlyCamera {
             position: Vec3::new(0.0, 1.7, 5.0),
@@ -312,6 +332,7 @@ impl RunState {
             world,
             weather,
             atmosphere_luts,
+            lut_overlay,
             start: now,
             last_frame: now,
             frame_index: 0,
@@ -556,6 +577,21 @@ impl RunState {
             self.world.toa_illuminance_lux,
         );
 
+        // Phase 5 diagnostic: log the key uniforms once at startup so we can
+        // verify atmosphere bakes are receiving non-zero values. After the
+        // first frame this is silent (frame_index > 0).
+        if self.frame_index == 0 {
+            info!(
+                target: "ps_app::phase5_check",
+                camera_pos = ?frame_uniforms.camera_position_world,
+                sun_dir = ?frame_uniforms.sun_direction,
+                sun_illum = ?frame_uniforms.sun_illuminance,
+                atmo_planet_r = self.weather.atmosphere.planet_radius_m,
+                atmo_top = self.weather.atmosphere.atmosphere_top_m,
+                atmo_rayleigh = ?self.weather.atmosphere.rayleigh_scattering,
+                "uniforms at first dispatch"
+            );
+        }
         // Upload the per-frame uniforms (groups 0 and 1).
         self.bindings.write(
             &self.windowed_gpu.gpu.queue,
@@ -629,6 +665,21 @@ impl RunState {
             self.ev100,
             self.tonemap_mode,
         );
+
+        // Phase 5 debug overlay (after tone-map; writes to the swapchain
+        // with LoadOp::Load so the tone-mapped scene shows through where
+        // the overlay isn't drawing).
+        if let (Some(overlay), Some(luts)) = (&self.lut_overlay, &self.atmosphere_luts) {
+            let uniforms = LutOverlayUniforms::default();
+            overlay.render(
+                &mut encoder,
+                &self.windowed_gpu.gpu.queue,
+                &self.windowed_gpu.gpu.device,
+                &swap_view,
+                luts,
+                &uniforms,
+            );
+        }
 
         self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
         frame.present();

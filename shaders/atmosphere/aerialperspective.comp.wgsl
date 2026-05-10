@@ -29,6 +29,10 @@
 
 const SIZE: vec3<u32> = vec3<u32>(32u, 32u, 32u);
 const AP_FAR_M: f32 = 32000.0;
+// March step count per froxel.  Hillaire's reference uses fewer steps
+// (~10) because the AP volume is shallow; keep a moderate count to
+// reduce banding while remaining cheap relative to the sky-view bake.
+const AP_STEPS: u32 = 16u;
 
 @compute @workgroup_size(4, 4, 4)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -37,28 +41,36 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let uv01 = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5))
              / vec2<f32>(f32(SIZE.x), f32(SIZE.y));
     let ndc = uv01 * 2.0 - vec2<f32>(1.0);
-    // Reverse-Z: depth=1 = near, depth=0 = far. We pick depth=0 to get
-    // the world-space far direction, then march along it.
+    // Reconstruct world-space view direction.  For an infinite-far
+    // perspective matrix, NDC z=0 maps to w=0; using only the near
+    // plane and subtracting the camera position avoids that NaN.  The
+    // y is flipped because Y on the screen runs top-to-bottom (gid.y=0
+    // is the top of the framebuffer) whereas NDC +Y points up.
     let near_h = frame.inv_view_proj * vec4<f32>(ndc.x, -ndc.y, 1.0, 1.0);
-    let far_h = frame.inv_view_proj * vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
     let near_p = near_h.xyz / near_h.w;
-    let far_p = far_h.xyz / far_h.w;
-    let view_dir = normalize(far_p - near_p);
+    let view_dir = normalize(near_p - frame.camera_position_world.xyz);
 
+    // Quadratic Z spacing: t_target = z_norm² · AP_FAR_M places more
+    // froxels near the camera (where AP detail matters most) while
+    // still reaching the far slice at z=1.  Linear spacing oversamples
+    // the far range and gives slice 0 effectively zero march distance.
     let z_norm = (f32(gid.z) + 0.5) / f32(SIZE.z);
-    let t_target = z_norm * AP_FAR_M;
+    let t_target = z_norm * z_norm * AP_FAR_M;
 
     // Camera in atmosphere frame.
     let p0 = world_to_atmosphere_pos(frame.camera_position_world.xyz);
+    let r0 = length(p0);
+    let cos_view = dot(p0 / max(r0, 1.0), view_dir);
     let sun_dir = frame.sun_direction.xyz;
     let cos_theta = dot(view_dir, sun_dir);
     let phase_r = phase_rayleigh(cos_theta);
     let phase_m = phase_mie(cos_theta, world.mie_g);
 
-    // March from camera to t_target. Use a coarse step count proportional
-    // to the slice index so close slices integrate finely and far slices
-    // amortise the work.
-    let n_steps = max(1u, gid.z);
+    // Fixed step count: every slice gets the same march resolution.
+    // Earlier code used `n_steps = max(1, gid.z)` which made slice 0 a
+    // single 0-length step and produced NaN through divide-by-zero in
+    // the energy-conserving integral (sigma_t · dt → 0).
+    let n_steps = AP_STEPS;
     let dt = t_target / f32(n_steps);
 
     var luminance = vec3<f32>(0.0);
@@ -67,7 +79,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var s = 0u; s < n_steps; s = s + 1u) {
         let t = (f32(s) + 0.5) * dt;
         let pi = p0 + view_dir * t;
-        let h = length(pi) - world.planet_radius_m;
+        // Numerically-stable height calculation. At planet scale,
+        // `length(pi) - planet_radius_m` suffers catastrophic
+        // cancellation: |pi|² ≈ R² (huge) and the small height delta
+        // disappears in the squared term.  Instead, use the algebraic
+        // identity: |pi|² = r0² + 2t·r0·cos_view + t², so
+        // |pi| − r0 = (2t·r0·cos_view + t²) / (r0 + |pi|).
+        let r0_safe = max(r0, 1.0);
+        let r_delta_num = 2.0 * t * r0 * cos_view + t * t;
+        let r_delta = r_delta_num / (r0_safe + length(pi));
+        let h = (r0 - world.planet_radius_m) + r_delta;
         if (h < 0.0) { break; }
         let sigma_t = extinction_at(h);
         let sample_transmit = exp(-sigma_t * dt);
@@ -76,8 +97,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let scat = scattering_pair(h);
         let sun_inscatter = (scat.rayleigh * phase_r + scat.mie * phase_m) * sun_vis;
 
-        let r_p = length(pi);
-        let h_norm = clamp((r_p - world.planet_radius_m)
+        let r_p = r0 + r_delta;
+        let h_norm = clamp(h
             / max(world.atmosphere_top_m - world.planet_radius_m, 1.0), 0.0, 1.0);
         let sun_cos = clamp(dot(pi / max(r_p, 1.0), sun_dir), -1.0, 1.0);
         let ms_uv = vec2<f32>(sun_cos * 0.5 + 0.5, h_norm);

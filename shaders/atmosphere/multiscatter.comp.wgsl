@@ -49,24 +49,34 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var l_2nd_acc = vec3<f32>(0.0);
     var f_ms_acc = vec3<f32>(0.0);
 
+    // p0 is on the planet's up axis at radius r.  Pre-compute for the
+    // numerically-stable height inside the inner loop.
+    let h0 = r - world.planet_radius_m;
+
     for (var d = 0u; d < N_DIRS; d = d + 1u) {
         let view_dir = sphere_sample(d);
         let t_max = distance_to_atmosphere_boundary(p0, view_dir);
         if (t_max <= 0.0) { continue; }
         let dt = t_max / f32(N_STEPS);
+        let cos_view = dot(p0 / max(r, 1.0), view_dir);
         var transmittance = vec3<f32>(1.0);
         var l_dir = vec3<f32>(0.0);
         var f_dir = vec3<f32>(0.0);
         for (var s = 0u; s < N_STEPS; s = s + 1u) {
             let t = (f32(s) + 0.5) * dt;
             let p = p0 + view_dir * t;
-            let h = length(p) - world.planet_radius_m;
+            // Stable height: avoid `length(p) - planet_radius` cancellation.
+            // |pi|² = r0² + 2t·r0·cos_view + t², so
+            // |pi| − r0 = (2t·r0·cos_view + t²) / (r0 + |pi|).
+            let r_delta_num = 2.0 * t * r * cos_view + t * t;
+            let r_delta = r_delta_num / (max(r, 1.0) + length(p));
+            let h = h0 + r_delta;
             let sigma_t = extinction_at(h);
             let sigma_s = scattering_at(h);
             let sample_transmit = exp(-sigma_t * dt);
 
             // Sun visibility through transmittance LUT.
-            let r_p = length(p);
+            let r_p = r + r_delta;
             let cos_sun = dot(p, sun_dir) / max(r_p, 1.0);
             // Avoid sampling the LUT when the sun is below the horizon
             // (occluded by the planet).
@@ -108,6 +118,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let f_clamped = clamp(f_ms, vec3<f32>(0.0), vec3<f32>(0.95));
     let l_full = l_2 / (vec3<f32>(1.0) - f_clamped);
 
-    textureStore(output, vec2<i32>(i32(gid.x), i32(gid.y)),
-                 vec4<f32>(l_full, 1.0));
+    textureStore(
+        output,
+        vec2<i32>(i32(gid.x), i32(gid.y)),
+        vec4<f32>(l_full, 1.0),
+    );
 }

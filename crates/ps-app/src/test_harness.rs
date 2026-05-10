@@ -130,6 +130,12 @@ impl HeadlessApp {
         })
     }
 
+    /// Read access to the atmosphere LUTs for diagnostic readback in
+    /// integration tests. Returns `None` when atmosphere is disabled.
+    pub fn atmosphere_luts_for_diag(&self) -> Option<&Arc<ps_core::AtmosphereLuts>> {
+        self.atmosphere_luts.as_ref()
+    }
+
     /// Apply a new config in place (mirrors the hot-reload path).
     pub fn reconfigure(&mut self, gpu: &GpuContext, config: &Config) -> Result<()> {
         self.app
@@ -144,9 +150,19 @@ impl HeadlessApp {
     /// Render one frame using the supplied `GpuContext`. Returns raw
     /// `Rgba8Unorm` pixels (top-left origin), tightly packed.
     pub fn render_one_frame(&mut self, gpu: &GpuContext) -> Vec<u8> {
+        self.render_one_frame_with(gpu, ps_core::camera::FlyCamera::default())
+    }
+
+    /// Variant of [`Self::render_one_frame`] that lets the caller supply
+    /// a specific camera (useful for tests that want to look at a
+    /// particular region of the sky).
+    pub fn render_one_frame_with(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+    ) -> Vec<u8> {
         let (w, h) = self.setup.size;
         let aspect = w as f32 / h as f32;
-        let camera = ps_core::camera::FlyCamera::default();
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(aspect);
         // World state for tests defaults to J2000.0 noon at the equator —
@@ -155,7 +171,14 @@ impl HeadlessApp {
         let weather = ps_core::WeatherState::stub_for_tests(gpu);
 
         let mut frame_uniforms = FrameUniforms {
-            camera_position_world: Vec4::ZERO,
+            // Use the supplied camera position so tests can place the
+            // camera arbitrarily (the sky-view LUT depends on radius).
+            camera_position_world: Vec4::new(
+                camera.position.x,
+                camera.position.y.max(0.1),
+                camera.position.z,
+                0.0,
+            ),
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
             time_seconds: 0.0,
             simulated_seconds: 0.0,
@@ -187,6 +210,15 @@ impl HeadlessApp {
             &self.setup.hdr,
             !self.last_config.render.subsystems.backdrop,
             self.last_config.render.clear_color,
+        );
+        // Phase 5 diagnostic (test path): eprintln since the test framework
+        // doesn't initialise a tracing subscriber.
+        eprintln!(
+            "[phase5_check] camera_pos={:?} sun_dir={:?} sun_illum={:?} atmo_planet_r={}",
+            frame_uniforms.camera_position_world,
+            frame_uniforms.sun_direction,
+            frame_uniforms.sun_illuminance,
+            weather.atmosphere.planet_radius_m,
         );
         // Phase 4: upload bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
         self.setup

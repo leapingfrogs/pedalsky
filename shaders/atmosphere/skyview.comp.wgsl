@@ -2,14 +2,28 @@
 //
 // Output: 192 × 108 Rgba16Float.
 //
-// UV → view direction:
+// UV → view direction (Hillaire 2020 reference parametrisation,
+// `SkyViewLutParamsToUv` in sebh/UnrealEngineSkyAtmosphere):
 //   u = wrap((azimuth − sun_azimuth) / (2π))
-//   v = 0.5 + 0.5 · sign(lat) · sqrt(|lat| / (π/2))
+//   v ∈ [0,   0.5): above-horizon rays
+//     coord = (uv.y − 0)/0.5      ∈ [0, 1)
+//     vza   = coord² · ZenithHorizonAngle
+//             where ZenithHorizonAngle = π − acos(R / r) is the angle
+//             from local zenith down to the geometric horizon for a
+//             viewer at radius r.  vza is the angle from zenith to the
+//             ray (0 = straight up, ZenithHorizonAngle = horizon).
+//   v ∈ [0.5, 1]: below-horizon rays
+//     coord = (uv.y − 0.5)/0.5    ∈ [0, 1]
+//     vza_below = coord² · (π − ZenithHorizonAngle)
+//     vza       = ZenithHorizonAngle + vza_below
 //
-// The non-linear v concentrates samples around the horizon (where
-// Rayleigh detail matters most). 32 march steps; samples transmittance
-// + multi-scatter LUTs (so this is the integral of single-scatter +
-// the closed-form multi-scatter contribution).
+// The non-linear (quadratic) v spacing concentrates samples around the
+// geometric horizon, where Rayleigh extinction changes fastest.  Note
+// v=0.5 corresponds to the *camera-altitude* horizon, not the local
+// horizon plane — this is the critical difference from a flat-Earth
+// parametrisation.
+//
+// 32 march steps; samples transmittance + multi-scatter LUTs.
 //
 // Bindings:
 //   group 0 binding 0 — FrameUniforms (provides sun_direction)
@@ -34,33 +48,44 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= SIZE.x || gid.y >= SIZE.y) { return; }
     let uv = (vec2<f32>(f32(gid.x), f32(gid.y)) + vec2<f32>(0.5)) / vec2<f32>(SIZE);
 
-    // V → latitude. Inverse of v = 0.5 + 0.5 · sign(lat) · sqrt(|lat|/(π/2)).
-    let v_centred = uv.y * 2.0 - 1.0;
-    let lat_sign = sign(v_centred);
-    let lat_norm = v_centred * v_centred; // = |lat|/(π/2)
-    let latitude = lat_sign * lat_norm * (PI * 0.5);
+    // Camera position in atmosphere-local frame.  Compute the camera's
+    // radius now since the horizon angle depends on it.
+    let p_world = frame.camera_position_world.xyz;
+    var p = world_to_atmosphere_pos(p_world);
+    var r = length(p);
+    // Guard against numerical badness at or below the surface.
+    if (r < world.planet_radius_m + 1.0) {
+        p = normalize(p) * (world.planet_radius_m + 1.0);
+        r = world.planet_radius_m + 1.0;
+    }
 
+    // Reference parametrisation: v=0 at zenith, v=0.5 at the geometric
+    // horizon (as seen from radius r), v=1 at nadir.  For a viewer at
+    // radius r outside the planet of radius R, the tangent (horizon)
+    // ray makes an angle `asin(R/r)` with the nadir; the angle from
+    // zenith is `π − asin(R/r)`.  At r = R this is π/2 (horizontal);
+    // from orbit it approaches π (horizon collapses to the nadir).
+    let sin_horizon = clamp(world.planet_radius_m / r, 0.0, 1.0);
+    let zenith_horizon_angle = PI - asin(sin_horizon);
+    var vza: f32;
+    if (uv.y < 0.5) {
+        let coord = uv.y * 2.0;                 // 0..1
+        vza = coord * coord * zenith_horizon_angle;
+    } else {
+        let coord = (uv.y - 0.5) * 2.0;         // 0..1
+        let below_range = PI - zenith_horizon_angle;
+        vza = zenith_horizon_angle + coord * coord * below_range;
+    }
     // U → azimuth offset from the sun.
     let azimuth = uv.x * 2.0 * PI;
 
-    // Build the view direction in atmosphere-local frame: latitude is
-    // angle above the horizon plane (zenith=π/2, horizon=0), azimuth is
-    // measured around the up-axis.
-    let cos_lat = cos(latitude);
-    let sin_lat = sin(latitude);
-    let view_dir = vec3<f32>(cos_lat * sin(azimuth), sin_lat, cos_lat * cos(azimuth));
-
-    // Camera position in atmosphere-local frame: just above the planet
-    // surface for sky-view. The sky-view LUT is invariant in horizontal
-    // translation so any longitude works; pick the camera's actual
-    // altitude for accuracy.
-    let p_world = frame.camera_position_world.xyz;
-    var p = world_to_atmosphere_pos(p_world);
-    // Avoid degenerate rays when the camera is below the planet surface.
-    let r = length(p);
-    if (r < world.planet_radius_m) {
-        p = normalize(p) * world.planet_radius_m;
-    }
+    // Build the view direction in atmosphere-local frame.  vza is the
+    // angle from local zenith (+Y), azimuth is around the up axis.
+    // For vza=0 we want view_dir = +Y; for vza=π/2 a horizontal ring;
+    // for vza=π we want view_dir = −Y.
+    let cos_v = cos(vza);
+    let sin_v = sin(vza);
+    let view_dir = vec3<f32>(sin_v * sin(azimuth), cos_v, sin_v * cos(azimuth));
 
     // Sun direction in atmosphere-local frame is the same as world-space
     // since translation doesn't change directions.
@@ -76,13 +101,22 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let dt = t_max / f32(N_STEPS);
 
+    // For the numerically-stable height calculation inside the march.
+    let cos_view = dot(p / max(r, 1.0), view_dir);
+    let h0 = r - world.planet_radius_m;
+
     var luminance = vec3<f32>(0.0);
     var transmittance = vec3<f32>(1.0);
 
     for (var s = 0u; s < N_STEPS; s = s + 1u) {
         let t = (f32(s) + 0.5) * dt;
         let pi = p + view_dir * t;
-        let h = length(pi) - world.planet_radius_m;
+        // Stable height: avoid `length(pi) - planet_radius` cancellation.
+        // |pi|² = r² + 2t·r·cos_view + t², so
+        // |pi| − r = (2t·r·cos_view + t²) / (r + |pi|).
+        let r_delta_num = 2.0 * t * r * cos_view + t * t;
+        let r_delta = r_delta_num / (max(r, 1.0) + length(pi));
+        let h = h0 + r_delta;
         let sigma_t = extinction_at(h);
         let sample_transmit = exp(-sigma_t * dt);
 
@@ -93,8 +127,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
         // Multi-scatter contribution from precomputed LUT, sampled at
         // the local altitude and sun zenith cosine.
-        let r_p = length(pi);
-        let h_norm = clamp((r_p - world.planet_radius_m)
+        let r_p = r + r_delta;
+        let h_norm = clamp(h
             / max(world.atmosphere_top_m - world.planet_radius_m, 1.0), 0.0, 1.0);
         let sun_cos = clamp(dot(pi / max(r_p, 1.0), sun_dir), -1.0, 1.0);
         let ms_uv = vec2<f32>(sun_cos * 0.5 + 0.5, h_norm);
@@ -111,12 +145,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         transmittance = transmittance * sample_transmit;
     }
 
-    // Multiply by sun illuminance — the LUT stores radiance per unit
-    // solar irradiance, then sky raymarch scales by the actual sun.
-    // To make the LUT directly usable without reading frame.sun_illuminance,
-    // we bake the scaling here.
-    luminance = luminance * frame.sun_illuminance.rgb;
-
+    // Store per-unit-illuminance radiance.  The sky shader multiplies
+    // by `frame.sun_illuminance.rgb` at sample time.  Keeping the LUT
+    // in unit space means the f16 storage range comfortably fits
+    // values for both daytime and twilight without saturating at the
+    // f16 max (65504).
     textureStore(output, vec2<i32>(i32(gid.x), i32(gid.y)),
                  vec4<f32>(luminance, 1.0));
 }

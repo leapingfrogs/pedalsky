@@ -184,16 +184,28 @@ fn transmittance_lut_uv_to_pos_dir(uv: vec2<f32>, p: ptr<function, vec3<f32>>,
 
 /// Trapezoidal integration of total optical depth from `p` along `dir`
 /// to the next atmosphere boundary. `n_steps` is fixed at 40 per plan §5.2.1.
+/// Uses a numerically-stable height calculation: at planet scale,
+/// `length(pi) - planet_radius_m` suffers catastrophic cancellation
+/// (the squared term dwarfs the small height offset in fp32).  The
+/// identity sqrt(1+x) − 1 = x/(sqrt(1+x)+1) lets us extract the height
+/// delta directly.
 fn integrate_optical_depth(p: vec3<f32>, dir: vec3<f32>, n_steps: u32) -> vec3<f32> {
     let t_max = distance_to_atmosphere_boundary(p, dir);
     if (t_max <= 0.0) { return vec3<f32>(0.0); }
     let dt = t_max / f32(n_steps);
+    let r0 = length(p);
+    let cos_view = dot(p / max(r0, 1.0), dir);
+    let h0 = r0 - world.planet_radius_m;
     var optical_depth = vec3<f32>(0.0);
-    var prev = extinction_at(length(p) - world.planet_radius_m);
+    var prev = extinction_at(h0);
     for (var i = 1u; i <= n_steps; i = i + 1u) {
         let t = f32(i) * dt;
         let pi = p + dir * t;
-        let h = length(pi) - world.planet_radius_m;
+        // |pi|² = r0² + 2t·r0·cos_view + t², so
+        // |pi| − r0 = (2t·r0·cos_view + t²) / (r0 + |pi|).
+        let r_delta_num = 2.0 * t * r0 * cos_view + t * t;
+        let r_delta = r_delta_num / (max(r0, 1.0) + length(pi));
+        let h = h0 + r_delta;
         let cur = extinction_at(h);
         optical_depth = optical_depth + 0.5 * (prev + cur) * dt;
         prev = cur;
