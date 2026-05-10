@@ -96,11 +96,10 @@ impl FrameUniformsGpu {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WeatherState;
 
-/// World state: clock, sun/moon position, observer location.
-///
-/// TODO: Phase 2 owns the real definition.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WorldState;
+/// World state: clock, sun/moon position, observer location, TOA solar
+/// illuminance. Defined in [`crate::world`]; re-exported here so
+/// `PrepareContext` continues to refer to it from one place.
+pub use crate::world::WorldState;
 
 /// Atmosphere LUTs (transmittance, multi-scatter, sky-view, aerial perspective)
 /// shared via bind group 3.

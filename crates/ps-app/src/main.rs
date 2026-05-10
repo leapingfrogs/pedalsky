@@ -127,6 +127,8 @@ struct RunState {
     mouse_delta: (f64, f64),
     ev100: f32,
     tonemap_mode: TonemapMode,
+    /// Simulated world clock + observer + sun + moon (Phase 2).
+    world: ps_core::WorldState,
     start: Instant,
     last_frame: Instant,
     frame_index: u32,
@@ -244,6 +246,21 @@ impl RunState {
         let hot_reload = HotReload::watch(config_path, scene_path, DEFAULT_DEBOUNCE)
             .context("starting hot-reload watcher")?;
 
+        let initial_utc = config_initial_utc(config);
+        let world = ps_core::WorldState::new(
+            initial_utc,
+            config.world.latitude_deg,
+            config.world.longitude_deg,
+            config.world.ground_elevation_m as f64,
+        );
+        info!(
+            target: "ps_app",
+            sim_utc = %world.clock.current_utc(),
+            sun_alt_deg = world.sun.altitude_rad.to_degrees(),
+            sun_az_deg = world.sun.azimuth_rad.to_degrees(),
+            "WorldState initialised"
+        );
+
         let now = Instant::now();
         let title_prefix = config.window.title.clone();
         Ok(Self {
@@ -259,6 +276,7 @@ impl RunState {
             mouse_delta: (0.0, 0.0),
             ev100: config.render.ev100,
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
+            world,
             start: now,
             last_frame: now,
             frame_index: 0,
@@ -496,12 +514,15 @@ impl RunState {
         );
 
         // Drive the App.
-        let world = ps_core::WorldState;
+        // Phase 2: drive the world clock from real wall-time dt (the
+        // simulated UTC, sun position, moon position update accordingly).
+        // `time_scale` and `paused` are wired through Phase 10 UI later.
+        self.world.tick(dt as f64);
         let weather = ps_core::WeatherState;
         let mut prepare_ctx = PrepareContext {
             device: &self.windowed_gpu.gpu.device,
             queue: &self.windowed_gpu.gpu.queue,
-            world: &world,
+            world: &self.world,
             weather: &weather,
             frame_uniforms: &frame_uniforms,
             atmosphere_luts: None,
@@ -542,6 +563,32 @@ impl RunState {
         }
         Ok(())
     }
+}
+
+/// Convert `[time]` from the engine config into a UTC `DateTime`.
+///
+/// Plan §2: `[time]` carries local-civil components plus
+/// `timezone_offset_hours`; the renderer simulates against UTC
+/// internally. This converts naïvely (does not honour DST, since the
+/// config is a fixed civil instant — UI sliders later edit UTC directly).
+fn config_initial_utc(config: &Config) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Duration, TimeZone, Utc};
+    let local_naive = Utc
+        .with_ymd_and_hms(
+            config.time.year,
+            config.time.month,
+            config.time.day,
+            config.time.hour,
+            config.time.minute,
+            config.time.second,
+        )
+        .single()
+        .unwrap_or_else(|| {
+            tracing::warn!("[time] invalid civil instant — falling back to J2000.0");
+            Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).unwrap()
+        });
+    let offset_seconds = (config.time.timezone_offset_hours * 3_600.0).round() as i64;
+    local_naive - Duration::seconds(offset_seconds)
 }
 
 fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<App> {

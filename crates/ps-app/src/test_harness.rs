@@ -166,7 +166,7 @@ impl HeadlessApp {
             self.last_config.render.clear_color,
         );
 
-        let world = ps_core::WorldState;
+        let world = ps_core::WorldState::default();
         let weather = ps_core::WeatherState;
         let mut prepare_ctx = PrepareContext {
             device: &gpu.device,

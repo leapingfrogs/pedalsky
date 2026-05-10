@@ -8,6 +8,7 @@
 #![deny(missing_docs)]
 
 pub mod app;
+pub mod astro;
 pub mod camera;
 pub mod config;
 pub mod contexts;
@@ -16,6 +17,8 @@ pub mod gpu;
 pub mod hot_reload;
 pub mod scene;
 pub mod subsystem;
+pub mod time;
+pub mod world;
 
 pub use app::{App, AppBuilder, AppError, SubsystemFactory};
 pub use config::{Config, ConfigError};
