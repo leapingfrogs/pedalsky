@@ -16,8 +16,10 @@ struct ViewRay {
 };
 
 /// Build a world-space ray from a screen-space fragment coordinate, honouring
-/// the reverse-Z infinite-far perspective convention. depth=1 is the near
-/// plane, depth=0 is at infinity.
+/// the reverse-Z infinite-far perspective convention.  At NDC z=0 (the far
+/// plane of an infinite-far projection) w → 0; the perspective divide
+/// produces NaN, so we reconstruct the near point only and subtract the
+/// camera position to get the direction.
 fn compute_view_ray(frag_xy: vec2<f32>) -> ViewRay {
     let viewport = frame.viewport_size.xy;
     let ndc = vec2<f32>(
@@ -25,10 +27,9 @@ fn compute_view_ray(frag_xy: vec2<f32>) -> ViewRay {
         1.0 - (frag_xy.y / viewport.y) * 2.0,
     );
     let near_h = frame.inv_view_proj * vec4<f32>(ndc, 1.0, 1.0);
-    let far_h  = frame.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
     let near_p = near_h.xyz / near_h.w;
-    let far_p  = far_h.xyz  / far_h.w;
-    return ViewRay(near_p, normalize(far_p - near_p));
+    let dir = normalize(near_p - frame.camera_position_world.xyz);
+    return ViewRay(frame.camera_position_world.xyz, dir);
 }
 
 /// Returns true and the two intersection distances along `rd` if the ray

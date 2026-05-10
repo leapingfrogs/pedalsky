@@ -8,5 +8,9 @@ publish.workspace = true
 description = "PedalSky volumetric cloud subsystem (Phase 6: Schneider/Hillaire)"
 
 [dependencies]
-ps-core.workspace = true
-anyhow.workspace  = true
+ps-core.workspace   = true
+anyhow.workspace    = true
+bytemuck.workspace  = true
+glam.workspace      = true
+tracing.workspace   = true
+wgpu.workspace      = true
