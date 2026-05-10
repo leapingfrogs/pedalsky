@@ -39,6 +39,30 @@ pub struct GpuContext {
     pub queue: Arc<wgpu::Queue>,
 }
 
+/// GPU features the engine wants per plan §0.2.
+///
+/// `request_device` would error if we requested features the adapter doesn't
+/// advertise, so we intersect with `adapter.features()` and `warn!` on each
+/// missing one. Phase 0 / Phase 1 don't strictly need any of these — the
+/// real consumers are Phase 5 (atmosphere LUTs) and Phase 6 (cloud noise
+/// volumes). Keeping the request best-effort here means the test harness
+/// runs on integrated GPUs without these features; the affected phases
+/// will fail explicitly when they reach for the feature.
+fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
+    let wanted = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::TEXTURE_BINDING_ARRAY
+        | wgpu::Features::FLOAT32_FILTERABLE;
+    let granted = wanted & adapter_features;
+    let missing = wanted - granted;
+    if !missing.is_empty() {
+        warn!(
+            ?missing,
+            "adapter does not advertise some plan §0.2 features; phases that depend on them will fail when they reach for the missing feature"
+        );
+    }
+    granted
+}
+
 /// Per-feature limits we bump above the wgpu defaults. See plan §0.2.
 fn required_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
     let base = wgpu::Limits::default();
@@ -136,7 +160,7 @@ where
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("pedalsky-device"),
-            required_features: wgpu::Features::empty(),
+            required_features: required_features(adapter.features()),
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
@@ -231,7 +255,7 @@ async fn init_headless_async() -> Result<GpuContext, GpuError> {
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             label: Some("pedalsky-device"),
-            required_features: wgpu::Features::empty(),
+            required_features: required_features(adapter.features()),
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::Off,
