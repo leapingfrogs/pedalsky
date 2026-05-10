@@ -11,13 +11,8 @@ This codebase is being built phase by phase against the plan.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Cargo workspace, GPU init, HDR framebuffer + reverse-Z depth, fly camera, ACES tone-mapper, checker ground, winit window | **Done** |
-| 1 | Config + scene schemas, `RenderSubsystem` trait, contexts, `AppBuilder` + factories, hot-reload watcher | **Done** for non-GPU work — demo subsystems (Backdrop / Tint) and the full hot-reload-via-AppBuilder integration test still deferred |
+| 1 | Config + scene schemas, `RenderSubsystem` trait, contexts, `AppBuilder` + factories, hot-reload watcher, demo Backdrop / Tint subsystems, headless integration tests | **Done** |
 | 2+ | World/sun, weather synthesis, atmosphere, clouds, ground (PBR), precipitation, post-process, UI, golden-image regression | Not started |
-
-The deferred Phase 1 Backdrop/Tint demo subsystems can now land — the
-windowed render pipeline they need is in place. Their config keys are
-already wired (`[render.subsystems].backdrop`, `[render.subsystems].tint`,
-`[render.backdrop]`, `[render.tint]`).
 
 ## Repository layout
 
@@ -31,10 +26,13 @@ pedalsky/
 │   ├── ps-core/                # config, scene, traits, contexts, app, hot-reload, gpu, framebuffer, camera
 │   ├── ps-postprocess/         # ACES Filmic / Passthrough tone-mapper
 │   ├── ps-ground/              # Phase 0 procedural checker plane (Phase 7 replaces with PBR)
-│   └── ps-app/                 # winit window + render loop
+│   ├── ps-backdrop/            # Phase 1 demo: HDR clear at SkyBackdrop
+│   ├── ps-tint/                # Phase 1 demo: fullscreen RGB multiply at PostProcess
+│   └── ps-app/                 # winit window + render loop + headless test harness
 ├── shaders/
 │   ├── ground/                 # Phase 0 checker shader
-│   └── postprocess/            # tone-map shader
+│   ├── postprocess/            # tone-map shader
+│   └── tint/                   # Phase 1 demo tint shader
 └── assets/                     # noise volumes (Phase 6+)
 ```
 

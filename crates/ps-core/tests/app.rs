@@ -1,8 +1,7 @@
 //! Phase 1 Group B tests for `AppBuilder`, `App`, factories, and the render-
 //! graph assembly logic (no GPU work actually executed).
 
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ps_core::{
     App, AppBuilder, Config, GpuContext, PassStage, PrepareContext, RegisteredPass,
@@ -25,12 +24,18 @@ fn gpu() -> Option<&'static GpuContext> {
 
 // --- Fake subsystems used by the tests. -------------------------------------
 
-/// Fake subsystem whose `prepare()` pushes its name into a shared `Vec` so
-/// tests can verify the call order.
+type PrepareLog = Arc<Mutex<Vec<&'static str>>>;
+type PassLog = Arc<Mutex<Vec<(&'static str, PassStage)>>>;
+
+/// Fake subsystem whose `prepare()` pushes its name into a shared `Vec` and
+/// whose pass closures push `(name, stage)` into another, so tests can
+/// verify the actual call order under `App::frame`.
 struct FakeSubsystem {
     name: &'static str,
     stages: Vec<PassStage>,
     enabled: bool,
+    prepare_log: Option<PrepareLog>,
+    pass_log: Option<PassLog>,
 }
 
 impl RenderSubsystem for FakeSubsystem {
@@ -38,17 +43,27 @@ impl RenderSubsystem for FakeSubsystem {
         self.name
     }
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_>) {
-        // Tests don't call frame(); this remains untested at the call-site
-        // but the prepare_order_names() accessor exercises the same logic.
+        if let Some(log) = &self.prepare_log {
+            log.lock().unwrap().push(self.name);
+        }
     }
     fn register_passes(&self) -> Vec<RegisteredPass> {
+        let name = self.name;
+        let pass_log = self.pass_log.clone();
         self.stages
             .iter()
             .copied()
-            .map(|stage| RegisteredPass {
-                name: self.name,
-                stage,
-                run: Box::new(|_, _| {}),
+            .map(|stage| {
+                let pass_log = pass_log.clone();
+                RegisteredPass {
+                    name,
+                    stage,
+                    run: Box::new(move |_, _| {
+                        if let Some(log) = &pass_log {
+                            log.lock().unwrap().push((name, stage));
+                        }
+                    }),
+                }
             })
             .collect()
     }
@@ -70,6 +85,9 @@ struct FakeFactory {
     panic_on_build: bool,
     /// Counter incremented every time the factory builds.
     build_count: &'static Mutex<u32>,
+    /// Optional log shared with the `FakeSubsystem` it builds.
+    prepare_log: Option<PrepareLog>,
+    pass_log: Option<PassLog>,
 }
 
 impl SubsystemFactory for FakeFactory {
@@ -90,6 +108,8 @@ impl SubsystemFactory for FakeFactory {
             name: self.name,
             stages: self.stages.clone(),
             enabled: true,
+            prepare_log: self.prepare_log.clone(),
+            pass_log: self.pass_log.clone(),
         }))
     }
 }
@@ -113,6 +133,8 @@ fn disabled_subsystem_is_not_constructed() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: true, // Should never run.
             build_count: &BUILDS,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu)
         .expect("build should succeed without invoking the disabled factory");
@@ -138,6 +160,8 @@ fn enabled_subsystem_is_constructed() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &BUILDS,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu)
         .expect("build should succeed");
@@ -179,6 +203,8 @@ fn passes_run_in_pass_stage_order() {
             stages: vec![PassStage::PostProcess],
             panic_on_build: false,
             build_count: &T,
+            prepare_log: None,
+            pass_log: None,
         }))
         // Backdrop registers SkyBackdrop.
         .with_factory(Box::new(FakeFactory {
@@ -187,6 +213,8 @@ fn passes_run_in_pass_stage_order() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &B,
+            prepare_log: None,
+            pass_log: None,
         }))
         // Atmosphere registers Compute then SkyBackdrop.
         .with_factory(Box::new(FakeFactory {
@@ -195,6 +223,8 @@ fn passes_run_in_pass_stage_order() {
             stages: vec![PassStage::Compute, PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &A,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu)
         .expect("build");
@@ -237,6 +267,8 @@ fn prepare_runs_in_pass_stage_order() {
             stages: vec![PassStage::PostProcess],
             panic_on_build: false,
             build_count: &T,
+            prepare_log: None,
+            pass_log: None,
         }))
         .with_factory(Box::new(FakeFactory {
             name: "backdrop",
@@ -244,6 +276,8 @@ fn prepare_runs_in_pass_stage_order() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &B,
+            prepare_log: None,
+            pass_log: None,
         }))
         .with_factory(Box::new(FakeFactory {
             name: "atmosphere",
@@ -251,6 +285,8 @@ fn prepare_runs_in_pass_stage_order() {
             stages: vec![PassStage::Compute, PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &A,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu)
         .expect("build");
@@ -286,6 +322,8 @@ fn reconfigure_disables_dropped_subsystem_and_enables_new() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &B,
+            prepare_log: None,
+            pass_log: None,
         }))
         .with_factory(Box::new(FakeFactory {
             name: "tint",
@@ -293,6 +331,8 @@ fn reconfigure_disables_dropped_subsystem_and_enables_new() {
             stages: vec![PassStage::PostProcess],
             panic_on_build: false,
             build_count: &T,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu)
         .expect("initial build");
@@ -328,6 +368,8 @@ fn duplicate_factory_is_rejected() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &B1,
+            prepare_log: None,
+            pass_log: None,
         }))
         .with_factory(Box::new(FakeFactory {
             name: "backdrop",
@@ -335,6 +377,8 @@ fn duplicate_factory_is_rejected() {
             stages: vec![PassStage::SkyBackdrop],
             panic_on_build: false,
             build_count: &B2,
+            prepare_log: None,
+            pass_log: None,
         }))
         .build(&config, gpu);
 
@@ -343,4 +387,148 @@ fn duplicate_factory_is_rejected() {
         Err(e) => e,
     };
     assert!(format!("{err}").contains("duplicate"));
+}
+
+#[test]
+fn frame_actually_calls_prepare_and_passes_in_pass_stage_order() {
+    // Behavioural test: drive `App::frame` end-to-end on a headless GPU and
+    // assert that `prepare()` calls and pass-closure invocations happen in
+    // the order PassStage prescribes.
+    let Some(gpu) = gpu() else { return };
+
+    static B: Mutex<u32> = Mutex::new(0);
+    static A: Mutex<u32> = Mutex::new(0);
+    static T: Mutex<u32> = Mutex::new(0);
+    *B.lock().unwrap() = 0;
+    *A.lock().unwrap() = 0;
+    *T.lock().unwrap() = 0;
+
+    let prepare_log: PrepareLog = Arc::new(Mutex::new(Vec::new()));
+    let pass_log: PassLog = Arc::new(Mutex::new(Vec::new()));
+
+    let mut config = Config::default();
+    config.render.subsystems.backdrop = true;
+    config.render.subsystems.tint = true;
+    config.render.subsystems.atmosphere = true;
+    config.render.subsystems.ground = false;
+    config.render.subsystems.clouds = false;
+    config.render.subsystems.precipitation = false;
+    config.render.subsystems.wet_surface = false;
+
+    let mut app = AppBuilder::new()
+        // Register in REVERSE pass-stage order.
+        .with_factory(Box::new(FakeFactory {
+            name: "tint",
+            flag: |c| c.render.subsystems.tint,
+            stages: vec![PassStage::PostProcess],
+            panic_on_build: false,
+            build_count: &T,
+            prepare_log: Some(prepare_log.clone()),
+            pass_log: Some(pass_log.clone()),
+        }))
+        .with_factory(Box::new(FakeFactory {
+            name: "backdrop",
+            flag: |c| c.render.subsystems.backdrop,
+            stages: vec![PassStage::SkyBackdrop],
+            panic_on_build: false,
+            build_count: &B,
+            prepare_log: Some(prepare_log.clone()),
+            pass_log: Some(pass_log.clone()),
+        }))
+        .with_factory(Box::new(FakeFactory {
+            name: "atmosphere",
+            flag: |c| c.render.subsystems.atmosphere,
+            stages: vec![PassStage::Compute, PassStage::SkyBackdrop],
+            panic_on_build: false,
+            build_count: &A,
+            prepare_log: Some(prepare_log.clone()),
+            pass_log: Some(pass_log.clone()),
+        }))
+        .build(&config, gpu)
+        .expect("build");
+
+    // Build a tiny RenderContext + PrepareContext to drive frame().
+    let hdr = ps_core::HdrFramebufferImpl::new(gpu, (4, 4));
+    let stub = build_stub_bind_group(&gpu.device);
+    let world = ps_core::WorldState;
+    let weather = ps_core::WeatherState;
+    let frame_uniforms = ps_core::FrameUniforms::default();
+    let mut prepare_ctx = PrepareContext {
+        device: &gpu.device,
+        queue: &gpu.queue,
+        world: &world,
+        weather: &weather,
+        frame_uniforms: &frame_uniforms,
+        atmosphere_luts: None,
+        dt_seconds: 1.0 / 60.0,
+    };
+    let render_ctx = ps_core::RenderContext {
+        device: &gpu.device,
+        queue: &gpu.queue,
+        framebuffer: &hdr,
+        frame_bind_group: &stub,
+        world_bind_group: &stub,
+        luts_bind_group: None,
+        frame_uniforms: &frame_uniforms,
+    };
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test-frame"),
+        });
+    app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
+    gpu.queue.submit([encoder.finish()]);
+
+    // Atmosphere (min stage Compute) prepares first; backdrop next; tint last.
+    assert_eq!(
+        *prepare_log.lock().unwrap(),
+        vec!["atmosphere", "backdrop", "tint"],
+        "prepare() must run in min-PassStage order across subsystems"
+    );
+
+    // Pass closures: Compute(atmosphere) → SkyBackdrop(atmosphere) →
+    // SkyBackdrop(backdrop) → PostProcess(tint). Within a stage, registration
+    // order is preserved. Atmosphere registered AFTER backdrop, but
+    // atmosphere's SkyBackdrop pass is registered as the SECOND of its two
+    // passes — both subsystems contribute SkyBackdrop, and registration order
+    // matters: backdrop was registered before atmosphere as a factory, so
+    // backdrop's SkyBackdrop pass appears first within that stage.
+    let log = pass_log.lock().unwrap().clone();
+    let stages: Vec<PassStage> = log.iter().map(|(_, s)| *s).collect();
+    assert!(
+        stages.windows(2).all(|w| w[0] <= w[1]),
+        "pass closures must run in PassStage order: {stages:?}"
+    );
+    assert_eq!(stages.first(), Some(&PassStage::Compute));
+    assert_eq!(stages.last(), Some(&PassStage::PostProcess));
+}
+
+fn build_stub_bind_group(device: &wgpu::Device) -> wgpu::BindGroup {
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("stub-uniform"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: false,
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("stub-bgl"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("stub-bg"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buf.as_entire_binding(),
+        }],
+    })
 }
