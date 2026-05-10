@@ -17,6 +17,16 @@ pub const COMMON_UNIFORMS_WGSL: &str = include_str!("../../../shaders/common/uni
 /// scope (i.e. include [`COMMON_UNIFORMS_WGSL`] and bind group 0 first).
 pub const COMMON_MATH_WGSL: &str = include_str!("../../../shaders/common/math.wgsl");
 
+/// Atmosphere helpers (density profiles, phase functions, ray-planet
+/// intersection, transmittance LUT mapping, optical-depth integrator).
+/// Requires `world: WorldUniforms` to be in scope.
+pub const COMMON_ATMOSPHERE_WGSL: &str = include_str!("../../../shaders/common/atmosphere.wgsl");
+
+/// LUT sampling helpers (`sample_transmittance_lut`). Requires
+/// `transmittance_lut` + `lut_sampler` bindings to be in scope.
+pub const COMMON_ATMOSPHERE_LUT_SAMPLING_WGSL: &str =
+    include_str!("../../../shaders/common/atmosphere_lut_sampling.wgsl");
+
 /// Concatenate `parts` with newline separators. Convenience for the
 /// "string-prepend then compile" pattern.
 pub fn compose(parts: &[&str]) -> String {

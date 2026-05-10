@@ -2030,7 +2030,10 @@ name = "ps-atmosphere"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "ps-core",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]

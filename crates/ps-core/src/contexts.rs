@@ -23,12 +23,9 @@ pub use crate::weather::WeatherState;
 /// `PrepareContext` continues to refer to it from one place.
 pub use crate::world::WorldState;
 
-/// Atmosphere LUTs (transmittance, multi-scatter, sky-view, aerial perspective)
-/// shared via bind group 3.
-///
-/// TODO: Phase 5 owns the real definition.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct AtmosphereLuts;
+/// Atmosphere LUTs. Defined in [`crate::atmosphere_luts`]; re-exported
+/// here so `PrepareContext` continues to refer to it from one place.
+pub use crate::atmosphere_luts::AtmosphereLuts;
 
 /// Per-frame context handed to each subsystem's `prepare()` call.
 ///

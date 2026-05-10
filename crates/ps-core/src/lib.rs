@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod astro;
+pub mod atmosphere_luts;
 pub mod bind_groups;
 pub mod camera;
 pub mod config;
@@ -25,11 +26,15 @@ pub mod weather;
 pub mod world;
 
 pub use app::{App, AppBuilder, AppError, SubsystemFactory};
+pub use atmosphere_luts::{
+    atmosphere_lut_bind_group_layout, atmosphere_static_only_bind_group,
+    atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
+    atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts,
+};
 pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
 pub use config::{Config, ConfigError};
 pub use contexts::{
-    AtmosphereLuts, FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext,
-    RenderContext,
+    FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
 };
 pub use framebuffer::HdrFramebufferImpl;
 pub use hot_reload::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};

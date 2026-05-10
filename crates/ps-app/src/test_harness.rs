@@ -18,6 +18,7 @@ use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
+use std::sync::Arc;
 
 use crate::main_helpers::encode_frame_clear;
 
@@ -97,26 +98,35 @@ pub struct HeadlessApp {
     tonemap_mode: TonemapMode,
     /// Most-recent config (kept so resize / reconfigure don't lose values).
     last_config: Config,
+    /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
+    /// when atmosphere is disabled in config.
+    atmosphere_luts: Option<Arc<ps_core::AtmosphereLuts>>,
 }
 
 impl HeadlessApp {
     /// Build with the same factory set the binary registers.
     pub fn new(gpu: &GpuContext, config: &Config, setup: TestSetup) -> Result<Self> {
+        let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
         let app = AppBuilder::new()
             .with_factory(Box::new(BackdropFactory))
-            .with_factory(Box::new(AtmosphereFactory))
+            .with_factory(Box::new(atmosphere_factory))
             .with_factory(Box::new(GroundFactory))
             .with_factory(Box::new(CloudsFactory))
             .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))
             .build(config, gpu)
             .context("AppBuilder::build")?;
+        let atmosphere_luts = luts_cell
+            .lock()
+            .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
+            .clone();
         Ok(Self {
             setup,
             app,
             ev100: config.render.ev100,
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
             last_config: config.clone(),
+            atmosphere_luts,
         })
     }
 
@@ -139,6 +149,11 @@ impl HeadlessApp {
         let camera = ps_core::camera::FlyCamera::default();
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(aspect);
+        // World state for tests defaults to J2000.0 noon at the equator —
+        // gives a sun overhead, useful for sky tests.
+        let world = ps_core::WorldState::default();
+        let weather = ps_core::WeatherState::stub_for_tests(gpu);
+
         let mut frame_uniforms = FrameUniforms {
             camera_position_world: Vec4::ZERO,
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
@@ -149,6 +164,16 @@ impl HeadlessApp {
             ..FrameUniforms::default()
         };
         frame_uniforms.set_matrices(view, proj);
+        frame_uniforms.set_sun(
+            world.sun_direction_world,
+            self.last_config
+                .render
+                .atmosphere
+                .sun_angular_radius_deg
+                .to_radians(),
+            glam::Vec3::splat(world.toa_illuminance_lux),
+            world.toa_illuminance_lux,
+        );
 
         let mut encoder = gpu
             .device
@@ -163,20 +188,19 @@ impl HeadlessApp {
             !self.last_config.render.subsystems.backdrop,
             self.last_config.render.clear_color,
         );
-
-        let world = ps_core::WorldState::default();
-        let weather = ps_core::WeatherState::stub_for_tests(gpu);
         // Phase 4: upload bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
         self.setup
             .bindings
             .write(&gpu.queue, &frame_uniforms, &weather.atmosphere);
+        let luts_ref = self.atmosphere_luts.as_deref();
+        let luts_bind_group = luts_ref.map(|l| &l.bind_group);
         let mut prepare_ctx = PrepareContext {
             device: &gpu.device,
             queue: &gpu.queue,
             world: &world,
             weather: &weather,
             frame_uniforms: &frame_uniforms,
-            atmosphere_luts: None,
+            atmosphere_luts: luts_ref,
             dt_seconds: 1.0 / 60.0,
         };
         let render_ctx = RenderContext {
@@ -185,7 +209,7 @@ impl HeadlessApp {
             framebuffer: &self.setup.hdr,
             frame_bind_group: &self.setup.bindings.frame_bind_group,
             world_bind_group: &self.setup.bindings.world_bind_group,
-            luts_bind_group: None,
+            luts_bind_group,
             frame_uniforms: &frame_uniforms,
         };
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);

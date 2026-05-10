@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
-    RegisteredPass, RenderSubsystem, SubsystemFactory,
+    atmosphere_lut_bind_group_layout, frame_bind_group_layout, Config, GpuContext, HdrFramebuffer,
+    PassStage, PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
 };
 
 const SHADER_SRC: &str = include_str!("../../../shaders/ground/checker.wgsl");
@@ -55,9 +55,12 @@ impl CheckerGround {
         });
 
         let frame_layout = frame_bind_group_layout(device);
+        let lut_layout = atmosphere_lut_bind_group_layout(device);
+        // Phase 5: ground samples the AP LUT at group 3. Skip groups 1
+        // and 2 (we don't bind them) by passing None.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ground-pl"),
-            bind_group_layouts: &[Some(&frame_layout)],
+            bind_group_layouts: &[Some(&frame_layout), None, None, Some(&lut_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -198,8 +201,18 @@ impl RenderSubsystem for GroundSubsystem {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                let Some(luts_bg) = ctx.luts_bind_group else {
+                    // Atmosphere subsystem is disabled — skip the ground
+                    // draw rather than attempting it without the AP LUT
+                    // (the shader would fail). When you want a ground
+                    // pass without atmosphere, swap to the Phase 0
+                    // shader variant or keep atmosphere enabled with
+                    // multi_scattering=false.
+                    return;
+                };
                 pass.set_pipeline(&inner.pipeline);
                 pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(3, luts_bg, &[]);
                 pass.set_vertex_buffer(0, inner.vertex_buf.slice(..));
                 pass.draw(0..6, 0..1);
             }),

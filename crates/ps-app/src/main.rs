@@ -129,6 +129,9 @@ struct RunState {
     tonemap: Tonemap,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
     app: App,
+    /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
+    /// when `[render.subsystems].atmosphere = false`.
+    atmosphere_luts: Option<std::sync::Arc<ps_core::AtmosphereLuts>>,
 
     camera: ps_core::camera::FlyCamera,
     keys: KeyState,
@@ -250,7 +253,11 @@ impl RunState {
         let bindings = ps_core::FrameWorldBindings::new(&windowed.gpu.device);
         let tonemap = Tonemap::new(&windowed.gpu.device, &hdr, windowed.surface_config.format);
 
-        let app = build_app(config, &windowed.gpu)?;
+        let (app, atmosphere_luts_cell) = build_app(config, &windowed.gpu)?;
+        let atmosphere_luts = atmosphere_luts_cell
+            .lock()
+            .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
+            .clone();
 
         let camera = ps_core::camera::FlyCamera {
             position: Vec3::new(0.0, 1.7, 5.0),
@@ -304,6 +311,7 @@ impl RunState {
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
             world,
             weather,
+            atmosphere_luts,
             start: now,
             last_frame: now,
             frame_index: 0,
@@ -591,13 +599,15 @@ impl RunState {
         );
 
         // Drive the App.
+        let luts_ref = self.atmosphere_luts.as_deref();
+        let luts_bind_group = luts_ref.map(|l| &l.bind_group);
         let mut prepare_ctx = PrepareContext {
             device: &self.windowed_gpu.gpu.device,
             queue: &self.windowed_gpu.gpu.queue,
             world: &self.world,
             weather: &self.weather,
             frame_uniforms: &frame_uniforms,
-            atmosphere_luts: None,
+            atmosphere_luts: luts_ref,
             dt_seconds: dt,
         };
         let render_ctx = RenderContext {
@@ -606,7 +616,7 @@ impl RunState {
             framebuffer: &self.hdr,
             frame_bind_group: &self.bindings.frame_bind_group,
             world_bind_group: &self.bindings.world_bind_group,
-            luts_bind_group: None,
+            luts_bind_group,
             frame_uniforms: &frame_uniforms,
         };
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
@@ -637,15 +647,23 @@ impl RunState {
     }
 }
 
-fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<App> {
+/// Cell into which `AtmosphereFactory` deposits its `AtmosphereLuts`
+/// handle once the subsystem is constructed.
+type AtmosphereLutsCell =
+    std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<ps_core::AtmosphereLuts>>>>;
+
+/// Build the app. Returns the `App` plus the LUTs cell published by
+/// `AtmosphereFactory` (Some after build if atmosphere is enabled).
+fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<(App, AtmosphereLutsCell)> {
+    let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
-        .with_factory(Box::new(AtmosphereFactory))
+        .with_factory(Box::new(atmosphere_factory))
         .with_factory(Box::new(GroundFactory))
         .with_factory(Box::new(CloudsFactory))
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
-    Ok(app)
+    Ok((app, luts_cell))
 }

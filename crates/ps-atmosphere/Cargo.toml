@@ -9,4 +9,7 @@ description = "PedalSky atmosphere subsystem (Phase 5: Hillaire 2020 sky/atmosph
 
 [dependencies]
 ps-core.workspace = true
+wgpu.workspace    = true
+bytemuck.workspace = true
 anyhow.workspace  = true
+tracing.workspace = true
