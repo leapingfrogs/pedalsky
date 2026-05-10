@@ -100,6 +100,38 @@ fn midday_cumulus_changes_image_vs_clear_sky() {
     );
 }
 
+#[test]
+fn cumulus_produces_bright_cloud_pixels() {
+    let Some(gpu) = gpu() else { return };
+    let config = baseline_config();
+    let setup = TestSetup::new(gpu, &config, (128, 128));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new clouds");
+
+    // Pitch up high so the field of view passes through the cloud layer
+    // for a long enough horizontal distance to hit substantive density.
+    let camera = FlyCamera {
+        pitch: 60_f32.to_radians(),
+        ..FlyCamera::default()
+    };
+    let pixels = app.render_one_frame_with(gpu, camera);
+
+    // Find brightest R channel — clouds illuminated by the sun should
+    // show up as either R-dominant (red sun side) or near-white pixels
+    // depending on geometry. Simply max R works as a proxy.
+    let max_r = pixels.chunks_exact(4).map(|p| p[0]).max().unwrap_or(0);
+    let max_g = pixels.chunks_exact(4).map(|p| p[1]).max().unwrap_or(0);
+    let max_b = pixels.chunks_exact(4).map(|p| p[2]).max().unwrap_or(0);
+    eprintln!("cloudy max RGB = ({max_r}, {max_g}, {max_b})");
+
+    // We want cloud render contributing some non-trivial in-scatter.
+    // The clear-sky max R at this pitch is dim (~30); any cloud
+    // illumination should kick R above ~50.
+    assert!(
+        max_r > 40,
+        "expected cloud illumination to lift max R above 40 (got {max_r})"
+    );
+}
+
 fn average_rgb(pixels: &[u8]) -> [f32; 3] {
     let mut sum = [0u64; 3];
     let mut count = 0u64;

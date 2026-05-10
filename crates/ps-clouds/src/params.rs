@@ -71,7 +71,11 @@ impl Default for CloudParamsGpu {
             g_backward: -0.3,
 
             g_blend: 0.5,
-            detail_strength: 0.35,
+            // Schneider 2015 quotes 0.35 but the canonical remap formula
+            // wipes coverage<0.5 layers entirely. Keep low here so the
+            // default cumulus layer is visible; UI will expose this and
+            // power users will dial it up alongside coverage.
+            detail_strength: 0.05,
             curl_strength: 0.1,
             powder_strength: 1.0,
 
