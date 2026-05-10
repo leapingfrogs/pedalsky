@@ -2,18 +2,10 @@
 // shaded with a procedural checker. Phase 7 replaces this with a real PBR
 // ground + wet surface; this exists to give the camera something to fly
 // over while the rest of the engine comes online.
-
-struct FrameUniforms {
-    view: mat4x4<f32>,
-    proj: mat4x4<f32>,
-    view_proj: mat4x4<f32>,
-    camera_position_world: vec4<f32>,
-    viewport_size: vec4<f32>,
-    time_seconds: f32,
-    simulated_seconds: f32,
-    frame_index: u32,
-    ev100: f32,
-};
+//
+// Phase 4 §4.2: uses the engine-wide group-0 FrameUniforms binding. The
+// `FrameUniforms` struct declaration is prepended at runtime via
+// `ps_core::shaders::COMMON_UNIFORMS_WGSL` (see `ps-ground::lib.rs`).
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 

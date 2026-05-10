@@ -21,7 +21,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
 use ps_app::config_initial_utc;
-use ps_app::main_helpers::{build_stub_bind_group, encode_frame_clear};
+use ps_app::main_helpers::encode_frame_clear;
 use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
 use ps_clouds::CloudsFactory;
@@ -121,10 +121,10 @@ struct RunState {
     window: Arc<Window>,
     windowed_gpu: ps_core::gpu::WindowedGpu<'static>,
     hdr: HdrFramebufferImpl,
-    /// Stub bind groups used to fill `RenderContext::frame_bind_group` /
-    /// `world_bind_group`. Phase 4 replaces these with the real `FrameUniforms`
-    /// / `WorldUniforms` bind groups.
-    stub_bind_group: wgpu::BindGroup,
+    /// Phase 4 §4.2 — bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
+    /// Updated each frame from `frame_uniforms` and
+    /// `weather.atmosphere`.
+    bindings: ps_core::FrameWorldBindings,
 
     tonemap: Tonemap,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
@@ -247,7 +247,7 @@ impl RunState {
         .context("init_windowed")?;
 
         let hdr = HdrFramebufferImpl::new(&windowed.gpu, size);
-        let stub_bind_group = build_stub_bind_group(&windowed.gpu.device);
+        let bindings = ps_core::FrameWorldBindings::new(&windowed.gpu.device);
         let tonemap = Tonemap::new(&windowed.gpu.device, &hdr, windowed.surface_config.format);
 
         let app = build_app(config, &windowed.gpu)?;
@@ -293,7 +293,7 @@ impl RunState {
             window,
             windowed_gpu: windowed,
             hdr,
-            stub_bind_group,
+            bindings,
             tonemap,
             app,
             camera,
@@ -510,6 +510,13 @@ impl RunState {
 
         self.update_camera(dt);
 
+        // Phase 2: drive the world clock; Phase 3: refresh per-frame sun
+        // direction / illuminance on the live WeatherState (cheap; full
+        // re-synthesis happens only on hot-reload).
+        self.world.tick(dt as f64);
+        self.weather.sun_direction = self.world.sun_direction_world;
+        self.weather.sun_illuminance = glam::Vec3::splat(self.world.toa_illuminance_lux);
+
         let (w, h) = (
             self.windowed_gpu.surface_config.width,
             self.windowed_gpu.surface_config.height,
@@ -517,17 +524,36 @@ impl RunState {
         let aspect = w as f32 / h as f32;
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix(aspect);
-        let frame_uniforms = FrameUniforms {
-            view,
-            proj,
-            view_proj: proj * view,
-            camera_position_world: self.camera.position,
+        let mut frame_uniforms = FrameUniforms {
+            camera_position_world: Vec4::new(
+                self.camera.position.x,
+                self.camera.position.y,
+                self.camera.position.z,
+                0.0,
+            ),
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
             time_seconds: (now - self.start).as_secs_f32(),
-            simulated_seconds: 0.0,
+            simulated_seconds: self.world.clock.simulated_seconds() as f32,
             frame_index: self.frame_index,
             ev100: self.ev100,
+            ..FrameUniforms::default()
         };
+        frame_uniforms.set_matrices(view, proj);
+        // Sun angular radius from config (degrees → radians).
+        let sun_radius_rad = config.render.atmosphere.sun_angular_radius_deg.to_radians();
+        frame_uniforms.set_sun(
+            self.world.sun_direction_world,
+            sun_radius_rad,
+            self.weather.sun_illuminance,
+            self.world.toa_illuminance_lux,
+        );
+
+        // Upload the per-frame uniforms (groups 0 and 1).
+        self.bindings.write(
+            &self.windowed_gpu.gpu.queue,
+            &frame_uniforms,
+            &self.weather.atmosphere,
+        );
 
         let frame = match self.windowed_gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -565,15 +591,6 @@ impl RunState {
         );
 
         // Drive the App.
-        // Phase 2: drive the world clock from real wall-time dt (the
-        // simulated UTC, sun position, moon position update accordingly).
-        // `time_scale` and `paused` are wired through Phase 10 UI later.
-        self.world.tick(dt as f64);
-        // Phase 3: refresh the per-frame sun direction / illuminance on
-        // the live WeatherState (cheap; full re-synthesis happens only on
-        // hot-reload).
-        self.weather.sun_direction = self.world.sun_direction_world;
-        self.weather.sun_illuminance = glam::Vec3::splat(self.world.toa_illuminance_lux);
         let mut prepare_ctx = PrepareContext {
             device: &self.windowed_gpu.gpu.device,
             queue: &self.windowed_gpu.gpu.queue,
@@ -587,8 +604,8 @@ impl RunState {
             device: &self.windowed_gpu.gpu.device,
             queue: &self.windowed_gpu.gpu.queue,
             framebuffer: &self.hdr,
-            frame_bind_group: &self.stub_bind_group,
-            world_bind_group: &self.stub_bind_group,
+            frame_bind_group: &self.bindings.frame_bind_group,
+            world_bind_group: &self.bindings.world_bind_group,
             luts_bind_group: None,
             frame_uniforms: &frame_uniforms,
         };

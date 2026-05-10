@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, FrameUniformsGpu, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
+    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
     RegisteredPass, RenderSubsystem, SubsystemFactory,
 };
 
@@ -35,11 +35,7 @@ struct Vertex {
 /// kept public so tests / host code can build one directly.
 pub struct CheckerGround {
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
     vertex_buf: wgpu::Buffer,
-    /// Frame uniforms buffer. Written each `prepare()` call from
-    /// `ctx.frame_uniforms`.
-    pub frame_uniform_buf: wgpu::Buffer,
 }
 
 /// Stable subsystem name (matches `[render.subsystems].ground`).
@@ -48,27 +44,20 @@ pub const NAME: &str = "ground";
 impl CheckerGround {
     /// Build the pipeline + vertex buffer + uniform buffer.
     pub fn new(device: &wgpu::Device) -> Self {
+        // Phase 4: prepend the canonical `FrameUniforms` declaration
+        // from ps-core::shaders so the inline `frame: FrameUniforms`
+        // binding in this shader matches the engine-wide layout.
+        let composed =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, SHADER_SRC]);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ground/checker.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(composed.into()),
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ground-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let frame_layout = frame_bind_group_layout(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ground-pl"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&frame_layout)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -144,26 +133,9 @@ impl CheckerGround {
             .copy_from_slice(bytemuck::cast_slice(&vertices));
         vertex_buf.unmap();
 
-        let frame_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ground-frame-uniforms"),
-            size: std::mem::size_of::<FrameUniformsGpu>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ground-bg"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: frame_uniform_buf.as_entire_binding(),
-            }],
-        });
-
         Self {
             pipeline,
-            bind_group,
             vertex_buf,
-            frame_uniform_buf,
         }
     }
 }
@@ -191,13 +163,10 @@ impl RenderSubsystem for GroundSubsystem {
         "ground"
     }
 
-    fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        // Upload the latest frame uniforms.
-        ctx.queue.write_buffer(
-            &self.inner.frame_uniform_buf,
-            0,
-            bytemuck::bytes_of(&FrameUniformsGpu::from_cpu(ctx.frame_uniforms)),
-        );
+    fn prepare(&mut self, _ctx: &mut PrepareContext<'_>) {
+        // Phase 4: the host (ps-app) owns the canonical group-0 buffer
+        // and uploads `FrameUniforms` once per frame. Nothing for the
+        // ground subsystem to do here.
     }
 
     fn register_passes(&self) -> Vec<RegisteredPass> {
@@ -230,7 +199,7 @@ impl RenderSubsystem for GroundSubsystem {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&inner.pipeline);
-                pass.set_bind_group(0, &inner.bind_group, &[]);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                 pass.set_vertex_buffer(0, inner.vertex_buf.slice(..));
                 pass.draw(0..6, 0..1);
             }),

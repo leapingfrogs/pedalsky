@@ -2061,6 +2061,7 @@ dependencies = [
  "crossbeam-channel",
  "glam",
  "half",
+ "naga",
  "notify",
  "pollster",
  "serde",

@@ -45,6 +45,38 @@ fn config_with_ev0_passthrough() -> Config {
     c
 }
 
+/// Phase 4 §4.4 acceptance: empty render graph still presents a valid
+/// frame. With every subsystem disabled, ps-app's frame loop is just
+/// "clear → tone-map → present" and the tone-mapper output should equal
+/// the configured `[render].clear_color` (modulo the EV-0 passthrough).
+#[test]
+fn empty_render_graph_presents_clear_color() {
+    let Some(gpu) = gpu() else { return };
+
+    let mut config = config_with_ev0_passthrough();
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+    config.render.subsystems.ground = false;
+    config.render.clear_color = [0.7, 0.0, 0.3, 1.0];
+
+    let setup = TestSetup::new(gpu, &config, (64, 64));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    let pixels = app.render_one_frame(gpu);
+
+    let avg = average_rgb(&pixels);
+    eprintln!("empty graph average RGB = {avg:?}");
+    // Passthrough at EV0: linear * (1/1.2) → R ≈ 0.583, G ≈ 0, B ≈ 0.25.
+    assert!(
+        avg[0] > 0.45 && avg[0] < 0.7,
+        "expected R≈0.58 (= 0.7/1.2), got {avg:?}"
+    );
+    assert!(avg[1] < 0.05, "expected near-zero G, got {avg:?}");
+    assert!(
+        avg[2] > 0.15 && avg[2] < 0.35,
+        "expected B≈0.25 (= 0.3/1.2), got {avg:?}"
+    );
+}
+
 #[test]
 fn app_with_backdrop_renders_solid_color() {
     let Some(gpu) = gpu() else { return };

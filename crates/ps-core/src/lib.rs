@@ -9,19 +9,23 @@
 
 pub mod app;
 pub mod astro;
+pub mod bind_groups;
 pub mod camera;
 pub mod config;
 pub mod contexts;
+pub mod frame_uniforms;
 pub mod framebuffer;
 pub mod gpu;
 pub mod hot_reload;
 pub mod scene;
+pub mod shaders;
 pub mod subsystem;
 pub mod time;
 pub mod weather;
 pub mod world;
 
 pub use app::{App, AppBuilder, AppError, SubsystemFactory};
+pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
 pub use config::{Config, ConfigError};
 pub use contexts::{
     AtmosphereLuts, FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext,
@@ -34,5 +38,7 @@ pub use scene::{
     SceneError, Surface, Wetness,
 };
 pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
-pub use weather::{AtmosphereParams, CloudLayerGpu, SurfaceParams, WeatherState, WeatherTextures};
+pub use weather::{
+    AtmosphereParams, CloudLayerGpu, SurfaceParams, WeatherState, WeatherTextures, WorldUniformsGpu,
+};
 pub use world::WorldState;

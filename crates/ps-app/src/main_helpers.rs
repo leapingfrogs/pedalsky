@@ -45,36 +45,3 @@ pub fn encode_frame_clear(
         multiview_mask: None,
     });
 }
-
-/// Build a stub `BindGroup` for `RenderContext::frame_bind_group` /
-/// `world_bind_group`. Phase 4 replaces this with the real `FrameUniforms`
-/// / `WorldUniforms` bind groups.
-pub fn build_stub_bind_group(device: &wgpu::Device) -> wgpu::BindGroup {
-    let buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stub-uniform"),
-        size: 16,
-        usage: wgpu::BufferUsages::UNIFORM,
-        mapped_at_creation: false,
-    });
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("stub-bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    });
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("stub-bg"),
-        layout: &layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buf.as_entire_binding(),
-        }],
-    })
-}

@@ -4,6 +4,12 @@
 //! the type definitions live here so `PrepareContext` can borrow
 //! `&WeatherState` without `ps-core` depending on `ps-synthesis`. See
 //! plan §3.2.
+//!
+//! [`AtmosphereParams`] doubles as the Phase 4 §4.1 `WorldUniforms`
+//! payload — the WGSL declaration in `shaders/common/uniforms.wgsl`
+//! mirrors this struct under the name `WorldUniforms`. The
+//! [`WorldUniformsGpu`] type alias makes the bind-group-1 intent
+//! explicit at use sites.
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
@@ -76,6 +82,11 @@ impl Default for AtmosphereParams {
         }
     }
 }
+
+/// Bind-group-1 uniform payload (Plan §4.1 / §4.2). Currently identical
+/// to [`AtmosphereParams`]; once Phase 5 lands its dependent
+/// transmittance / multi-scatter LUTs the binding may grow.
+pub type WorldUniformsGpu = AtmosphereParams;
 
 /// Per-cloud-layer parameters consumed by Phase 6 (plan §3.2 + §6).
 #[repr(C)]

@@ -11,83 +11,9 @@
 pub use crate::framebuffer::HdrFramebufferImpl as HdrFramebuffer;
 pub use crate::gpu::GpuContext;
 
-/// Frame-level uniforms (CPU side) shared by every pass via bind group 0.
-///
-/// Phase 0 populates `view`/`proj`/`view_proj`/`viewport_size` for the ground
-/// shader. TODO: Phase 4 will widen this with sun direction, illuminance,
-/// frame index, EV100, etc., and lock down the std140 layout against
-/// `FrameUniformsGpu` via a naga linter pass.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct FrameUniforms {
-    /// View matrix (world → camera).
-    pub view: glam::Mat4,
-    /// Reverse-Z infinite-far perspective projection.
-    pub proj: glam::Mat4,
-    /// `proj * view`.
-    pub view_proj: glam::Mat4,
-    /// World-space camera position.
-    pub camera_position_world: glam::Vec3,
-    /// `(width, height, 1/width, 1/height)`.
-    pub viewport_size: glam::Vec4,
-    /// Wall-clock seconds since application start.
-    pub time_seconds: f32,
-    /// Pause-aware accumulated simulated seconds.
-    pub simulated_seconds: f32,
-    /// Monotonic frame counter.
-    pub frame_index: u32,
-    /// Photographic EV at ISO 100.
-    pub ev100: f32,
-}
-
-/// `#[repr(C)]` GPU-side mirror of [`FrameUniforms`].
-///
-/// This is the std140-compatible struct uploaded to bind group 0. Phase 4
-/// owns this fully; Phase 0 lays it out with just enough to drive the
-/// checker ground.
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct FrameUniformsGpu {
-    /// View matrix (column-major).
-    pub view: [[f32; 4]; 4],
-    /// Reverse-Z infinite-far perspective projection.
-    pub proj: [[f32; 4]; 4],
-    /// `proj * view`.
-    pub view_proj: [[f32; 4]; 4],
-    /// `xyz` = world-space camera position; `w` unused.
-    pub camera_position_world: [f32; 4],
-    /// `(width, height, 1/width, 1/height)`.
-    pub viewport_size: [f32; 4],
-    /// Wall-clock seconds since application start.
-    pub time_seconds: f32,
-    /// Pause-aware accumulated simulated seconds.
-    pub simulated_seconds: f32,
-    /// Monotonic frame counter.
-    pub frame_index: u32,
-    /// Photographic EV at ISO 100.
-    pub ev100: f32,
-}
-
-impl FrameUniformsGpu {
-    /// Pack a CPU [`FrameUniforms`] into the GPU layout.
-    pub fn from_cpu(u: &FrameUniforms) -> Self {
-        Self {
-            view: u.view.to_cols_array_2d(),
-            proj: u.proj.to_cols_array_2d(),
-            view_proj: u.view_proj.to_cols_array_2d(),
-            camera_position_world: [
-                u.camera_position_world.x,
-                u.camera_position_world.y,
-                u.camera_position_world.z,
-                0.0,
-            ],
-            viewport_size: u.viewport_size.to_array(),
-            time_seconds: u.time_seconds,
-            simulated_seconds: u.simulated_seconds,
-            frame_index: u.frame_index,
-            ev100: u.ev100,
-        }
-    }
-}
+/// Frame-level uniforms. Defined in [`crate::frame_uniforms`]; re-exported
+/// here so `PrepareContext` continues to refer to them from one place.
+pub use crate::frame_uniforms::{FrameUniforms, FrameUniformsGpu};
 
 /// Synthesised weather state. Defined in [`crate::weather`]; re-exported
 /// here so `PrepareContext` continues to refer to it from one place.

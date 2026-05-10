@@ -6,7 +6,7 @@
 //! not depend on this module.
 
 use anyhow::{Context, Result};
-use glam::{Vec3, Vec4};
+use glam::Vec4;
 use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
 use ps_clouds::CloudsFactory;
@@ -19,7 +19,7 @@ use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
 
-use crate::main_helpers::{build_stub_bind_group, encode_frame_clear};
+use crate::main_helpers::encode_frame_clear;
 
 /// Per-test GPU resources owned outside [`HeadlessApp`] so they can be
 /// constructed once and reused across `render_one_frame()` calls.
@@ -34,9 +34,8 @@ pub struct TestSetup {
     pub staging: wgpu::Buffer,
     /// Tone-map pass writing into `output_view`.
     pub tonemap: Tonemap,
-    /// Stub bind group for `RenderContext::frame_bind_group` /
-    /// `world_bind_group` (Phase 1 placeholder).
-    pub stub_bind_group: wgpu::BindGroup,
+    /// Phase 4 §4.2 — bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
+    pub bindings: ps_core::FrameWorldBindings,
     /// Pixel size.
     pub size: (u32, u32),
     /// Padded bytes-per-row (must satisfy COPY_BYTES_PER_ROW_ALIGNMENT).
@@ -74,7 +73,7 @@ impl TestSetup {
             mapped_at_creation: false,
         });
         let tonemap = Tonemap::new(&gpu.device, &hdr, wgpu::TextureFormat::Rgba8Unorm);
-        let stub_bind_group = build_stub_bind_group(&gpu.device);
+        let bindings = ps_core::FrameWorldBindings::new(&gpu.device);
 
         Self {
             hdr,
@@ -82,7 +81,7 @@ impl TestSetup {
             output_view,
             staging,
             tonemap,
-            stub_bind_group,
+            bindings,
             size: (w, h),
             padded_bytes_per_row,
         }
@@ -140,17 +139,16 @@ impl HeadlessApp {
         let camera = ps_core::camera::FlyCamera::default();
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(aspect);
-        let frame_uniforms = FrameUniforms {
-            view,
-            proj,
-            view_proj: proj * view,
-            camera_position_world: Vec3::ZERO,
+        let mut frame_uniforms = FrameUniforms {
+            camera_position_world: Vec4::ZERO,
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
             time_seconds: 0.0,
             simulated_seconds: 0.0,
             frame_index: 0,
             ev100: self.ev100,
+            ..FrameUniforms::default()
         };
+        frame_uniforms.set_matrices(view, proj);
 
         let mut encoder = gpu
             .device
@@ -168,6 +166,10 @@ impl HeadlessApp {
 
         let world = ps_core::WorldState::default();
         let weather = ps_core::WeatherState::stub_for_tests(gpu);
+        // Phase 4: upload bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
+        self.setup
+            .bindings
+            .write(&gpu.queue, &frame_uniforms, &weather.atmosphere);
         let mut prepare_ctx = PrepareContext {
             device: &gpu.device,
             queue: &gpu.queue,
@@ -181,8 +183,8 @@ impl HeadlessApp {
             device: &gpu.device,
             queue: &gpu.queue,
             framebuffer: &self.setup.hdr,
-            frame_bind_group: &self.setup.stub_bind_group,
-            world_bind_group: &self.setup.stub_bind_group,
+            frame_bind_group: &self.setup.bindings.frame_bind_group,
+            world_bind_group: &self.setup.bindings.world_bind_group,
             luts_bind_group: None,
             frame_uniforms: &frame_uniforms,
         };
