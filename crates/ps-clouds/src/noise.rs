@@ -52,10 +52,10 @@ pub struct CloudNoise {
     pub sampler: wgpu::Sampler,
     /// Nearest sampler used by `textureLoad` for blue-noise (kept for symmetry).
     pub nearest_sampler: wgpu::Sampler,
-    /// Group-2 bind-group layout.
+    /// Group-2 bind-group layout (textures + samplers + uniforms). Owned
+    /// here so the same layout is reused by [`CloudsSubsystem`] when it
+    /// builds the bind group with the cloud uniforms.
     pub layout: wgpu::BindGroupLayout,
-    /// Group-2 bind group with all four views and the two samplers.
-    pub bind_group: wgpu::BindGroup,
 }
 
 impl CloudNoise {
@@ -182,36 +182,6 @@ impl CloudNoise {
         });
 
         let layout = noise_bind_group_layout(device);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("clouds-noise-bg"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&base_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&detail_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&curl_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&blue_noise_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&nearest_sampler),
-                },
-            ],
-        });
 
         Self {
             base,
@@ -225,7 +195,6 @@ impl CloudNoise {
             sampler,
             nearest_sampler,
             layout,
-            bind_group,
         }
     }
 }
@@ -389,6 +358,11 @@ fn bake_2d(
 /// 3 — blue noise tile  (texture_2d<f32>, sampled via textureLoad)
 /// 4 — linear-repeat sampler
 /// 5 — nearest-repeat sampler
+///
+/// Bindings 6 and 7 (CloudParams uniform + CloudLayerGpu storage) are
+/// declared by the march pipeline's overlay layout in
+/// [`crate::pipeline`]; tests that read back the noise textures use only
+/// the 0..=5 prefix layout returned by [`noise_only_bind_group_layout`].
 pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     let texture_3d = wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -406,7 +380,7 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
         multisampled: false,
     };
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("clouds-noise-bgl"),
+        label: Some("clouds-data-bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -442,6 +416,26 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 binding: 5,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
         ],

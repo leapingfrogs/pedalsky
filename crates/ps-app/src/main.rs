@@ -707,11 +707,12 @@ type AtmosphereLutsCell =
 /// `AtmosphereFactory` (Some after build if atmosphere is enabled).
 fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<(App, AtmosphereLutsCell)> {
     let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
+    let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
         .with_factory(Box::new(atmosphere_factory))
         .with_factory(Box::new(GroundFactory))
-        .with_factory(Box::new(CloudsFactory))
+        .with_factory(Box::new(clouds_factory))
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
         .build(config, gpu)
