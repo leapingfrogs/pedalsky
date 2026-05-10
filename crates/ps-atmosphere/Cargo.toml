@@ -1,0 +1,12 @@
+[package]
+name = "ps-atmosphere"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky atmosphere subsystem (Phase 5: Hillaire 2020 sky/atmosphere)"
+
+[dependencies]
+ps-core.workspace = true
+anyhow.workspace  = true

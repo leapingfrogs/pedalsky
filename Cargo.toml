@@ -2,8 +2,13 @@
 resolver = "2"
 members = [
     "crates/ps-core",
-    "crates/ps-postprocess",
+    "crates/ps-synthesis",
+    "crates/ps-atmosphere",
+    "crates/ps-clouds",
     "crates/ps-ground",
+    "crates/ps-precip",
+    "crates/ps-postprocess",
+    "crates/ps-ui",
     "crates/ps-backdrop",
     "crates/ps-tint",
     "crates/ps-app",
@@ -52,8 +57,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Local crates
 ps-core        = { path = "crates/ps-core" }
-ps-postprocess = { path = "crates/ps-postprocess" }
+ps-synthesis   = { path = "crates/ps-synthesis" }
+ps-atmosphere  = { path = "crates/ps-atmosphere" }
+ps-clouds      = { path = "crates/ps-clouds" }
 ps-ground      = { path = "crates/ps-ground" }
+ps-precip      = { path = "crates/ps-precip" }
+ps-postprocess = { path = "crates/ps-postprocess" }
+ps-ui          = { path = "crates/ps-ui" }
 ps-backdrop    = { path = "crates/ps-backdrop" }
 ps-tint        = { path = "crates/ps-tint" }
 

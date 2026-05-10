@@ -103,7 +103,11 @@ impl SubsystemFactory for FakeFactory {
         _gpu: &GpuContext,
     ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         *self.build_count.lock().unwrap() += 1;
-        assert!(!self.panic_on_build, "factory '{}' was not supposed to build", self.name);
+        assert!(
+            !self.panic_on_build,
+            "factory '{}' was not supposed to build",
+            self.name
+        );
         Ok(Box::new(FakeSubsystem {
             name: self.name,
             stages: self.stages.clone(),
@@ -233,8 +237,10 @@ fn passes_run_in_pass_stage_order() {
     // Sorted: Compute(atm), SkyBackdrop(backdrop or atm — registration order),
     // SkyBackdrop, PostProcess(tint).
     assert_eq!(stages.len(), 4);
-    assert!(stages[0] <= stages[1] && stages[1] <= stages[2] && stages[2] <= stages[3],
-            "stages must be sorted: {stages:?}");
+    assert!(
+        stages[0] <= stages[1] && stages[1] <= stages[2] && stages[2] <= stages[3],
+        "stages must be sorted: {stages:?}"
+    );
     assert_eq!(stages[0], PassStage::Compute);
     assert_eq!(stages[3], PassStage::PostProcess);
 }
@@ -294,7 +300,10 @@ fn prepare_runs_in_pass_stage_order() {
     // Atmosphere has min stage Compute (lowest). Backdrop has min stage
     // SkyBackdrop. Tint has min stage PostProcess. So the prepare order
     // must be: atmosphere, backdrop, tint.
-    assert_eq!(app.prepare_order_names(), vec!["atmosphere", "backdrop", "tint"]);
+    assert_eq!(
+        app.prepare_order_names(),
+        vec!["atmosphere", "backdrop", "tint"]
+    );
 }
 
 #[test]

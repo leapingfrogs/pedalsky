@@ -1,0 +1,12 @@
+[package]
+name = "ps-precip"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky precipitation subsystem (Phase 8: rain / snow / surface ripples)"
+
+[dependencies]
+ps-core.workspace = true
+anyhow.workspace  = true

@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass,
-    RenderSubsystem, SubsystemFactory,
+    Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
+    SubsystemFactory,
 };
 
 const SHADER_SRC: &str = include_str!("../../../shaders/tint/multiply.wgsl");
@@ -279,7 +279,10 @@ impl RenderSubsystem for TintSubsystem {
 
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         let [r, g, b] = config.render.tint.multiplier;
-        *self.multiplier.lock().expect("tint multiplier lock poisoned") = [r, g, b];
+        *self
+            .multiplier
+            .lock()
+            .expect("tint multiplier lock poisoned") = [r, g, b];
         Ok(())
     }
 
@@ -298,11 +301,7 @@ impl SubsystemFactory for TintFactory {
     fn name(&self) -> &'static str {
         "tint"
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(TintSubsystem::new(config, gpu)))
     }
 }

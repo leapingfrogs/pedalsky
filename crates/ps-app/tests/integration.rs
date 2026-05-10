@@ -35,8 +35,9 @@ fn config_with_ev0_passthrough() -> Config {
     let mut c = Config::default();
     c.render.ev100 = 0.0;
     c.render.tone_mapper = "Passthrough".into();
-    // Keep only backdrop + ground + tint factories relevant; disable the rest
-    // so AppBuilder doesn't fail looking for unregistered factories.
+    // Disable subsystems whose register_passes() is currently a no-op
+    // (atmosphere, clouds, precipitation are Phase 5/6/8 stubs). Leaving
+    // them enabled is harmless but logs irrelevant constructions.
     c.render.subsystems.atmosphere = false;
     c.render.subsystems.clouds = false;
     c.render.subsystems.precipitation = false;
@@ -128,10 +129,11 @@ fn pedalsky_toml_at_workspace_root_boots_the_app() {
 
     let path = workspace_root().join("pedalsky.toml");
     let mut config = Config::load(&path).expect("workspace pedalsky.toml should parse");
-    config.validate().expect("workspace pedalsky.toml should validate");
+    config
+        .validate()
+        .expect("workspace pedalsky.toml should validate");
 
-    // Disable subsystems whose factories aren't registered in the test
-    // harness (atmosphere, clouds, precip, wet_surface).
+    // Disable Phase 5/6/8 stubs whose passes are no-ops anyway.
     config.render.subsystems.atmosphere = false;
     config.render.subsystems.clouds = false;
     config.render.subsystems.precipitation = false;

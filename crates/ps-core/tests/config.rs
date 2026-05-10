@@ -17,7 +17,10 @@ fn pedalsky_toml_loads_unchanged() {
     cfg.validate().expect("pedalsky.toml should validate");
     assert_eq!(cfg.window.title, "PedalSky");
     // Demo subsystems are present in the schema and default to backdrop=true / tint=false.
-    assert!(cfg.render.subsystems.backdrop, "backdrop default should be true");
+    assert!(
+        cfg.render.subsystems.backdrop,
+        "backdrop default should be true"
+    );
     assert!(!cfg.render.subsystems.tint, "tint default should be false");
 }
 
@@ -57,7 +60,9 @@ fn latitude_out_of_range_is_rejected() {
 latitude_deg = 91.0
 "#;
     let cfg = Config::parse(toml).expect("syntactically valid");
-    let err = cfg.validate().expect_err("validate must reject out-of-range latitude");
+    let err = cfg
+        .validate()
+        .expect_err("validate must reject out-of-range latitude");
     let msg = format!("{err}");
     assert!(matches!(err, ConfigError::Invalid(_)));
     assert!(msg.contains("latitude_deg"), "{msg}");
@@ -89,4 +94,44 @@ fn paths_resolve_relative_to_workspace() {
         cfg.paths.weather,
         Path::new("scenes/broken_cumulus_afternoon.toml")
     );
+}
+
+#[test]
+fn validate_with_base_checks_scene_file_exists() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    // Build a config that points at a (non-existent) scene path.
+    let dir = tempdir().unwrap();
+    let toml = r#"
+[paths]
+weather = "scenes/nope.toml"
+"#;
+    let cfg = Config::parse(toml).expect("syntactically valid");
+    let err = cfg
+        .validate_with_base(Some(dir.path()))
+        .expect_err("missing scene file should fail");
+    assert!(format!("{err}").contains("nope.toml"), "{err}");
+
+    // Now create the file and confirm validate_with_base passes.
+    let scenes = dir.path().join("scenes");
+    fs::create_dir_all(&scenes).unwrap();
+    fs::write(
+        scenes.join("nope.toml"),
+        r#"
+schema_version = 1
+"#,
+    )
+    .unwrap();
+    cfg.validate_with_base(Some(dir.path()))
+        .expect("scene now exists; validation should pass");
+}
+
+#[test]
+fn validate_without_base_skips_file_check() {
+    let cfg = Config::default();
+    // No base → no file check; validate() should still succeed even though
+    // scenes/broken_cumulus_afternoon.toml may not exist relative to cwd.
+    cfg.validate()
+        .expect("validate() with no base must not consult the filesystem");
 }

@@ -64,29 +64,31 @@ impl HotReload {
         let raw_tx_for_watcher = raw_tx.clone();
         let tx_for_watcher = tx.clone();
 
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            match res {
-                Ok(event) => {
-                    if !is_relevant_event(&event.kind) {
-                        return;
-                    }
-                    for path in event.paths {
-                        // Use canonicalize-equivalent tail comparison: notify
-                        // sometimes reports the parent directory, which we
-                        // ignore. We classify by basename match.
-                        let kind = classify(&path, &config_path_for_closure, &scene_path_for_closure);
-                        if let Some(k) = kind {
-                            if let Err(e) = raw_tx_for_watcher.send((k, path)) {
-                                warn!("watcher channel send failed: {e}");
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                match res {
+                    Ok(event) => {
+                        if !is_relevant_event(&event.kind) {
+                            return;
+                        }
+                        for path in event.paths {
+                            // Use canonicalize-equivalent tail comparison: notify
+                            // sometimes reports the parent directory, which we
+                            // ignore. We classify by basename match.
+                            let kind =
+                                classify(&path, &config_path_for_closure, &scene_path_for_closure);
+                            if let Some(k) = kind {
+                                if let Err(e) = raw_tx_for_watcher.send((k, path)) {
+                                    warn!("watcher channel send failed: {e}");
+                                }
                             }
                         }
                     }
+                    Err(err) => {
+                        let _ = tx_for_watcher.send(WatchEvent::Error(err.to_string()));
+                    }
                 }
-                Err(err) => {
-                    let _ = tx_for_watcher.send(WatchEvent::Error(err.to_string()));
-                }
-            }
-        })?;
+            })?;
 
         // Watch the parent directories of each path. Some platforms (notably
         // Windows) report renames better when the parent dir is watched.
@@ -192,8 +194,13 @@ fn debounce_loop(
     }
 
     loop {
-        if *stop.lock().unwrap() {
-            break;
+        // Treat a poisoned stop-flag (a panicking thread holding the lock) as
+        // an implicit stop signal — better than panicking the debounce thread
+        // too.
+        match stop.lock() {
+            Ok(g) if *g => break,
+            Ok(_) => {}
+            Err(_) => break,
         }
         // Compute the next deadline; if nothing pending, just block on raw_rx.
         let next_deadline = pending

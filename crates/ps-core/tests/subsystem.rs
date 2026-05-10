@@ -18,7 +18,12 @@ fn pass_stage_orders_correctly() {
         Overlay,
     ];
     for window in order.windows(2) {
-        assert!(window[0] < window[1], "{:?} must be < {:?}", window[0], window[1]);
+        assert!(
+            window[0] < window[1],
+            "{:?} must be < {:?}",
+            window[0],
+            window[1]
+        );
     }
     // sort_by_key relies on Ord; spot-check:
     let mut shuffled = vec![Overlay, Compute, Opaque, ToneMap, SkyBackdrop];
@@ -32,7 +37,10 @@ fn pass_stage_orders_correctly() {
 #[test]
 fn pass_stages_are_copy_clone_debug_eq_hash() {
     // Compile-time witness that the derive set on PassStage matches the spec.
-    fn assert_traits<T: Copy + Clone + std::fmt::Debug + PartialEq + Eq + PartialOrd + Ord + std::hash::Hash>() {}
+    fn assert_traits<
+        T: Copy + Clone + std::fmt::Debug + PartialEq + Eq + PartialOrd + Ord + std::hash::Hash,
+    >() {
+    }
     assert_traits::<PassStage>();
 }
 

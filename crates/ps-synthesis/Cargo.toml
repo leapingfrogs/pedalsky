@@ -1,0 +1,11 @@
+[package]
+name = "ps-synthesis"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky weather data synthesis (Phase 3): scene → GPU-ready WeatherState"
+
+[dependencies]
+ps-core.workspace = true

@@ -1541,15 +1541,26 @@ dependencies = [
  "bytemuck",
  "glam",
  "pollster",
+ "ps-atmosphere",
  "ps-backdrop",
+ "ps-clouds",
  "ps-core",
  "ps-ground",
  "ps-postprocess",
+ "ps-precip",
  "ps-tint",
  "tracing",
  "tracing-subscriber",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ps-atmosphere"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ps-core",
 ]
 
 [[package]]
@@ -1560,6 +1571,14 @@ dependencies = [
  "ps-core",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "ps-clouds"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ps-core",
 ]
 
 [[package]]
@@ -1606,6 +1625,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ps-precip"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ps-core",
+]
+
+[[package]]
+name = "ps-synthesis"
+version = "0.1.0"
+dependencies = [
+ "ps-core",
+]
+
+[[package]]
 name = "ps-tint"
 version = "0.1.0"
 dependencies = [
@@ -1614,6 +1648,13 @@ dependencies = [
  "ps-core",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "ps-ui"
+version = "0.1.0"
+dependencies = [
+ "ps-core",
 ]
 
 [[package]]

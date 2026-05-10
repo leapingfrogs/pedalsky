@@ -87,7 +87,9 @@ intensity_mm_per_h = 0.0
 strikes_per_min_per_km2 = 0.0
 "#;
     let scene = Scene::parse(toml).expect("syntactically valid");
-    let err = scene.validate().expect_err("overlapping layers must be rejected");
+    let err = scene
+        .validate()
+        .expect_err("overlapping layers must be rejected");
     match err {
         SceneError::OverlappingCloudLayers { a, b, .. } => {
             assert_eq!(a, 0);
@@ -144,6 +146,8 @@ strikes_per_min_per_km2 = 0.0
 "#,
     )
     .expect("syntax ok");
-    let err = scene.validate().expect_err("future schema version rejected");
+    let err = scene
+        .validate()
+        .expect_err("future schema version rejected");
     assert!(format!("{err}").contains("schema_version"));
 }

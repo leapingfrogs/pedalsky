@@ -1,0 +1,11 @@
+[package]
+name = "ps-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky UI overlay (Phase 10: egui)"
+
+[dependencies]
+ps-core.workspace = true

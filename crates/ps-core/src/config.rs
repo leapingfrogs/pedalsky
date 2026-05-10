@@ -416,10 +416,19 @@ impl Config {
         })
     }
 
-    /// Semantic validation: range checks on lat/lon, time consistency, file
-    /// existence checks where applicable. Path checks are advisory — they
-    /// only run if the path is non-empty.
+    /// Semantic validation: range checks on lat/lon, time consistency.
+    ///
+    /// Equivalent to [`Self::validate_with_base`] with `None`; skips
+    /// file-existence checks. Used by tests and code that doesn't have a
+    /// configured base directory.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_with_base(None)
+    }
+
+    /// Like [`Self::validate`] but additionally checks that file paths in
+    /// `[paths]` exist on disk, resolved against `base` (typically the
+    /// directory containing the config file).
+    pub fn validate_with_base(&self, base: Option<&Path>) -> Result<(), ConfigError> {
         if !(-90.0..=90.0).contains(&self.world.latitude_deg) {
             return Err(ConfigError::Invalid(format!(
                 "world.latitude_deg = {} (must be in [-90, 90])",
@@ -483,6 +492,25 @@ impl Config {
                 "render.clouds.reprojection = {:?} — only \"off\" is supported in v1",
                 self.render.clouds.reprojection
             )));
+        }
+        // File existence: only run if we have a base directory and the path
+        // is non-empty. Resolved relative to `base` (or used absolutely when
+        // already absolute).
+        if let Some(base) = base {
+            if !self.paths.weather.as_os_str().is_empty() {
+                let resolved = if self.paths.weather.is_absolute() {
+                    self.paths.weather.clone()
+                } else {
+                    base.join(&self.paths.weather)
+                };
+                if !resolved.is_file() {
+                    return Err(ConfigError::Invalid(format!(
+                        "paths.weather = {:?} not found at {}",
+                        self.paths.weather,
+                        resolved.display()
+                    )));
+                }
+            }
         }
         info!(
             target: "ps_core::config",

@@ -85,7 +85,9 @@ fn config_change_emits_event() {
 
     let events = collect_for(watcher.events(), Duration::from_millis(2000));
     assert!(
-        events.iter().any(|e| matches!(e, WatchEvent::ConfigChanged(_))),
+        events
+            .iter()
+            .any(|e| matches!(e, WatchEvent::ConfigChanged(_))),
         "expected ConfigChanged in {events:?}"
     );
 }
@@ -106,7 +108,9 @@ fn scene_change_emits_event() {
 
     let events = collect_for(watcher.events(), Duration::from_millis(2000));
     assert!(
-        events.iter().any(|e| matches!(e, WatchEvent::SceneChanged(_))),
+        events
+            .iter()
+            .any(|e| matches!(e, WatchEvent::SceneChanged(_))),
         "expected SceneChanged in {events:?}"
     );
 }
@@ -160,5 +164,8 @@ fn invalid_toml_after_change_does_not_panic() {
     let any_config = events
         .iter()
         .any(|e| matches!(e, WatchEvent::ConfigChanged(_)));
-    assert!(any_config, "watcher should emit despite invalid content: {events:?}");
+    assert!(
+        any_config,
+        "watcher should emit despite invalid content: {events:?}"
+    );
 }

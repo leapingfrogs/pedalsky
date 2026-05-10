@@ -1,0 +1,12 @@
+[package]
+name = "ps-clouds"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky volumetric cloud subsystem (Phase 6: Schneider/Hillaire)"
+
+[dependencies]
+ps-core.workspace = true
+anyhow.workspace  = true

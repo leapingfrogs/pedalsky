@@ -21,13 +21,16 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
 use ps_app::main_helpers::{build_stub_bind_group, encode_frame_clear};
+use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
+use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, HdrFramebufferImpl, HotReload, PrepareContext,
     RenderContext, Scene, WatchEvent, DEFAULT_DEBOUNCE,
 };
 use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
+use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -46,10 +49,10 @@ fn main() -> Result<()> {
     info!(workspace_root = %workspace_root.display(), "starting ps-app");
 
     let config_path = workspace_root.join("pedalsky.toml");
-    let config = Config::load(&config_path)
-        .with_context(|| format!("loading {}", config_path.display()))?;
+    let config =
+        Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
     config
-        .validate()
+        .validate_with_base(config_path.parent())
         .with_context(|| format!("validating {}", config_path.display()))?;
 
     let scene_path = if config.paths.weather.is_absolute() {
@@ -57,8 +60,8 @@ fn main() -> Result<()> {
     } else {
         workspace_root.join(&config.paths.weather)
     };
-    let scene = Scene::load(&scene_path)
-        .with_context(|| format!("loading {}", scene_path.display()))?;
+    let scene =
+        Scene::load(&scene_path).with_context(|| format!("loading {}", scene_path.display()))?;
     scene
         .validate()
         .with_context(|| format!("validating {}", scene_path.display()))?;
@@ -152,7 +155,12 @@ impl ApplicationHandler for AppShell {
         if self.state.is_some() {
             return;
         }
-        match RunState::new(event_loop, &self.config, &self.config_path, &self.scene_path) {
+        match RunState::new(
+            event_loop,
+            &self.config,
+            &self.config_path,
+            &self.scene_path,
+        ) {
             Ok(s) => self.state = Some(s),
             Err(e) => {
                 tracing::error!(error = %e, "failed to create RunState; exiting");
@@ -167,7 +175,9 @@ impl ApplicationHandler for AppShell {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(state) = self.state.as_mut() else { return };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
         state.handle_window_event(event_loop, event, &mut self.config);
     }
 
@@ -177,7 +187,9 @@ impl ApplicationHandler for AppShell {
         _device_id: winit::event::DeviceId,
         event: DeviceEvent,
     ) {
-        let Some(state) = self.state.as_mut() else { return };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
         if let DeviceEvent::MouseMotion { delta } = event {
             if state.cursor_grabbed {
                 state.mouse_delta.0 += delta.0;
@@ -187,7 +199,9 @@ impl ApplicationHandler for AppShell {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        let Some(state) = self.state.as_mut() else { return };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
         state.poll_hot_reload(&mut self.config);
         state.window.request_redraw();
     }
@@ -208,8 +222,13 @@ impl RunState {
 
         let physical = window.inner_size();
         let size = (physical.width.max(1), physical.height.max(1));
-        let windowed = ps_core::gpu::init_windowed(window.clone(), size, config.window.vsync)
-            .context("init_windowed")?;
+        let windowed = ps_core::gpu::init_windowed(
+            window.clone(),
+            size,
+            config.window.vsync,
+            config.debug.gpu_validation,
+        )
+        .context("init_windowed")?;
 
         let hdr = HdrFramebufferImpl::new(&windowed.gpu, size);
         let stub_bind_group = build_stub_bind_group(&windowed.gpu.device);
@@ -266,11 +285,12 @@ impl RunState {
                     .rebuild_bindings(&self.windowed_gpu.gpu.device, &self.hdr);
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key: PhysicalKey::Code(code),
-                    state,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state,
+                        ..
+                    },
                 ..
             } => {
                 self.handle_key(event_loop, code, state == ElementState::Pressed);
@@ -347,19 +367,35 @@ impl RunState {
         let mut wish = Vec3::ZERO;
         let f = self.camera.forward();
         let r = self.camera.right();
-        if self.keys.forward { wish += f; }
-        if self.keys.back    { wish -= f; }
-        if self.keys.right   { wish += r; }
-        if self.keys.left    { wish -= r; }
-        if self.keys.up      { wish += Vec3::Y; }
-        if self.keys.down    { wish -= Vec3::Y; }
+        if self.keys.forward {
+            wish += f;
+        }
+        if self.keys.back {
+            wish -= f;
+        }
+        if self.keys.right {
+            wish += r;
+        }
+        if self.keys.left {
+            wish -= r;
+        }
+        if self.keys.up {
+            wish += Vec3::Y;
+        }
+        if self.keys.down {
+            wish -= Vec3::Y;
+        }
         if wish.length_squared() > 0.0 {
             let speed = if self.keys.sprint { 5.0 } else { 1.0 } * self.camera.speed_mps;
             self.camera.position += wish.normalize() * speed * dt;
         }
         let roll_speed = 1.0_f32;
-        if self.keys.roll_left  { self.camera.roll += roll_speed * dt; }
-        if self.keys.roll_right { self.camera.roll -= roll_speed * dt; }
+        if self.keys.roll_left {
+            self.camera.roll += roll_speed * dt;
+        }
+        if self.keys.roll_right {
+            self.camera.roll -= roll_speed * dt;
+        }
     }
 
     fn poll_hot_reload(&mut self, config: &mut Config) {
@@ -367,8 +403,8 @@ impl RunState {
             match self.hot_reload.events().try_recv() {
                 Ok(WatchEvent::ConfigChanged(path)) => {
                     info!(?path, "hot-reload: pedalsky.toml changed");
-                    let load_result =
-                        Config::load(&path).and_then(|c| c.validate().map(|_| c));
+                    let load_result = Config::load(&path)
+                        .and_then(|c| c.validate_with_base(path.parent()).map(|_| c));
                     match load_result {
                         Ok(new_config) => {
                             self.ev100 = new_config.render.ev100;
@@ -387,7 +423,10 @@ impl RunState {
                     }
                 }
                 Ok(WatchEvent::SceneChanged(path)) => {
-                    info!(?path, "hot-reload: scene changed (Phase 3 will re-synthesise)");
+                    info!(
+                        ?path,
+                        "hot-reload: scene changed (Phase 3 will re-synthesise)"
+                    );
                 }
                 Ok(WatchEvent::Error(msg)) => warn!(%msg, "hot-reload watcher error"),
                 Err(_) => break,
@@ -440,13 +479,13 @@ impl RunState {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self
-            .windowed_gpu
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame-encoder"),
-            });
+        let mut encoder =
+            self.windowed_gpu
+                .gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("frame-encoder"),
+                });
 
         // Pre-frame clear: depth always; colour only if backdrop is disabled.
         encode_frame_clear(
@@ -508,10 +547,12 @@ impl RunState {
 fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<App> {
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
+        .with_factory(Box::new(AtmosphereFactory))
         .with_factory(Box::new(GroundFactory))
+        .with_factory(Box::new(CloudsFactory))
+        .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
     Ok(app)
 }
-

@@ -113,12 +113,24 @@ impl CheckerGround {
 
         let h = QUAD_HALF_EXTENT_M;
         let vertices: [Vertex; 6] = [
-            Vertex { position: [-h, 0.0, -h] },
-            Vertex { position: [ h, 0.0, -h] },
-            Vertex { position: [ h, 0.0,  h] },
-            Vertex { position: [-h, 0.0, -h] },
-            Vertex { position: [ h, 0.0,  h] },
-            Vertex { position: [-h, 0.0,  h] },
+            Vertex {
+                position: [-h, 0.0, -h],
+            },
+            Vertex {
+                position: [h, 0.0, -h],
+            },
+            Vertex {
+                position: [h, 0.0, h],
+            },
+            Vertex {
+                position: [-h, 0.0, -h],
+            },
+            Vertex {
+                position: [h, 0.0, h],
+            },
+            Vertex {
+                position: [-h, 0.0, h],
+            },
         ];
         let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ground-vb"),

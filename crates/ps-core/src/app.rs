@@ -57,18 +57,17 @@ pub trait SubsystemFactory: Send + Sync {
             "backdrop" => f.backdrop,
             "tint" => f.tint,
             other => {
-                warn!(name = other, "factory queried unknown subsystem flag — defaulting to false");
+                warn!(
+                    name = other,
+                    "factory queried unknown subsystem flag — defaulting to false"
+                );
                 false
             }
         }
     }
 
     /// Construct the subsystem.
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>>;
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>>;
 }
 
 /// Builds an [`App`] from a `&Config`, a `&GpuContext`, and a list of
@@ -116,10 +115,12 @@ impl AppBuilder {
                 continue;
             }
             info!(target: "ps_core::app", subsystem = factory.name(), "constructing");
-            let s = factory.build(config, gpu).map_err(|source| AppError::FactoryFailed {
-                name: factory.name(),
-                source,
-            })?;
+            let s = factory
+                .build(config, gpu)
+                .map_err(|source| AppError::FactoryFailed {
+                    name: factory.name(),
+                    source,
+                })?;
             subsystems.push(s);
         }
 
@@ -203,11 +204,7 @@ impl App {
     ///
     /// Also adds subsystems newly enabled in `config` and removes ones newly
     /// disabled. Used by the hot-reload loop.
-    pub fn reconfigure(
-        &mut self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> Result<(), AppError> {
+    pub fn reconfigure(&mut self, config: &Config, gpu: &GpuContext) -> Result<(), AppError> {
         // 1. For each existing subsystem: reconfigure or recreate.
         let mut new_subsystems: Vec<Box<dyn RenderSubsystem>> = Vec::new();
         for s in self.subsystems.drain(..) {
@@ -230,10 +227,9 @@ impl App {
                           "reconfigure failed → dropping and rebuilding via factory");
                     drop(s);
                     let factory = factory.ok_or_else(|| AppError::NoFactory(name.to_string()))?;
-                    let rebuilt =
-                        factory
-                            .build(config, gpu)
-                            .map_err(|source| AppError::FactoryFailed { name, source })?;
+                    let rebuilt = factory
+                        .build(config, gpu)
+                        .map_err(|source| AppError::FactoryFailed { name, source })?;
                     new_subsystems.push(rebuilt);
                 }
             }
@@ -249,10 +245,12 @@ impl App {
             if factory.enabled(config) {
                 info!(target: "ps_core::app", subsystem = factory.name(),
                       "newly enabled by reconfigure → constructing");
-                let s = factory.build(config, gpu).map_err(|source| AppError::FactoryFailed {
-                    name: factory.name(),
-                    source,
-                })?;
+                let s = factory
+                    .build(config, gpu)
+                    .map_err(|source| AppError::FactoryFailed {
+                        name: factory.name(),
+                        source,
+                    })?;
                 new_subsystems.push(s);
             }
         }

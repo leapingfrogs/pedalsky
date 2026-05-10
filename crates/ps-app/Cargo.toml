@@ -15,6 +15,9 @@ path = "src/main.rs"
 ps-core.workspace        = true
 ps-postprocess.workspace = true
 ps-ground.workspace      = true
+ps-atmosphere.workspace  = true
+ps-clouds.workspace      = true
+ps-precip.workspace      = true
 ps-backdrop.workspace    = true
 ps-tint.workspace        = true
 

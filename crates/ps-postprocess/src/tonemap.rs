@@ -26,7 +26,10 @@ impl TonemapMode {
             "ACESFilmic" | "AcesFilmic" | "aces" => Self::AcesFilmic,
             "Passthrough" | "passthrough" | "Reinhard" => Self::Passthrough,
             other => {
-                tracing::warn!(value = other, "unknown tone_mapper — defaulting to ACESFilmic");
+                tracing::warn!(
+                    value = other,
+                    "unknown tone_mapper — defaulting to ACESFilmic"
+                );
                 Self::AcesFilmic
             }
         }

@@ -7,13 +7,16 @@
 
 use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
+use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
+use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, GpuContext, HdrFramebufferImpl, PrepareContext,
     RenderContext,
 };
 use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
+use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
 
 use crate::main_helpers::{build_stub_bind_group, encode_frame_clear};
@@ -102,7 +105,10 @@ impl HeadlessApp {
     pub fn new(gpu: &GpuContext, config: &Config, setup: TestSetup) -> Result<Self> {
         let app = AppBuilder::new()
             .with_factory(Box::new(BackdropFactory))
+            .with_factory(Box::new(AtmosphereFactory))
             .with_factory(Box::new(GroundFactory))
+            .with_factory(Box::new(CloudsFactory))
+            .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))
             .build(config, gpu)
             .context("AppBuilder::build")?;
@@ -224,9 +230,7 @@ impl HeadlessApp {
         gpu.device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("device poll");
-        rx.recv()
-            .expect("map recv")
-            .expect("map success");
+        rx.recv().expect("map recv").expect("map success");
 
         let data = slice.get_mapped_range();
         let bytes_per_row = w * 4;
@@ -241,4 +245,3 @@ impl HeadlessApp {
         out
     }
 }
-

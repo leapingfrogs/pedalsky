@@ -63,6 +63,21 @@ fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
     granted
 }
 
+/// Build the `wgpu::InstanceFlags` to use.
+///
+/// `force_validation = true` flips on the wgpu validation layer in addition
+/// to whatever the build-profile default would have been (matches
+/// `[debug] gpu_validation = true` in the engine config). When `false` we
+/// stick with `InstanceFlags::default()` — debug builds get validation,
+/// release builds don't.
+fn instance_flags(force_validation: bool) -> wgpu::InstanceFlags {
+    let mut flags = wgpu::InstanceFlags::default();
+    if force_validation {
+        flags |= wgpu::InstanceFlags::VALIDATION;
+    }
+    flags
+}
+
 /// Per-feature limits we bump above the wgpu defaults. See plan §0.2.
 fn required_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
     let base = wgpu::Limits::default();
@@ -105,7 +120,8 @@ impl<'window> WindowedGpu<'window> {
         }
         self.surface_config.width = w;
         self.surface_config.height = h;
-        self.surface.configure(&self.gpu.device, &self.surface_config);
+        self.surface
+            .configure(&self.gpu.device, &self.surface_config);
     }
 }
 
@@ -117,28 +133,40 @@ impl<'window> WindowedGpu<'window> {
 ///
 /// `vsync = true` requests `PresentMode::AutoVsync`; `false` requests
 /// `Immediate` and falls back to `Fifo` if Immediate isn't supported.
+///
+/// `gpu_validation = true` forces wgpu's validation layer on regardless
+/// of build profile (matches `[debug] gpu_validation` in the engine
+/// config). `false` lets wgpu pick its build-profile default (on in
+/// debug builds, off in release).
 pub fn init_windowed<'window, T>(
     target: T,
     initial_size: (u32, u32),
     vsync: bool,
+    gpu_validation: bool,
 ) -> Result<WindowedGpu<'window>, GpuError>
 where
     T: Into<wgpu::SurfaceTarget<'window>>,
 {
-    pollster::block_on(init_windowed_async(target, initial_size, vsync))
+    pollster::block_on(init_windowed_async(
+        target,
+        initial_size,
+        vsync,
+        gpu_validation,
+    ))
 }
 
 async fn init_windowed_async<'window, T>(
     target: T,
     (width, height): (u32, u32),
     vsync: bool,
+    gpu_validation: bool,
 ) -> Result<WindowedGpu<'window>, GpuError>
 where
     T: Into<wgpu::SurfaceTarget<'window>>,
 {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
-        flags: wgpu::InstanceFlags::default(),
+        flags: instance_flags(gpu_validation),
         backend_options: wgpu::BackendOptions::default(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         display: None,
@@ -228,14 +256,22 @@ where
 /// Construct a headless [`GpuContext`] (no surface).
 ///
 /// Used by integration tests and the `ps-app render` headless subcommand.
+/// Validation defaults to wgpu's build-profile default (on in debug, off
+/// in release); use [`init_headless_with_validation`] to force it on.
 pub fn init_headless() -> Result<GpuContext, GpuError> {
-    pollster::block_on(init_headless_async())
+    pollster::block_on(init_headless_async(false))
 }
 
-async fn init_headless_async() -> Result<GpuContext, GpuError> {
+/// As [`init_headless`], but lets the caller force wgpu validation on
+/// regardless of build profile (matches `[debug] gpu_validation`).
+pub fn init_headless_with_validation(gpu_validation: bool) -> Result<GpuContext, GpuError> {
+    pollster::block_on(init_headless_async(gpu_validation))
+}
+
+async fn init_headless_async(gpu_validation: bool) -> Result<GpuContext, GpuError> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::PRIMARY,
-        flags: wgpu::InstanceFlags::default(),
+        flags: instance_flags(gpu_validation),
         backend_options: wgpu::BackendOptions::default(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         display: None,

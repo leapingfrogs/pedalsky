@@ -125,8 +125,9 @@ for event in watcher.events() {
 }
 ```
 
-The `ps-app` binary will wire this in once Phase 0's windowed render loop
-lands; today the watcher is library-level only.
+The `ps-app` binary wires this into the winit main loop; editing
+`pedalsky.toml` while the app is running calls `App::reconfigure(...)`
+on the next frame.
 
 ## Testing
 
@@ -136,25 +137,62 @@ cargo test --workspace
 
 The `crates/ps-core/tests/` integration tests cover:
 
-- **`config.rs`** — round-trip of the workspace `pedalsky.toml`, defaults
-  for partial configs, rejection of unknown fields, range checks, schema
-  evolution guards.
-- **`scene.rs`** — round-trip of `scenes/broken_cumulus_afternoon.toml`,
-  PascalCase-serialised cloud type round-trip across all eight variants,
-  vertical-overlap rejection, `deny_unknown_fields` enforcement, future-
-  schema-version rejection.
-- **`subsystem.rs`** — `PassStage` ordering, the trait derive set, a
-  compile-only smoke test that exercises every field of `PrepareContext` /
-  `RenderContext`.
-- **`app.rs`** — disabled-subsystem factories are not invoked, enabled
-  factories are, multi-stage pass flattening sorts by `PassStage`,
+- **`config.rs`** (9 tests) — round-trip of the workspace `pedalsky.toml`,
+  defaults for partial configs, rejection of unknown fields, range checks,
+  schema evolution guards, file-existence validation via
+  `validate_with_base`.
+- **`scene.rs`** (5 tests) — round-trip of
+  `scenes/broken_cumulus_afternoon.toml`, PascalCase-serialised cloud type
+  round-trip across all eight variants, vertical-overlap rejection,
+  `deny_unknown_fields` enforcement, future-schema-version rejection.
+- **`subsystem.rs`** (2 tests) — `PassStage` ordering, the trait derive
+  set, a compile-only smoke test that exercises every field of
+  `PrepareContext` / `RenderContext`.
+- **`app.rs`** (7 tests) — disabled-subsystem factories are not invoked,
+  enabled factories are, multi-stage pass flattening sorts by `PassStage`,
   `prepare()` runs in the order given by each subsystem's minimum
-  `PassStage`, `reconfigure()` adds/drops subsystems on the fly, duplicate
-  factory names are rejected.
-- **`hot_reload.rs`** — config change emits `ConfigChanged`, scene change
-  emits `SceneChanged`, a burst of writes within the debounce window
-  collapses to one event, invalid TOML still emits an event (the caller
-  handles the parse error rather than crashing the watcher).
+  `PassStage`, behavioural test that drives `App::frame` end-to-end and
+  asserts on the actual call order, `reconfigure()` adds/drops subsystems
+  on the fly, duplicate factory names are rejected.
+- **`hot_reload.rs`** (4 tests) — config change emits `ConfigChanged`,
+  scene change emits `SceneChanged`, a burst of writes within the debounce
+  window collapses to one event, invalid TOML still emits an event.
+
+The `crates/ps-app/tests/integration.rs` file adds 4 headless-render
+integration tests covering Backdrop, Tint, runtime reconfigure, and a
+boot-from-real-`pedalsky.toml` smoke test. Total: **31 tests**.
+
+## Known cross-cutting gaps (Phase 2+)
+
+The following plan-mandated cross-cutting items are intentionally deferred
+because they need code from later phases or runtime infrastructure outside
+the Phase 0/1 scope. Each is captured here so a future implementer can
+pick them up:
+
+- **`--seed <u64>` CLI flag** (plan §Cross-Cutting/Determinism) — needs RNG
+  paths to seed first; Phase 6 owns blue-noise jitter and Phase 8 owns
+  particle spawning, both of which thread `seed` through their state.
+- **`--gpu-trace <dir>` flag** (plan §GPU debugging) — wgpu trace API
+  changed considerably between releases; will land alongside Phase 5
+  when there's something non-trivial to trace.
+- **Shader hot-reload** (plan §Cross-Cutting/Shader hot-reload) —
+  `[debug] shader_hot_reload` is parsed today but unused. Wire alongside
+  Phase 5 when WGSL pipelines start landing.
+- **Camera UI sliders for fov / near / speed** (plan §0.4) — Phase 10
+  egui overlay owns this.
+- **README depth on noise baking, UI panels, golden-image updates, EXR
+  output** (plan §README deliverable) — these document features owned by
+  Phase 6 (noise bake), Phase 10 (UI), Phase 11 (goldens, EXR). Will land
+  with each phase.
+- **`ps-app render` headless subcommand** writing PNG/EXR to
+  `paths.screenshot_dir` — Phase 11.
+- **Reconfigure-only-affected-subsystems** (plan §1.6) — current
+  implementation calls `reconfigure()` on every live subsystem on any
+  config change. Subsystems internally no-op when their slice of the
+  config hasn't changed, so the spirit is preserved; the letter ("diff
+  against the live config; for each affected subsystem") wants a
+  per-subsystem diff that's more useful when Phase 10's UI starts firing
+  reconfigures at slider rates.
 
 ## License
 
