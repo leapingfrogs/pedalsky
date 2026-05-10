@@ -20,8 +20,8 @@ pub mod subsystem;
 pub use app::{App, AppBuilder, AppError, SubsystemFactory};
 pub use config::{Config, ConfigError};
 pub use contexts::{
-    AtmosphereLuts, FrameUniforms, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
-    WeatherState, WorldState,
+    AtmosphereLuts, FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext,
+    RenderContext, WeatherState, WorldState,
 };
 pub use framebuffer::HdrFramebufferImpl;
 pub use hot_reload::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};

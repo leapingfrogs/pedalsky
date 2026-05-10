@@ -1542,6 +1542,7 @@ dependencies = [
  "glam",
  "pollster",
  "ps-core",
+ "ps-ground",
  "ps-postprocess",
  "tracing",
  "tracing-subscriber",
@@ -1568,6 +1569,17 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ps-ground"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam",
+ "ps-core",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]

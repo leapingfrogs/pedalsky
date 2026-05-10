@@ -10,14 +10,14 @@ This codebase is being built phase by phase against the plan.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Cargo workspace, GPU init, HDR framebuffer, fly camera, tone-map placeholder, ground placeholder | **Partial** — workspace + headless GPU init + HDR framebuffer + fly camera struct landed; windowed render pipeline (winit main loop, tone-map pass, checker ground shader) deferred |
-| 1 | Config + scene schemas, `RenderSubsystem` trait, contexts, `AppBuilder` + factories, hot-reload watcher | **Done** for non-GPU work — demo subsystems (Backdrop / Tint) and the headless-render integration tests deferred |
-| 2+ | World/sun, weather synthesis, atmosphere, clouds, ground, precipitation, post-process, UI, golden-image regression | Not started |
+| 0 | Cargo workspace, GPU init, HDR framebuffer + reverse-Z depth, fly camera, ACES tone-mapper, checker ground, winit window | **Done** |
+| 1 | Config + scene schemas, `RenderSubsystem` trait, contexts, `AppBuilder` + factories, hot-reload watcher | **Done** for non-GPU work — demo subsystems (Backdrop / Tint) and the full hot-reload-via-AppBuilder integration test still deferred |
+| 2+ | World/sun, weather synthesis, atmosphere, clouds, ground (PBR), precipitation, post-process, UI, golden-image regression | Not started |
 
-The deferred Phase 0 windowed pipeline and Phase 1 demo subsystems are
-intentionally held back: they need a working winit main loop and a
-fullscreen-triangle pipeline that the schedule for this session did not
-permit landing safely.
+The deferred Phase 1 Backdrop/Tint demo subsystems can now land — the
+windowed render pipeline they need is in place. Their config keys are
+already wired (`[render.subsystems].backdrop`, `[render.subsystems].tint`,
+`[render.backdrop]`, `[render.tint]`).
 
 ## Repository layout
 
@@ -28,10 +28,13 @@ pedalsky/
 ├── scenes/                     # weather scene fixtures
 │   └── broken_cumulus_afternoon.toml
 ├── crates/
-│   ├── ps-core/                # config, scene, traits, contexts, app, hot-reload
-│   ├── ps-postprocess/         # tone-map (placeholder)
-│   └── ps-app/                 # main binary
-├── shaders/                    # WGSL (Phase 4+)
+│   ├── ps-core/                # config, scene, traits, contexts, app, hot-reload, gpu, framebuffer, camera
+│   ├── ps-postprocess/         # ACES Filmic / Passthrough tone-mapper
+│   ├── ps-ground/              # Phase 0 procedural checker plane (Phase 7 replaces with PBR)
+│   └── ps-app/                 # winit window + render loop
+├── shaders/
+│   ├── ground/                 # Phase 0 checker shader
+│   └── postprocess/            # tone-map shader
 └── assets/                     # noise volumes (Phase 6+)
 ```
 
@@ -50,12 +53,17 @@ cargo run --bin ps-app
 
 1. Locates `pedalsky.toml` at the workspace root.
 2. Loads and validates it, logging a structured summary at `info` level.
-3. Loads the scene file pointed to by `[paths] weather`, validates it,
-   logs a summary.
-4. Exits.
+3. Loads the scene file pointed to by `[paths] weather`, validates it.
+4. Opens a window per `[window]`, initialises wgpu, allocates an HDR
+   `Rgba16Float` colour target plus a reverse-Z `Depth32Float` depth
+   buffer, builds the ACES Filmic tone-mapper and the placeholder ground
+   plane.
+5. Drives a fly camera (WASD, mouse-look while LMB-held, Space/Ctrl to
+   ascend/descend, Q/E to roll, Shift to sprint) and renders the scene at
+   the surface format's native rate.
 
-Once Phase 0's windowed pipeline lands, the same binary will open a window
-and render the demo subsystems.
+The window stays open until you close it; press **Esc** to release the
+mouse, **F4** to exit.
 
 ## Configuration
 

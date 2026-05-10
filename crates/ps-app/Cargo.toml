@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 ps-core.workspace        = true
 ps-postprocess.workspace = true
+ps-ground.workspace      = true
 
 wgpu.workspace      = true
 winit.workspace     = true

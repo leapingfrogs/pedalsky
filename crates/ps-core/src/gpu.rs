@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Errors returned by [`GpuContext`] construction.
 #[derive(Debug, Error)]
@@ -59,11 +59,151 @@ fn required_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
     }
 }
 
+/// A windowed [`GpuContext`] paired with its surface and surface configuration.
+///
+/// `surface` borrows from `window` for the lifetime `'window`; in practice
+/// `ps-app` keeps the window alive by storing it in an `Arc`, which makes
+/// the surface effectively `'static`.
+pub struct WindowedGpu<'window> {
+    /// Shared GPU handles.
+    pub gpu: GpuContext,
+    /// The bound `wgpu::Surface` on which the swapchain renders.
+    pub surface: wgpu::Surface<'window>,
+    /// Current surface configuration (format, present mode, size).
+    pub surface_config: wgpu::SurfaceConfiguration,
+}
+
+impl<'window> WindowedGpu<'window> {
+    /// Reconfigure the surface after a resize.
+    pub fn resize(&mut self, (w, h): (u32, u32)) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.surface_config.width = w;
+        self.surface_config.height = h;
+        self.surface.configure(&self.gpu.device, &self.surface_config);
+    }
+}
+
+/// Construct a [`WindowedGpu`] bound to `window`.
+///
+/// `target` accepts anything `wgpu::Instance::create_surface` accepts —
+/// commonly an `Arc<winit::window::Window>` so the surface outlives the
+/// closure that drove its creation.
+///
+/// `vsync = true` requests `PresentMode::AutoVsync`; `false` requests
+/// `Immediate` and falls back to `Fifo` if Immediate isn't supported.
+pub fn init_windowed<'window, T>(
+    target: T,
+    initial_size: (u32, u32),
+    vsync: bool,
+) -> Result<WindowedGpu<'window>, GpuError>
+where
+    T: Into<wgpu::SurfaceTarget<'window>>,
+{
+    pollster::block_on(init_windowed_async(target, initial_size, vsync))
+}
+
+async fn init_windowed_async<'window, T>(
+    target: T,
+    (width, height): (u32, u32),
+    vsync: bool,
+) -> Result<WindowedGpu<'window>, GpuError>
+where
+    T: Into<wgpu::SurfaceTarget<'window>>,
+{
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::PRIMARY,
+        flags: wgpu::InstanceFlags::default(),
+        backend_options: wgpu::BackendOptions::default(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        display: None,
+    });
+    let surface = instance.create_surface(target)?;
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|_| GpuError::NoAdapter)?;
+    info!(name = %adapter.get_info().name, backend = ?adapter.get_info().backend,
+          "selected GPU adapter (windowed)");
+
+    let limits = required_limits(&adapter.limits());
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("pedalsky-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: limits,
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        })
+        .await?;
+
+    // Pick the first sRGB-suffixed format the surface advertises; fall back
+    // to Bgra8UnormSrgb only if it appears in the list.
+    let caps = surface.get_capabilities(&adapter);
+    let format = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| f.is_srgb())
+        .or_else(|| {
+            caps.formats
+                .iter()
+                .copied()
+                .find(|f| matches!(f, wgpu::TextureFormat::Bgra8UnormSrgb))
+        })
+        .unwrap_or_else(|| {
+            warn!("no sRGB surface format available — falling back to first listed");
+            caps.formats[0]
+        });
+
+    let present_mode = if vsync {
+        wgpu::PresentMode::AutoVsync
+    } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        wgpu::PresentMode::Immediate
+    } else {
+        wgpu::PresentMode::Fifo
+    };
+
+    let surface_config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: width.max(1),
+        height: height.max(1),
+        present_mode,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: caps.alpha_modes[0],
+        view_formats: vec![],
+    };
+    surface.configure(&device, &surface_config);
+    debug!(
+        format = ?surface_config.format,
+        present_mode = ?surface_config.present_mode,
+        width, height,
+        "configured surface"
+    );
+
+    Ok(WindowedGpu {
+        gpu: GpuContext {
+            instance: Arc::new(instance),
+            adapter: Arc::new(adapter),
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+        },
+        surface,
+        surface_config,
+    })
+}
+
 /// Construct a headless [`GpuContext`] (no surface).
 ///
 /// Used by integration tests and the `ps-app render` headless subcommand.
-/// Returns the context paired with `None` for the surface so the windowed
-/// and headless code paths share a single API.
 pub fn init_headless() -> Result<GpuContext, GpuError> {
     pollster::block_on(init_headless_async())
 }

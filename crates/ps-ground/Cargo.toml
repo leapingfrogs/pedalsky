@@ -1,0 +1,15 @@
+[package]
+name = "ps-ground"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky ground subsystem: Phase 0 checker plane (Phase 7 replaces with PBR + wet surface)"
+
+[dependencies]
+ps-core.workspace  = true
+wgpu.workspace     = true
+bytemuck.workspace = true
+glam.workspace     = true
+tracing.workspace  = true

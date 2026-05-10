@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ps-core",
     "crates/ps-postprocess",
+    "crates/ps-ground",
     "crates/ps-app",
 ]
 
@@ -50,6 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Local crates
 ps-core        = { path = "crates/ps-core" }
 ps-postprocess = { path = "crates/ps-postprocess" }
+ps-ground      = { path = "crates/ps-ground" }
 
 [profile.dev]
 opt-level = 1            # debug builds with shader compilation are slow at -O0
