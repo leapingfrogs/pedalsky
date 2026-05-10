@@ -1,10 +1,18 @@
 //! PedalSky main binary.
 //!
-//! Phase 0 + Phase 1 scope: load `pedalsky.toml`, load the scene file pointed
-//! to by `[paths] weather`, validate both, then open a winit window and
-//! render the Phase 0 placeholder ground plane through the ACES Filmic
-//! tone-mapper. Phase 1's AppBuilder/factory wiring lands here once the
-//! Backdrop/Tint demo subsystems are written.
+//! Phase 0/1 scope: load `pedalsky.toml`, load the scene, validate both,
+//! open a winit window, build a `ps_core::App` from registered subsystem
+//! factories (backdrop, ground, tint), and drive a per-frame:
+//!
+//! ```text
+//! frame-clear  (always: depth = 0.0; colour = [render].clear_color when
+//!               backdrop is disabled, else loaded)
+//! App::frame   → backdrop (SkyBackdrop) → ground (Opaque) → tint (PostProcess)
+//! tone-map     → swapchain
+//! ```
+//!
+//! The `HotReload` watcher emits debounced events; on `ConfigChanged` the
+//! app re-loads + validates the config and calls `App::reconfigure`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,9 +20,15 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
-use ps_core::{Config, FrameUniforms, HdrFramebufferImpl, Scene};
-use ps_ground::CheckerGround;
+use ps_app::main_helpers::{build_stub_bind_group, encode_frame_clear};
+use ps_backdrop::BackdropFactory;
+use ps_core::{
+    App, AppBuilder, Config, FrameUniforms, HdrFramebufferImpl, HotReload, PrepareContext,
+    RenderContext, Scene, WatchEvent, DEFAULT_DEBOUNCE,
+};
+use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
+use ps_tint::TintFactory;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use winit::application::ApplicationHandler;
@@ -56,12 +70,11 @@ fn main() -> Result<()> {
     );
 
     let event_loop = EventLoop::new().context("create EventLoop")?;
-    let mut app = AppShell::new(config);
-    event_loop.run_app(&mut app).context("event loop")?;
+    let mut shell = AppShell::new(config, config_path, scene_path);
+    event_loop.run_app(&mut shell).context("event loop")?;
     Ok(())
 }
 
-/// Walk up from `CARGO_MANIFEST_DIR` until a `pedalsky.toml` is found.
 fn workspace_root() -> Result<PathBuf> {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     loop {
@@ -74,49 +87,51 @@ fn workspace_root() -> Result<PathBuf> {
     }
 }
 
-/// Outer shell holding the loaded config plus an option of the live
-/// rendering state. winit 0.30 only gives us a real `ActiveEventLoop` inside
-/// `resumed()`, so the GPU plumbing is constructed lazily there.
 struct AppShell {
     config: Config,
+    config_path: PathBuf,
+    scene_path: PathBuf,
     state: Option<RunState>,
 }
 
 impl AppShell {
-    fn new(config: Config) -> Self {
-        Self { config, state: None }
+    fn new(config: Config, config_path: PathBuf, scene_path: PathBuf) -> Self {
+        Self {
+            config,
+            config_path,
+            scene_path,
+            state: None,
+        }
     }
 }
 
-/// Live rendering state: window, GPU, framebuffer, render passes, camera.
 struct RunState {
     window: Arc<Window>,
     windowed_gpu: ps_core::gpu::WindowedGpu<'static>,
     hdr: HdrFramebufferImpl,
-    ground: CheckerGround,
+    /// Stub bind groups used to fill `RenderContext::frame_bind_group` /
+    /// `world_bind_group`. Phase 4 replaces these with the real `FrameUniforms`
+    /// / `WorldUniforms` bind groups.
+    stub_bind_group: wgpu::BindGroup,
+
     tonemap: Tonemap,
+    /// `App` constructed from factories. Owns backdrop/ground/tint.
+    app: App,
+
     camera: ps_core::camera::FlyCamera,
-    /// Pressed-key state for movement.
     keys: KeyState,
-    /// Whether the cursor is currently grabbed for mouse-look.
     cursor_grabbed: bool,
-    /// Pending mouse delta accumulated since the last frame.
     mouse_delta: (f64, f64),
-    /// EV100 from config (UI sliders edit this in Phase 10).
     ev100: f32,
-    /// Tone-map mode from config.
     tonemap_mode: TonemapMode,
-    /// Wall-clock start, for `time_seconds` in FrameUniforms.
     start: Instant,
-    /// Last frame's wall-clock instant, for dt.
     last_frame: Instant,
-    /// Monotonic frame counter.
     frame_index: u32,
-    /// Title-bar fps smoother.
     fps_accum_dt: f32,
     fps_accum_frames: u32,
-    /// Cached title prefix.
     title_prefix: String,
+
+    hot_reload: HotReload,
 }
 
 #[derive(Default)]
@@ -137,7 +152,7 @@ impl ApplicationHandler for AppShell {
         if self.state.is_some() {
             return;
         }
-        match RunState::new(event_loop, &self.config) {
+        match RunState::new(event_loop, &self.config, &self.config_path, &self.scene_path) {
             Ok(s) => self.state = Some(s),
             Err(e) => {
                 tracing::error!(error = %e, "failed to create RunState; exiting");
@@ -153,7 +168,7 @@ impl ApplicationHandler for AppShell {
         event: WindowEvent,
     ) {
         let Some(state) = self.state.as_mut() else { return };
-        state.handle_window_event(event_loop, event);
+        state.handle_window_event(event_loop, event, &mut self.config);
     }
 
     fn device_event(
@@ -172,14 +187,19 @@ impl ApplicationHandler for AppShell {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = self.state.as_mut() {
-            state.window.request_redraw();
-        }
+        let Some(state) = self.state.as_mut() else { return };
+        state.poll_hot_reload(&mut self.config);
+        state.window.request_redraw();
     }
 }
 
 impl RunState {
-    fn new(event_loop: &ActiveEventLoop, config: &Config) -> Result<Self> {
+    fn new(
+        event_loop: &ActiveEventLoop,
+        config: &Config,
+        config_path: &std::path::Path,
+        scene_path: &std::path::Path,
+    ) -> Result<Self> {
         let initial_size = (config.window.width, config.window.height);
         let attrs = Window::default_attributes()
             .with_title(&config.window.title)
@@ -192,13 +212,18 @@ impl RunState {
             .context("init_windowed")?;
 
         let hdr = HdrFramebufferImpl::new(&windowed.gpu, size);
-        let ground = CheckerGround::new(&windowed.gpu.device);
+        let stub_bind_group = build_stub_bind_group(&windowed.gpu.device);
         let tonemap = Tonemap::new(&windowed.gpu.device, &hdr, windowed.surface_config.format);
+
+        let app = build_app(config, &windowed.gpu)?;
 
         let camera = ps_core::camera::FlyCamera {
             position: Vec3::new(0.0, 1.7, 5.0),
             ..ps_core::camera::FlyCamera::default()
         };
+
+        let hot_reload = HotReload::watch(config_path, scene_path, DEFAULT_DEBOUNCE)
+            .context("starting hot-reload watcher")?;
 
         let now = Instant::now();
         let title_prefix = config.window.title.clone();
@@ -206,8 +231,9 @@ impl RunState {
             window,
             windowed_gpu: windowed,
             hdr,
-            ground,
+            stub_bind_group,
             tonemap,
+            app,
             camera,
             keys: KeyState::default(),
             cursor_grabbed: false,
@@ -220,10 +246,16 @@ impl RunState {
             fps_accum_dt: 0.0,
             fps_accum_frames: 0,
             title_prefix,
+            hot_reload,
         })
     }
 
-    fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+    fn handle_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        event: WindowEvent,
+        config: &mut Config,
+    ) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -254,7 +286,7 @@ impl RunState {
                 self.set_cursor_grab(false);
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = self.draw() {
+                if let Err(e) = self.draw(config) {
                     tracing::error!(error = %e, "draw failed");
                     event_loop.exit();
                 }
@@ -301,7 +333,6 @@ impl RunState {
     }
 
     fn update_camera(&mut self, dt: f32) {
-        // Mouse-look (pixels → radians at ~0.1° per pixel).
         let sensitivity = 0.0025_f32;
         if self.cursor_grabbed {
             self.camera.yaw += self.mouse_delta.0 as f32 * sensitivity;
@@ -313,7 +344,6 @@ impl RunState {
         }
         self.mouse_delta = (0.0, 0.0);
 
-        // Movement.
         let mut wish = Vec3::ZERO;
         let f = self.camera.forward();
         let r = self.camera.right();
@@ -327,21 +357,55 @@ impl RunState {
             let speed = if self.keys.sprint { 5.0 } else { 1.0 } * self.camera.speed_mps;
             self.camera.position += wish.normalize() * speed * dt;
         }
-
-        // Roll.
         let roll_speed = 1.0_f32;
         if self.keys.roll_left  { self.camera.roll += roll_speed * dt; }
         if self.keys.roll_right { self.camera.roll -= roll_speed * dt; }
     }
 
-    fn draw(&mut self) -> Result<()> {
+    fn poll_hot_reload(&mut self, config: &mut Config) {
+        loop {
+            match self.hot_reload.events().try_recv() {
+                Ok(WatchEvent::ConfigChanged(path)) => {
+                    info!(?path, "hot-reload: pedalsky.toml changed");
+                    let load_result =
+                        Config::load(&path).and_then(|c| c.validate().map(|_| c));
+                    match load_result {
+                        Ok(new_config) => {
+                            self.ev100 = new_config.render.ev100;
+                            self.tonemap_mode =
+                                TonemapMode::from_config(&new_config.render.tone_mapper);
+                            if let Err(e) =
+                                self.app.reconfigure(&new_config, &self.windowed_gpu.gpu)
+                            {
+                                warn!(error = %e, "App::reconfigure failed");
+                            } else {
+                                info!("App::reconfigure applied");
+                            }
+                            *config = new_config;
+                        }
+                        Err(e) => warn!(error = %e, "ignoring invalid config update"),
+                    }
+                }
+                Ok(WatchEvent::SceneChanged(path)) => {
+                    info!(?path, "hot-reload: scene changed (Phase 3 will re-synthesise)");
+                }
+                Ok(WatchEvent::Error(msg)) => warn!(%msg, "hot-reload watcher error"),
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn draw(&mut self, config: &Config) -> Result<()> {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().max(1e-6);
         self.last_frame = now;
 
         self.update_camera(dt);
 
-        let (w, h) = (self.windowed_gpu.surface_config.width, self.windowed_gpu.surface_config.height);
+        let (w, h) = (
+            self.windowed_gpu.surface_config.width,
+            self.windowed_gpu.surface_config.height,
+        );
         let aspect = w as f32 / h as f32;
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix(aspect);
@@ -357,7 +421,6 @@ impl RunState {
             ev100: self.ev100,
         };
 
-        // Acquire the next swapchain image.
         let frame = match self.windowed_gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -367,7 +430,6 @@ impl RunState {
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                // Skip the frame; will retry on the next redraw request.
                 return Ok(());
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -386,8 +448,38 @@ impl RunState {
                 label: Some("frame-encoder"),
             });
 
-        // Phase 0 render graph: ground (clears HDR + depth) → tone-map.
-        self.ground.render(&mut encoder, &self.windowed_gpu.gpu.queue, &self.hdr, &frame_uniforms);
+        // Pre-frame clear: depth always; colour only if backdrop is disabled.
+        encode_frame_clear(
+            &mut encoder,
+            &self.hdr,
+            !config.render.subsystems.backdrop,
+            config.render.clear_color,
+        );
+
+        // Drive the App.
+        let world = ps_core::WorldState;
+        let weather = ps_core::WeatherState;
+        let mut prepare_ctx = PrepareContext {
+            device: &self.windowed_gpu.gpu.device,
+            queue: &self.windowed_gpu.gpu.queue,
+            world: &world,
+            weather: &weather,
+            frame_uniforms: &frame_uniforms,
+            atmosphere_luts: None,
+            dt_seconds: dt,
+        };
+        let render_ctx = RenderContext {
+            device: &self.windowed_gpu.gpu.device,
+            queue: &self.windowed_gpu.gpu.queue,
+            framebuffer: &self.hdr,
+            frame_bind_group: &self.stub_bind_group,
+            world_bind_group: &self.stub_bind_group,
+            luts_bind_group: None,
+            frame_uniforms: &frame_uniforms,
+        };
+        self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
+
+        // Tone-map.
         self.tonemap.render(
             &mut encoder,
             &self.windowed_gpu.gpu.queue,
@@ -399,7 +491,6 @@ impl RunState {
         self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
         frame.present();
 
-        // FPS in title bar (smoothed over ~0.5 s).
         self.frame_index = self.frame_index.wrapping_add(1);
         self.fps_accum_dt += dt;
         self.fps_accum_frames += 1;
@@ -413,3 +504,14 @@ impl RunState {
         Ok(())
     }
 }
+
+fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<App> {
+    let app = AppBuilder::new()
+        .with_factory(Box::new(BackdropFactory))
+        .with_factory(Box::new(GroundFactory))
+        .with_factory(Box::new(TintFactory))
+        .build(config, gpu)
+        .context("AppBuilder::build")?;
+    Ok(app)
+}
+

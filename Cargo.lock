@@ -1541,13 +1541,25 @@ dependencies = [
  "bytemuck",
  "glam",
  "pollster",
+ "ps-backdrop",
  "ps-core",
  "ps-ground",
  "ps-postprocess",
+ "ps-tint",
  "tracing",
  "tracing-subscriber",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ps-backdrop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ps-core",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -1575,6 +1587,7 @@ dependencies = [
 name = "ps-ground"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "glam",
  "ps-core",
@@ -1586,6 +1599,17 @@ dependencies = [
 name = "ps-postprocess"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "ps-core",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-tint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "bytemuck",
  "ps-core",
  "tracing",

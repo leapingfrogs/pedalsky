@@ -1,16 +1,15 @@
 [package]
-name = "ps-ground"
+name = "ps-tint"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "PedalSky ground subsystem: Phase 0 checker plane (Phase 7 replaces with PBR + wet surface)"
+description = "PedalSky Phase 1 demo subsystem: fullscreen RGB multiply"
 
 [dependencies]
 ps-core.workspace  = true
 wgpu.workspace     = true
 bytemuck.workspace = true
-glam.workspace     = true
-tracing.workspace  = true
 anyhow.workspace   = true
+tracing.workspace  = true
