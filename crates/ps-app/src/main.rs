@@ -304,7 +304,7 @@ impl RunState {
         // Mouse-look (pixels → radians at ~0.1° per pixel).
         let sensitivity = 0.0025_f32;
         if self.cursor_grabbed {
-            self.camera.yaw -= self.mouse_delta.0 as f32 * sensitivity;
+            self.camera.yaw += self.mouse_delta.0 as f32 * sensitivity;
             self.camera.pitch -= self.mouse_delta.1 as f32 * sensitivity;
             self.camera.pitch = self
                 .camera
