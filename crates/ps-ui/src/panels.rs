@@ -949,14 +949,20 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ui.separator();
         ui.label("GPU timings");
         if state.frame_stats.gpu_passes.is_empty() {
-            ui.label("(no timestamp data — feature not yet enabled or no passes ran)");
+            ui.label("(awaiting first frame's resolved timestamps — \
+                     feature requires TIMESTAMP_QUERY_INSIDE_ENCODERS)");
         } else {
             egui::Grid::new("ps-ui-gpu-timings").striped(true).show(ui, |ui| {
+                let mut total_ms = 0.0;
                 for (name, ms) in &state.frame_stats.gpu_passes {
                     ui.label(name);
                     ui.label(format!("{ms:>8.3} ms"));
                     ui.end_row();
+                    total_ms += ms;
                 }
+                ui.label("(total)");
+                ui.label(format!("{total_ms:>8.3} ms"));
+                ui.end_row();
             });
         }
     });
