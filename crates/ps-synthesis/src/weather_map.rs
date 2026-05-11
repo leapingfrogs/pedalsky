@@ -21,7 +21,8 @@
 
 use half::f16;
 use ps_core::{Scene, Surface};
-use tracing::warn;
+
+use crate::coverage_grid;
 
 /// Map dimensions (square).
 pub const SIZE: u32 = 128;
@@ -59,7 +60,7 @@ impl WeatherMap {
         // scene has no grid OR when the file failed to load (the
         // loader logs the reason); per-pixel sampling falls back to
         // the scalar gate below.
-        let coverage_grid = load_coverage_grid(scene);
+        let loaded_grid = coverage_grid::load(scene);
 
         // Precipitation intensity normalised to [0, 1] using a 50 mm/h
         // ceiling (heaviest expected rain in the v1 scene library). The
@@ -80,8 +81,8 @@ impl WeatherMap {
             for x in 0..SIZE {
                 let idx = ((y * SIZE + x) * 4) as usize;
                 let (gx, gy) = pixel_to_world((x, y));
-                let coverage = match coverage_grid.as_ref() {
-                    Some(g) => sample_gridded_coverage(g, gx, gy),
+                let coverage = match loaded_grid.as_ref() {
+                    Some(g) => g.sample_world(gx, gy),
                     None => base_coverage_gate,
                 };
                 let bias = value_noise_2d(x as f32 * 0.05, y as f32 * 0.05) * 2.0 - 1.0;
@@ -154,96 +155,6 @@ fn pixel_to_world((x, y): (u32, u32)) -> (f32, f32) {
     (fx * EXTENT_M - half, fy * EXTENT_M - half)
 }
 
-/// Cached, loaded-from-disk coverage grid + spatial metadata. Built
-/// once per `WeatherMap::synthesise` call; sampled per-pixel via
-/// bilinear interpolation.
-struct LoadedCoverageGrid {
-    /// Row-major f32 values in [0, 1] — one per source-grid pixel.
-    data: Vec<f32>,
-    /// Source grid dimensions (width, height).
-    src_w: u32,
-    src_h: u32,
-    /// Spatial extent in metres. The grid covers
-    /// `[-extent/2, +extent/2]` on each axis, centred on world origin.
-    extent_m: f32,
-}
-
-impl LoadedCoverageGrid {
-    /// Bilinear-sample at a source-grid UV in [0, 1]^2.
-    fn sample(&self, u: f32, v: f32) -> f32 {
-        let fx = u.clamp(0.0, 1.0) * (self.src_w as f32 - 1.0);
-        let fy = v.clamp(0.0, 1.0) * (self.src_h as f32 - 1.0);
-        let x0 = fx.floor() as u32;
-        let y0 = fy.floor() as u32;
-        let x1 = (x0 + 1).min(self.src_w - 1);
-        let y1 = (y0 + 1).min(self.src_h - 1);
-        let tx = fx - x0 as f32;
-        let ty = fy - y0 as f32;
-        let idx = |x: u32, y: u32| (y * self.src_w + x) as usize;
-        let v00 = self.data[idx(x0, y0)];
-        let v10 = self.data[idx(x1, y0)];
-        let v01 = self.data[idx(x0, y1)];
-        let v11 = self.data[idx(x1, y1)];
-        let bottom = v00 + (v10 - v00) * tx;
-        let top = v01 + (v11 - v01) * tx;
-        bottom + (top - bottom) * ty
-    }
-}
-
-/// Try to load the coverage grid for a scene. Returns `Ok(None)` when
-/// the scene has no `coverage_grid` block (the common case);
-/// `Ok(Some(_))` on successful load; `Err(_)` on file-IO or
-/// size-mismatch errors. Errors are logged at `warn` level and the
-/// caller falls back to per-layer scalar coverage.
-fn load_coverage_grid(scene: &Scene) -> Option<LoadedCoverageGrid> {
-    let grid = scene.clouds.coverage_grid.as_ref()?;
-    let [src_w, src_h] = grid.size;
-    let expected_bytes = (src_w as usize) * (src_h as usize) * 4;
-    let bytes = match std::fs::read(&grid.data_path) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(
-                target: "ps_synthesis::weather_map",
-                path = %grid.data_path.display(),
-                error = %e,
-                "coverage grid read failed; falling back to scalar coverage",
-            );
-            return None;
-        }
-    };
-    if bytes.len() != expected_bytes {
-        warn!(
-            target: "ps_synthesis::weather_map",
-            path = %grid.data_path.display(),
-            got = bytes.len(),
-            want = expected_bytes,
-            "coverage grid size mismatch; falling back to scalar coverage",
-        );
-        return None;
-    }
-    let mut data = Vec::with_capacity((src_w as usize) * (src_h as usize));
-    for chunk in bytes.chunks_exact(4) {
-        data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-    }
-    Some(LoadedCoverageGrid {
-        data,
-        src_w,
-        src_h,
-        extent_m: grid.extent_m,
-    })
-}
-
-/// Look up gridded coverage at world (x, z) when a grid is loaded.
-/// Maps world XZ → grid UV using the grid's own extent (which may
-/// differ from [`EXTENT_M`] — the weather map resamples onto its own
-/// 128×128). Returns the bilinear-interpolated coverage in [0, 1],
-/// clamp-to-edge outside the grid's extent.
-fn sample_gridded_coverage(grid: &LoadedCoverageGrid, x: f32, y: f32) -> f32 {
-    let half = grid.extent_m * 0.5;
-    let u = (x + half) / grid.extent_m;
-    let v = (y + half) / grid.extent_m;
-    grid.sample(u, v).clamp(0.0, 1.0)
-}
 
 /// Tiny deterministic 2D value-noise so synthesis is reproducible without
 /// pulling in an extra dependency. Output in [0, 1].

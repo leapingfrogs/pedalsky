@@ -4,15 +4,20 @@
 //! map (§3.2.3), integrate the cloud-density column above using the same
 //! NDF the renderer uses (Phase 6.4 / [`crate::ndf`]). Step the column at
 //! 100 m vertical intervals, multiply by `coverage * density_scale`, and
-//! collapse to a [0, 1] R8 value. Used by Phase 8 precipitation to gate
-//! rain streaks under low cloud.
+//! collapse to a [0, 1] R8 value. Used by:
+//! - Phase 8 precipitation to gate rain streaks under low cloud
+//! - Phase 12.6 ground shader for cloud-modulated overcast diffuse
 //!
-//! Currently the layer-coverage value is uniform across the grid (per
-//! plan §3.2.3 R-channel). Once gridded coverage lands the mask becomes
-//! spatially varying.
+//! Phase 12.1 / followup #76 — when a `coverage_grid` is loaded the
+//! mask becomes spatially varying: each output pixel multiplies the
+//! layer's mean NDF and density_scale by the *gridded* coverage at
+//! that XZ rather than the layer's flat scalar coverage. Without a
+//! grid the mask stays uniform across the 32 km extent (the Phase 3
+//! v1 behaviour).
 
 use ps_core::CloudLayerGpu;
 
+use crate::coverage_grid::LoadedCoverageGrid;
 use crate::ndf;
 
 /// Map dimensions (matches the weather map).
@@ -34,16 +39,45 @@ pub struct TopDownMask {
 }
 
 impl TopDownMask {
-    /// Synthesise from the cloud-layer envelopes.
-    pub fn synthesise(layers: &[CloudLayerGpu]) -> Self {
-        // For v1 the mask is spatially uniform per-layer. We sample the
-        // tallest layer's column-integrated density at the world origin
-        // and broadcast across the grid. Once gridded coverage lands the
-        // inner integral becomes per-pixel.
-        let column_density = integrate_column(layers);
-        let value = (column_density * 255.0).clamp(0.0, 255.0) as u8;
-
-        let pixels = vec![value; (SIZE * SIZE) as usize];
+    /// Synthesise from the cloud-layer envelopes. When `grid` is
+    /// `Some(_)`, the per-pixel coverage is sampled from it; the
+    /// resulting mask varies spatially. When `None`, the mask is
+    /// uniform (the Phase 3 v1 behaviour) using each layer's flat
+    /// `coverage` field.
+    pub fn synthesise(
+        layers: &[CloudLayerGpu],
+        grid: Option<&LoadedCoverageGrid>,
+    ) -> Self {
+        let pixels = match grid {
+            // Spatially-varying: integrate per pixel using the
+            // gridded coverage at that XZ.
+            Some(g) => {
+                let mut out = vec![0u8; (SIZE * SIZE) as usize];
+                let half = EXTENT_M * 0.5;
+                for y in 0..SIZE {
+                    for x in 0..SIZE {
+                        // Pixel centre → world XZ on the same convention
+                        // weather_map uses.
+                        let fx = (x as f32 + 0.5) / SIZE as f32;
+                        let fy = (y as f32 + 0.5) / SIZE as f32;
+                        let gx = fx * EXTENT_M - half;
+                        let gy = fy * EXTENT_M - half;
+                        let cov = g.sample_world(gx, gy);
+                        let col = integrate_column_with_coverage(layers, cov);
+                        out[(y * SIZE + x) as usize] =
+                            (col * 255.0).clamp(0.0, 255.0) as u8;
+                    }
+                }
+                out
+            }
+            // Uniform v1 behaviour: integrate once with each layer's
+            // own coverage and broadcast.
+            None => {
+                let column_density = integrate_column(layers);
+                let value = (column_density * 255.0).clamp(0.0, 255.0) as u8;
+                vec![value; (SIZE * SIZE) as usize]
+            }
+        };
 
         Self {
             pixels,
@@ -98,28 +132,41 @@ impl TopDownMask {
     }
 }
 
-/// Integrate vertical density across all layers and return a normalised
-/// total in [0, 1]. Each layer contributes
-/// `coverage · density_scale · ∫ NDF(h) dh`.
+/// Integrate vertical density across all layers using each layer's
+/// own scalar coverage. Returns a normalised total in [0, 1]. Each
+/// layer contributes `coverage · density_scale · ∫ NDF(h) dh`.
 fn integrate_column(layers: &[CloudLayerGpu]) -> f32 {
     let mut total = 0.0_f32;
     for layer in layers {
-        let thickness = (layer.top_m - layer.base_m).max(1.0);
-        let n_steps = (thickness / STEP_M).ceil().max(1.0) as u32;
-        let dh = 1.0 / n_steps as f32;
-        let mut sum = 0.0_f32;
-        for k in 0..n_steps {
-            let h_norm = (k as f32 + 0.5) * dh;
-            sum += ndf::ndf(h_norm, layer.cloud_type);
-        }
-        // Average NDF over the layer × layer thickness in km × coverage × density.
-        let mean_ndf = sum / n_steps as f32;
-        let layer_density = mean_ndf * (thickness / 1000.0) * layer.coverage * layer.density_scale;
-        total += layer_density;
+        total += per_layer_density(layer, layer.coverage);
     }
-    // Saturate around "10 km of full-density cloud column"; this keeps the
-    // [0, 1] range meaningful without specialising per cloud type.
     (total / 10.0).clamp(0.0, 1.0)
+}
+
+/// Like [`integrate_column`] but every layer uses the same external
+/// `coverage` value (the gridded sample at this XZ). Layers retain
+/// their per-layer `density_scale` and NDF profile.
+fn integrate_column_with_coverage(layers: &[CloudLayerGpu], coverage: f32) -> f32 {
+    let mut total = 0.0_f32;
+    for layer in layers {
+        total += per_layer_density(layer, coverage);
+    }
+    (total / 10.0).clamp(0.0, 1.0)
+}
+
+/// Single-layer column density contribution. Mean NDF × thickness ×
+/// coverage × density_scale.
+fn per_layer_density(layer: &CloudLayerGpu, coverage: f32) -> f32 {
+    let thickness = (layer.top_m - layer.base_m).max(1.0);
+    let n_steps = (thickness / STEP_M).ceil().max(1.0) as u32;
+    let dh = 1.0 / n_steps as f32;
+    let mut sum = 0.0_f32;
+    for k in 0..n_steps {
+        let h_norm = (k as f32 + 0.5) * dh;
+        sum += ndf::ndf(h_norm, layer.cloud_type);
+    }
+    let mean_ndf = sum / n_steps as f32;
+    mean_ndf * (thickness / 1000.0) * coverage * layer.density_scale
 }
 
 #[cfg(test)]
@@ -141,20 +188,46 @@ mod tests {
 
     #[test]
     fn empty_layers_produce_zero_mask() {
-        let mask = TopDownMask::synthesise(&[]);
+        let mask = TopDownMask::synthesise(&[], None);
         assert!(mask.pixels.iter().all(|&v| v == 0));
     }
 
     #[test]
     fn cumulus_produces_nonzero_mask() {
-        let mask = TopDownMask::synthesise(&[cumulus_layer(0.5)]);
+        let mask = TopDownMask::synthesise(&[cumulus_layer(0.5)], None);
         assert!(mask.pixels[0] > 0, "mask should be > 0 under cumulus");
     }
 
     #[test]
     fn higher_coverage_gives_higher_mask() {
-        let low = TopDownMask::synthesise(&[cumulus_layer(0.2)]);
-        let high = TopDownMask::synthesise(&[cumulus_layer(0.9)]);
+        let low = TopDownMask::synthesise(&[cumulus_layer(0.2)], None);
+        let high = TopDownMask::synthesise(&[cumulus_layer(0.9)], None);
         assert!(high.pixels[0] > low.pixels[0]);
+    }
+
+    #[test]
+    fn gridded_coverage_produces_spatially_varying_mask() {
+        // 4×4 grid: full coverage on the left half, zero on the right.
+        let data: Vec<f32> = (0..16)
+            .map(|i| if (i % 4) < 2 { 1.0 } else { 0.0 })
+            .collect();
+        let grid = LoadedCoverageGrid {
+            data,
+            src_w: 4,
+            src_h: 4,
+            extent_m: EXTENT_M,
+        };
+        let mask = TopDownMask::synthesise(&[cumulus_layer(0.5)], Some(&grid));
+        // Sample left side (world x ≈ -8000) vs right side (x ≈ +8000)
+        // — they should differ.
+        let left_mask = mask.pixels[(SIZE / 2 * SIZE + SIZE / 4) as usize];
+        let right_mask =
+            mask.pixels[(SIZE / 2 * SIZE + 3 * SIZE / 4) as usize];
+        assert!(
+            left_mask > right_mask,
+            "left (full coverage) mask should exceed right (zero coverage) — \
+             got left={left_mask}, right={right_mask}"
+        );
+        assert!(right_mask < 8, "right side should be near-zero (got {right_mask})");
     }
 }

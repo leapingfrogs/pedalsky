@@ -24,6 +24,7 @@
 
 pub mod cloud_layers;
 pub mod cloud_type_grid;
+pub mod coverage_grid;
 pub mod density_mask;
 pub mod koschmieder;
 pub mod ndf;

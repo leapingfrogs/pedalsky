@@ -86,6 +86,12 @@ pub fn synthesise(
         },
     };
 
+    // Phase 12.1 — load the gridded coverage once. None when the
+    // scene has no `coverage_grid` block or when the file failed to
+    // load. Used by both the weather map (R-channel spatial gate)
+    // and the top-down density mask (per-pixel column integral).
+    let loaded_grid = crate::coverage_grid::load(scene);
+
     // §3.2.3 weather map.
     let weather_map = WeatherMap::synthesise(scene, &scene.surface);
     let (wm_tex, wm_view) = weather_map.upload(&gpu.device, &gpu.queue);
@@ -94,8 +100,11 @@ pub fn synthesise(
     let wind = WindField::synthesise(scene);
     let (wf_tex, wf_view) = wind.upload(&gpu.device, &gpu.queue);
 
-    // §3.2.5 top-down density mask.
-    let mask = TopDownMask::synthesise(&cloud_layers);
+    // §3.2.5 top-down density mask. Phase 12.1 / followup #76 — when
+    // a coverage grid is loaded the per-pixel mask reflects it; the
+    // ground shader's overcast-diffuse modulation (Phase 12.6) then
+    // brightens up the gaps between cloud lozenges as expected.
+    let mask = TopDownMask::synthesise(&cloud_layers, loaded_grid.as_ref());
     let (m_tex, m_view) = mask.upload(&gpu.device, &gpu.queue);
 
     // Phase 12.1 — per-pixel cloud-type override grid. Sentinel-
