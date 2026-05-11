@@ -24,3 +24,9 @@ egui.workspace         = true
 egui-wgpu.workspace    = true
 egui-winit.workspace   = true
 exr.workspace          = true
+# Native file-open/save dialogs for the top bar's Load scene… /
+# Save scene… buttons. `rfd` is widely used and bundles its own
+# platform integration (Win32 IFileDialog on Windows, GTK/Zenity on
+# Linux, AppKit on macOS). Plan §10.4 requires these buttons to
+# work; without rfd they were stubs returning hardcoded paths.
+rfd = "0.15"

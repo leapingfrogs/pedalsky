@@ -69,14 +69,39 @@ fn top_bar(ctx: &egui::Context, state: &mut UiState) {
     });
 }
 
-// We don't depend on rfd to keep dep count down. Use a synchronous path-
-// input fallback: the buttons set a flag that the host can later wire to
-// a real picker. For now the host expects a default path.
+// Native file dialogs via `rfd` (plan §10.4). Filtered to .toml so
+// only valid scene files appear. Default directory is the workspace
+// `tests/scenes/` since that's where the reference scenes live;
+// `scenes/` (the live-app directory) is reachable from there in one
+// click via the dialog's parent navigation.
 fn rfd_pick_open() -> Option<std::path::PathBuf> {
-    Some(std::path::PathBuf::from("scenes/loaded.toml"))
+    rfd::FileDialog::new()
+        .set_title("Load scene")
+        .add_filter("Scene TOML", &["toml"])
+        .set_directory(default_scenes_dir())
+        .pick_file()
 }
+
 fn rfd_pick_save() -> Option<std::path::PathBuf> {
-    Some(std::path::PathBuf::from("scenes/saved.toml"))
+    rfd::FileDialog::new()
+        .set_title("Save scene")
+        .add_filter("Scene TOML", &["toml"])
+        .set_directory(default_scenes_dir())
+        .set_file_name("scene.toml")
+        .save_file()
+}
+
+/// Locate a sensible default directory for the file picker. Tries
+/// the workspace's `tests/scenes/` first (the reference scenes
+/// live there); falls back to the current working directory.
+fn default_scenes_dir() -> std::path::PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let candidate = cwd.join("tests").join("scenes");
+    if candidate.is_dir() {
+        candidate
+    } else {
+        cwd
+    }
 }
 
 // ---------------------------------------------------------------------------
