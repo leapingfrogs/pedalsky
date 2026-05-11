@@ -150,8 +150,15 @@ pub struct SurfaceParams {
     pub snow_depth_m: f32,
     /// Wetness threshold for puddles, default 0.6.
     pub puddle_start: f32,
-    /// _pad to bring the struct to a 16B boundary.
-    pub _pad: [f32; 2],
+    /// Precipitation intensity in mm/h. Mirrors the source value the
+    /// Phase 8 precip subsystem reads from `Scene.precipitation`. Lives
+    /// here so the Phase 7 ground shader can also consult it (for ripple
+    /// strength). `0` when there is no precipitation.
+    pub precip_intensity_mm_per_h: f32,
+    /// Precipitation kind. `0` = none, `1` = rain, `2` = snow, `3` = sleet
+    /// (matches `ps_core::PrecipKind` ordering). Stored as `f32` so it
+    /// lives inside the same uniform without alignment surprises.
+    pub precip_kind: f32,
 }
 
 impl Default for SurfaceParams {
@@ -167,7 +174,8 @@ impl Default for SurfaceParams {
             puddle_coverage: 0.0,
             snow_depth_m: 0.0,
             puddle_start: 0.6,
-            _pad: [0.0; 2],
+            precip_intensity_mm_per_h: 0.0,
+            precip_kind: 0.0,
         }
     }
 }
@@ -300,6 +308,29 @@ impl WeatherState {
         let (wind_field, wind_field_view) = make_3d();
         let (top_down_density_mask, top_down_density_mask_view) =
             make_2d("stub-mask", wgpu::TextureFormat::R8Unorm);
+        // Upload mask = 1.0 so the Phase 8 cloud-occlusion gate doesn't
+        // zero rain in tests (the real synthesis populates this from the
+        // cloud layers; tests stub it as "fully covered" to exercise the
+        // precip pipeline).
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &top_down_density_mask,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
         let cloud_layers_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stub-cloud-layers"),
             size: std::mem::size_of::<CloudLayerGpu>() as u64,

@@ -8,5 +8,10 @@ publish.workspace = true
 description = "PedalSky precipitation subsystem (Phase 8: rain / snow / surface ripples)"
 
 [dependencies]
-ps-core.workspace = true
-anyhow.workspace  = true
+ps-core.workspace   = true
+anyhow.workspace    = true
+bytemuck.workspace  = true
+glam.workspace      = true
+tracing.workspace   = true
+wgpu.workspace      = true
+half.workspace      = true

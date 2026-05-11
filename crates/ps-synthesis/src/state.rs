@@ -76,7 +76,13 @@ pub fn synthesise(
         puddle_coverage: scene.surface.wetness.puddle_coverage,
         snow_depth_m: scene.surface.wetness.snow_depth_m,
         puddle_start: scene.surface.wetness.puddle_start,
-        _pad: [0.0; 2],
+        precip_intensity_mm_per_h: scene.precipitation.intensity_mm_per_h,
+        precip_kind: match scene.precipitation.kind {
+            ps_core::PrecipKind::None => 0.0,
+            ps_core::PrecipKind::Rain => 1.0,
+            ps_core::PrecipKind::Snow => 2.0,
+            ps_core::PrecipKind::Sleet => 3.0,
+        },
     };
 
     // §3.2.3 weather map.

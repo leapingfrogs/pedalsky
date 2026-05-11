@@ -1,28 +1,598 @@
-//! PedalSky precipitation subsystem (Phase 8 stub).
+//! PedalSky precipitation subsystem (Phase 8: Schneider/Hillaire-style
+//! near rain particles + far-rain screen-space streaks + snow + cloud
+//! occlusion).
 //!
-//! Phase 8 implements compute-driven near rain particles, three layered
-//! screen-space far-rain streak textures, snow with terminal velocity ~1
-//! m/s, and animated normal-map ripples on wet surfaces. Until then this
-//! is a no-op `RenderSubsystem` so plan §0.1 is satisfied.
+//! Pass schedule:
+//! - `Compute` — particle advance (pos += v·dt, respawn outside cylinder).
+//! - `Translucent` — instanced quad render of near particles.
+//! - `Translucent` — three layered far-rain streak fullscreen quads.
+//!
+//! All passes early-return when:
+//! - intensity_mm_per_h == 0 (no precipitation), or
+//! - the scene has zero clouds (top_down_density_mask is uniformly 0 →
+//!   shader-side `cloud_mask * intensity` collapses to 0).
+//!
+//! `[render.subsystems].precipitation` is the master toggle — when off
+//! the factory returns the no-op subsystem variant to skip allocation.
 
 #![deny(missing_docs)]
 
+pub mod uniforms;
+
+use std::sync::{Arc, Mutex};
+
+use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
+    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
+    RegisteredPass, RenderSubsystem, SubsystemFactory,
 };
+
+pub use uniforms::{FarRainLayerGpu, PrecipUniformsGpu};
 
 /// Stable subsystem name (matches `[render.subsystems].precipitation`).
 pub const NAME: &str = "precipitation";
 
-/// Phase 8 precipitation subsystem. Currently a no-op — registers no passes.
+const ADVANCE_SHADER: &str = include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
+const RENDER_SHADER: &str = include_str!("../../../shaders/precip/particle_render.wgsl");
+const FAR_RAIN_SHADER: &str = include_str!("../../../shaders/precip/far_rain.wgsl");
+
+const SPAWN_RADIUS_M: f32 = 50.0;
+const SPAWN_TOP_M: f32 = 30.0;
+const RAIN_FALL_MPS: f32 = 6.0;
+const SNOW_FALL_MPS: f32 = 1.0;
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug)]
+struct Particle {
+    position: [f32; 3],
+    age: f32,
+    velocity: [f32; 3],
+    kind: u32,
+}
+
+/// One particle pool (rain or snow). Owns the storage buffer + the
+/// compute bind group. The render bind group is rebuilt every frame in
+/// `prepare()` because it includes the live density-mask view from
+/// WeatherState.
+struct ParticlePool {
+    particle_buf: wgpu::Buffer,
+    uniforms_buf: wgpu::Buffer,
+    compute_bg: wgpu::BindGroup,
+    count: u32,
+    kind: u32,
+    fall_mps: f32,
+}
+
+/// Far-rain layer (per-layer uniform). The bind group itself is rebuilt
+/// every frame against the live density-mask view.
+struct FarRainLayer {
+    layer_buf: wgpu::Buffer,
+    #[allow(dead_code)]
+    depth_m: f32,
+}
+
+/// Phase 8 precipitation subsystem.
 pub struct PrecipSubsystem {
     enabled: bool,
+
+    /// Two pools: one for rain, one for snow. Both are always allocated;
+    /// only the kind matching the current `PrecipKind` is dispatched.
+    rain_pool: Arc<ParticlePool>,
+    snow_pool: Arc<ParticlePool>,
+
+    /// Pre-built far-rain layers (3 layers).
+    far_layers: Vec<Arc<FarRainLayer>>,
+
+    /// Compute pipeline (shared between rain + snow pools).
+    advance_pipeline: Arc<wgpu::ComputePipeline>,
+    /// Particle render pipeline.
+    render_pipeline: Arc<wgpu::RenderPipeline>,
+    /// Far-rain render pipeline.
+    far_pipeline: Arc<wgpu::RenderPipeline>,
+
+    /// Most-recent kind from WeatherState (0 none, 1 rain, 2 snow, 3 sleet).
+    /// Shared with pass closures via Arc<Mutex>.
+    state: Arc<Mutex<PrecipState>>,
+
+    /// Layouts + sampler used to rebuild bind groups in `prepare()`.
+    bg_builder: Arc<BindGroupBuilder>,
+
+    /// Live render bind group (rebuilt each frame against the current
+    /// density mask view).
+    live_render_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
+
+    /// Live far-rain bind groups (one per layer).
+    live_far_bgs: Arc<Mutex<Vec<Arc<wgpu::BindGroup>>>>,
+}
+
+#[derive(Default)]
+struct PrecipState {
+    kind: u32,
+    intensity_mm_per_h: f32,
 }
 
 impl PrecipSubsystem {
     /// Construct.
-    pub fn new(_config: &Config, _gpu: &GpuContext) -> Self {
-        Self { enabled: true }
+    pub fn new(config: &Config, gpu: &GpuContext) -> Self {
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+
+        let count = config.render.precip.near_particle_count.max(64);
+
+        // Compute bind layout: storage particle buffer + uniform.
+        let compute_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("precip-compute-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // Render bind layout: storage particle (read-only) + uniform +
+        // top-down density mask + sampler.
+        let render_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("precip-render-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        // Far-rain bind layout: PrecipUniforms + density mask + sampler +
+        // LayerUniform.
+        let far_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("precip-far-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        // Compute pipeline (one, shared).
+        let advance_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("precip::advance"),
+            source: wgpu::ShaderSource::Wgsl(ADVANCE_SHADER.into()),
+        });
+        let advance_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("precip::advance-pl"),
+            bind_group_layouts: &[Some(&compute_layout)],
+            immediate_size: 0,
+        });
+        let advance_pipeline =
+            Arc::new(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("precip::advance-pipeline"),
+                layout: Some(&advance_pl_layout),
+                module: &advance_module,
+                entry_point: Some("cs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                cache: None,
+            }));
+
+        // Particle render pipeline.
+        let render_src = ps_core::shaders::compose(&[
+            ps_core::shaders::COMMON_UNIFORMS_WGSL,
+            RENDER_SHADER,
+        ]);
+        let render_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("precip::render"),
+            source: wgpu::ShaderSource::Wgsl(render_src.into()),
+        });
+        let frame_layout = frame_bind_group_layout(device);
+        let render_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("precip::render-pl"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&render_layout)],
+            immediate_size: 0,
+        });
+        let render_pipeline =
+            Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("precip::render-pipeline"),
+                layout: Some(&render_pl_layout),
+                vertex: wgpu::VertexState {
+                    module: &render_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &render_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: HdrFramebuffer::DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            }));
+
+        // Far rain pipeline.
+        let far_src = ps_core::shaders::compose(&[
+            ps_core::shaders::COMMON_UNIFORMS_WGSL,
+            FAR_RAIN_SHADER,
+        ]);
+        let far_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("precip::far"),
+            source: wgpu::ShaderSource::Wgsl(far_src.into()),
+        });
+        let far_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("precip::far-pl"),
+            bind_group_layouts: &[Some(&frame_layout), Some(&far_layout)],
+            immediate_size: 0,
+        });
+        let far_pipeline =
+            Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("precip::far-pipeline"),
+                layout: Some(&far_pl_layout),
+                vertex: wgpu::VertexState {
+                    module: &far_module,
+                    entry_point: Some("vs_fullscreen"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &far_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: HdrFramebuffer::DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    // Reverse-Z: draw in front of farther geometry only.
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            }));
+
+        // Sampler shared by render + far passes.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("precip-density-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Per-pool resources. The bind groups need a top-down density
+        // texture view at construction time; we use a 1x1 placeholder that
+        // gets rebuilt every frame in `prepare()`.
+        let placeholder_mask = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("precip-mask-placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let placeholder_view =
+            placeholder_mask.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let make_pool = |kind: u32, fall_mps: f32| -> Arc<ParticlePool> {
+            // Allocate the storage buffer with all particles flagged as
+            // "fresh" (age < 0) so the first compute dispatch respawns
+            // them inside the cylinder.
+            let mut initial = vec![
+                Particle {
+                    position: [0.0; 3],
+                    age: -1.0,
+                    velocity: [0.0; 3],
+                    kind,
+                };
+                count as usize
+            ];
+            for (i, p) in initial.iter_mut().enumerate() {
+                // Slight per-particle seeding so age stays negative but
+                // distinct (avoids a single first-frame draw being all
+                // identical positions).
+                p.age = -1.0 - i as f32 * 1e-6;
+            }
+            let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("precip-particle-buf"),
+                size: std::mem::size_of_val(initial.as_slice()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&particle_buf, 0, bytemuck::cast_slice(&initial));
+
+            let uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("precip-uniforms-buf"),
+                size: std::mem::size_of::<PrecipUniformsGpu>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("precip-compute-bg"),
+                layout: &compute_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: particle_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: uniforms_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            Arc::new(ParticlePool {
+                particle_buf,
+                uniforms_buf,
+                compute_bg,
+                count,
+                kind,
+                fall_mps,
+            })
+        };
+
+        let rain_pool = make_pool(0, RAIN_FALL_MPS);
+        let snow_pool = make_pool(1, SNOW_FALL_MPS);
+
+        // Far rain layers (3): depths 50, 200, 1000 m per plan §8.2.
+        let layer_specs: [(f32, f32, f32, f32); 3] = [
+            // (depth_m, streak_density (per screen-height), streak_length_px, alpha)
+            (50.0, 60.0, 120.0, 1.0),
+            (200.0, 40.0, 80.0, 0.7),
+            (1000.0, 25.0, 50.0, 0.4),
+        ];
+        let mut far_layers = Vec::with_capacity(3);
+        for spec in &layer_specs {
+            let layer = FarRainLayerGpu {
+                depth_m: spec.0,
+                streak_density: spec.1,
+                streak_length_px: spec.2,
+                intensity_scale: spec.3,
+            };
+            let layer_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("precip-far-layer-buf"),
+                size: std::mem::size_of::<FarRainLayerGpu>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&layer_buf, 0, bytes_of(&layer));
+            far_layers.push(Arc::new(FarRainLayer {
+                layer_buf,
+                depth_m: spec.0,
+            }));
+        }
+        let _ = placeholder_view;
+
+        // Stash the layouts + sampler on the subsystem so prepare() can
+        // rebuild bind groups against the live density mask view.
+        let bg_builder = BindGroupBuilder {
+            render_layout,
+            far_layout,
+            sampler,
+        };
+
+        Self {
+            enabled: true,
+            rain_pool,
+            snow_pool,
+            far_layers,
+            advance_pipeline,
+            render_pipeline,
+            far_pipeline,
+            state: Arc::new(Mutex::new(PrecipState::default())),
+            bg_builder: Arc::new(bg_builder),
+            live_render_bg: Arc::new(Mutex::new(None)),
+            live_far_bgs: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+struct BindGroupBuilder {
+    render_layout: wgpu::BindGroupLayout,
+    far_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl PrecipSubsystem {
+    /// Build the render bind group for `pool` with `mask_view` plumbed in.
+    fn build_render_bg(
+        device: &wgpu::Device,
+        builder: &BindGroupBuilder,
+        pool: &ParticlePool,
+        mask_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("precip-render-bg-live"),
+            layout: &builder.render_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pool.particle_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: pool.uniforms_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&builder.sampler),
+                },
+            ],
+        })
+    }
+
+    fn build_far_bg(
+        device: &wgpu::Device,
+        builder: &BindGroupBuilder,
+        active_pool: &ParticlePool,
+        layer: &FarRainLayer,
+        mask_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("precip-far-bg-live"),
+            layout: &builder.far_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: active_pool.uniforms_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&builder.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: layer.layer_buf.as_entire_binding(),
+                },
+            ],
+        })
     }
 }
 
@@ -30,10 +600,234 @@ impl RenderSubsystem for PrecipSubsystem {
     fn name(&self) -> &'static str {
         "precipitation"
     }
-    fn prepare(&mut self, _ctx: &mut PrepareContext<'_>) {}
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        Vec::new()
+
+    fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
+        let intensity = ctx.weather.surface.precip_intensity_mm_per_h.max(0.0);
+        let kind_f = ctx.weather.surface.precip_kind;
+        let kind = kind_f as u32;
+        *self.state.lock().expect("precip: state lock") = PrecipState {
+            kind,
+            intensity_mm_per_h: intensity,
+        };
+
+        // Wind sample at the camera. For Phase 8 we use the surface wind
+        // (10 m AGL) — the wind_field 3D texture sampling at altitude
+        // would require either a CPU-side trilinear lookup or another
+        // bind group; Phase 3's surface scalar is correct for near-camera
+        // particles.
+        let surface = ctx.weather.surface;
+        let wind_dir_rad = surface.wind_dir_deg.to_radians();
+        // Meteorological convention: wind_dir_deg is the direction the
+        // wind comes from, so the velocity vector points opposite.
+        let wind_vec = [
+            -surface.wind_speed_mps * wind_dir_rad.sin(),
+            0.0,
+            -surface.wind_speed_mps * wind_dir_rad.cos(),
+            0.0,
+        ];
+        let camera = [
+            ctx.frame_uniforms.camera_position_world.x,
+            ctx.frame_uniforms.camera_position_world.y,
+            ctx.frame_uniforms.camera_position_world.z,
+            0.0,
+        ];
+
+        for (pool, active_kind) in [(&self.rain_pool, 0u32), (&self.snow_pool, 1u32)] {
+            // Only feed live intensity to the matching pool; the other
+            // gets zero so its particles are still updated (cheap) but
+            // not rendered.
+            let live = match (kind, active_kind) {
+                (1, 0) | (3, 0) => intensity, // rain or sleet → rain
+                (2, 1) | (3, 1) => intensity, // snow or sleet → snow
+                _ => 0.0,
+            };
+            let u = PrecipUniformsGpu {
+                camera_position: camera,
+                wind_velocity: wind_vec,
+                intensity_mm_per_h: live,
+                dt_seconds: ctx.dt_seconds,
+                simulated_seconds: ctx.frame_uniforms.simulated_seconds,
+                kind: pool.kind,
+                particle_count: pool.count,
+                spawn_radius_m: SPAWN_RADIUS_M,
+                spawn_top_m: SPAWN_TOP_M,
+                fall_speed_mps: pool.fall_mps,
+                _pad: [0.0; 4],
+            };
+            ctx.queue.write_buffer(&pool.uniforms_buf, 0, bytes_of(&u));
+        }
+
+        // Rebuild bind groups against the live density mask view.
+        let mask_view = &ctx.weather.textures.top_down_density_mask_view;
+        let active_pool = match kind {
+            2 => &self.snow_pool,
+            _ => &self.rain_pool,
+        };
+        let render_bg =
+            Self::build_render_bg(ctx.device, &self.bg_builder, active_pool, mask_view);
+        *self.live_render_bg.lock().expect("precip: live bg lock") = Some(Arc::new(render_bg));
+
+        let mut far_bgs = Vec::with_capacity(self.far_layers.len());
+        for layer in &self.far_layers {
+            let bg = Self::build_far_bg(ctx.device, &self.bg_builder, active_pool, layer, mask_view);
+            far_bgs.push(Arc::new(bg));
+        }
+        *self.live_far_bgs.lock().expect("precip: live far bgs lock") = far_bgs;
     }
+
+    fn register_passes(&self) -> Vec<RegisteredPass> {
+        let advance = self.advance_pipeline.clone();
+        let render = self.render_pipeline.clone();
+        let far = self.far_pipeline.clone();
+        let rain_pool = self.rain_pool.clone();
+        let snow_pool = self.snow_pool.clone();
+        let far_layers = self.far_layers.clone();
+        let state = self.state.clone();
+        let live_render_bg = self.live_render_bg.clone();
+        let live_far_bgs = self.live_far_bgs.clone();
+
+        vec![
+            // 1. Advance both pools (cheap when intensity = 0; the GPU
+            //    work is just respawn churn).
+            RegisteredPass {
+                name: "precip::advance",
+                stage: PassStage::Compute,
+                run: Box::new({
+                    let advance = advance.clone();
+                    let rain = rain_pool.clone();
+                    let snow = snow_pool.clone();
+                    let state = state.clone();
+                    move |encoder, _ctx| {
+                        let st = state.lock().expect("precip: state lock");
+                        if st.intensity_mm_per_h <= 0.0 {
+                            return;
+                        }
+                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("precip::advance"),
+                            timestamp_writes: None,
+                        });
+                        pass.set_pipeline(&advance);
+                        let active = match st.kind {
+                            2 => &snow,
+                            _ => &rain,
+                        };
+                        pass.set_bind_group(0, &active.compute_bg, &[]);
+                        let groups = active.count.div_ceil(64);
+                        pass.dispatch_workgroups(groups, 1, 1);
+                    }
+                }),
+            },
+            // 2. Near-particle render.
+            RegisteredPass {
+                name: "precip::near",
+                stage: PassStage::Translucent,
+                run: Box::new({
+                    let render = render.clone();
+                    let rain = rain_pool.clone();
+                    let snow = snow_pool.clone();
+                    let state = state.clone();
+                    let live_bg = live_render_bg.clone();
+                    move |encoder, ctx| {
+                        let st = state.lock().expect("precip: state lock");
+                        if st.intensity_mm_per_h <= 0.0 {
+                            return;
+                        }
+                        let bg_guard = live_bg.lock().expect("precip: bg lock");
+                        let Some(bg) = bg_guard.as_ref() else {
+                            return;
+                        };
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("precip::near"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &ctx.framebuffer.color_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: &ctx.framebuffer.depth_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        pass.set_pipeline(&render);
+                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                        pass.set_bind_group(1, bg.as_ref(), &[]);
+                        let active = match st.kind {
+                            2 => &snow,
+                            _ => &rain,
+                        };
+                        pass.draw(0..6, 0..active.count);
+                    }
+                }),
+            },
+            // 3. Far rain (3 layers, all rendered each frame; the shader
+            //    early-discards when intensity * cloud_mask is too low).
+            RegisteredPass {
+                name: "precip::far",
+                stage: PassStage::Translucent,
+                run: Box::new({
+                    let far = far.clone();
+                    let layers = far_layers.clone();
+                    let state = state.clone();
+                    let live_bgs = live_far_bgs.clone();
+                    move |encoder, ctx| {
+                        let st = state.lock().expect("precip: state lock");
+                        if st.intensity_mm_per_h <= 0.0 {
+                            return;
+                        }
+                        let bgs_guard = live_bgs.lock().expect("precip: live far bgs lock");
+                        if bgs_guard.is_empty() {
+                            return;
+                        }
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("precip::far"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &ctx.framebuffer.color_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: Some(
+                                wgpu::RenderPassDepthStencilAttachment {
+                                    view: &ctx.framebuffer.depth_view,
+                                    depth_ops: Some(wgpu::Operations {
+                                        load: wgpu::LoadOp::Load,
+                                        store: wgpu::StoreOp::Store,
+                                    }),
+                                    stencil_ops: None,
+                                },
+                            ),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        pass.set_pipeline(&far);
+                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                        for (_layer, bg) in layers.iter().zip(bgs_guard.iter()) {
+                            pass.set_bind_group(1, bg.as_ref(), &[]);
+                            pass.draw(0..3, 0..1);
+                        }
+                    }
+                }),
+            },
+        ]
+    }
+
     fn enabled(&self) -> bool {
         self.enabled
     }
@@ -51,5 +845,12 @@ impl SubsystemFactory for PrecipFactory {
     }
     fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(PrecipSubsystem::new(config, gpu)))
+    }
+}
+
+impl PrecipSubsystem {
+    /// Test helper: returns the rain particle pool's count.
+    pub fn rain_particle_count(&self) -> u32 {
+        self.rain_pool.count
     }
 }

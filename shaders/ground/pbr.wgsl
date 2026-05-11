@@ -163,6 +163,95 @@ fn brdf(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 8.5 surface ripples
+//
+// Procedural ripple field driven by simulated_seconds. Each spatial
+// "spawn cell" (1 m × 1 m) chooses a Halton-sequenced spawn time per
+// second of simulation; the ripple wave is a damped sin centred on the
+// cell, expanding at ~0.5 m/s with a 0.6 s lifetime. Multiple spawns
+// per second per cell stack via XOR-rotated cell hashes.
+//
+// The function returns a perturbation to the surface normal in the
+// XZ plane (the water surface tangent space). The caller composes this
+// with the base normal.
+// ---------------------------------------------------------------------------
+
+const RIPPLE_LIFETIME_S: f32 = 0.6;
+const RIPPLE_SPEED_MPS: f32 = 0.5;
+const RIPPLE_AMPLITUDE: f32 = 0.4;
+const RIPPLE_FREQ_HZ: f32 = 6.0;
+
+fn halton2(i: u32, base: u32) -> f32 {
+    var f = 1.0;
+    var r = 0.0;
+    var ii = i;
+    loop {
+        if (ii == 0u) { break; }
+        f = f / f32(base);
+        r = r + f * f32(ii % base);
+        ii = ii / base;
+    }
+    return r;
+}
+
+/// Compute the ripple-induced surface normal perturbation at world
+/// position `p_xz`. `intensity` ∈ [0, 1] scales the wave amplitude
+/// (for fading in / out as precipitation starts).
+fn ripple_normal_offset(p_xz: vec2<f32>, time_s: f32, intensity: f32) -> vec2<f32> {
+    if (intensity <= 0.0) { return vec2<f32>(0.0); }
+    let cell_size = 1.0;
+    let cell = vec2<i32>(floor(p_xz / cell_size));
+    var dn = vec2<f32>(0.0);
+    // Examine the 3x3 neighbourhood; ripples that started in nearby
+    // cells can have travelled into this one.
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let c = cell + vec2<i32>(dx, dy);
+            let h = hash21(c);
+            // Two spawns per cell per second of sim time. Use the cell
+            // hash to pick offsets within the second.
+            for (var spawn = 0u; spawn < 2u; spawn = spawn + 1u) {
+                let phase = halton2(h ^ (spawn * 0x9e3779b9u), 2u);
+                // Time within current 1 s slot when this spawn fires.
+                let t_in_second = phase;
+                let t_floor = floor(time_s);
+                var spawn_t = t_floor + t_in_second;
+                if (spawn_t > time_s) { spawn_t = spawn_t - 1.0; }
+                let age = time_s - spawn_t;
+                if (age < 0.0 || age > RIPPLE_LIFETIME_S) { continue; }
+
+                // Centre the ripple inside the cell using a second
+                // Halton dimension.
+                let cx = halton2(h, 3u);
+                let cz = halton2(h ^ 0xa5a5a5a5u, 5u);
+                let centre = vec2<f32>(f32(c.x) + cx, f32(c.y) + cz) * cell_size;
+                let to_p = p_xz - centre;
+                let r = length(to_p);
+                if (r < 1e-4) { continue; }
+                // Ripple expands at RIPPLE_SPEED_MPS; the wavefront sits
+                // at radius age * speed.
+                let front = age * RIPPLE_SPEED_MPS;
+                let dr = r - front;
+                if (dr > 0.0 || dr < -2.0 * RIPPLE_SPEED_MPS * RIPPLE_LIFETIME_S) {
+                    // Outside the visible wavefront window.
+                    continue;
+                }
+                // Sin wave behind the front, damped by age.
+                let damp = clamp(1.0 - age / RIPPLE_LIFETIME_S, 0.0, 1.0);
+                let amp = damp * damp * RIPPLE_AMPLITUDE * intensity;
+                let phase_rad = dr * RIPPLE_FREQ_HZ * 2.0 * GR_PI / max(RIPPLE_SPEED_MPS, 1e-3);
+                let dh = sin(phase_rad) * amp;
+                // Normal offset in XZ direction toward the centre,
+                // proportional to dh.
+                let dir = to_p / r;
+                dn = dn + dir * dh;
+            }
+        }
+    }
+    return dn;
+}
+
+// ---------------------------------------------------------------------------
 // Lagarde 2013 wet material
 // ---------------------------------------------------------------------------
 
@@ -270,13 +359,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // Smooth water layer: roughness ~0.05, F0 = 0.02.
             let water_roughness = 0.05;
             let water_f0 = vec3<f32>(0.02);
-            let f_water = brdf(n, v, sun_dir, vec3<f32>(0.0), water_roughness, water_f0);
+
+            // Phase 8.5 ripples: only when wetness > 0.5 AND precip > 0.
+            // The check matches plan §8.5 verbatim.
+            var n_water = vec3<f32>(0.0, 1.0, 0.0);
+            if (wetness > 0.5 && surface.precip_intensity_mm_per_h > 0.0) {
+                let ripple_intensity = clamp(
+                    surface.precip_intensity_mm_per_h / 25.0, 0.0, 1.0,
+                );
+                let dn = ripple_normal_offset(p.xz, frame.simulated_seconds, ripple_intensity);
+                n_water = normalize(vec3<f32>(-dn.x, 1.0, -dn.y));
+            }
+
+            let f_water = brdf(n_water, v, sun_dir, vec3<f32>(0.0), water_roughness, water_f0);
             let water_direct = f_water * direct_E;
             // Specular reflection of sky off the water surface; sample
-            // sky-view LUT at the reflected view direction.
-            let r = reflect(-v, n);
+            // sky-view LUT at the reflected view direction (with the
+            // ripple-perturbed normal).
+            let r = reflect(-v, n_water);
             let sky_refl = sample_sky_at(p, r, sun_dir);
-            let n_dot_v = max(dot(n, v), 1e-4);
+            let n_dot_v = max(dot(n_water, v), 1e-4);
             let f_v = fresnel_schlick(n_dot_v, water_f0);
             let water_lit = water_direct + f_v * sky_refl;
             lit = mix(lit, water_lit, puddle_mask);

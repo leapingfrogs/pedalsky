@@ -61,6 +61,6 @@ struct SurfaceParams {
     puddle_coverage: f32,
     snow_depth_m: f32,
     puddle_start: f32,
-    _pad_0: f32,
-    _pad_1: f32,
+    precip_intensity_mm_per_h: f32,
+    precip_kind: f32,
 };

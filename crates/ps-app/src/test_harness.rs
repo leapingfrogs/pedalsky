@@ -174,6 +174,19 @@ impl HeadlessApp {
         camera: ps_core::camera::FlyCamera,
         surface_override: Option<ps_core::SurfaceParams>,
     ) -> Vec<u8> {
+        self.render_one_frame_with_surface_and_mask(gpu, camera, surface_override, None)
+    }
+
+    /// Full variant: also overrides the top-down cloud-density mask. The
+    /// stub defaults the mask to 1.0 (fully covered); pass `Some(0.0)` to
+    /// simulate "no clouds present" for Phase 8 cloud-occlusion tests.
+    pub fn render_one_frame_with_surface_and_mask(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+        surface_override: Option<ps_core::SurfaceParams>,
+        cloud_mask_override: Option<f32>,
+    ) -> Vec<u8> {
         let (w, h) = self.setup.size;
         let aspect = w as f32 / h as f32;
         let view = camera.view_matrix();
@@ -184,6 +197,28 @@ impl HeadlessApp {
         let mut weather = ps_core::WeatherState::stub_for_tests(gpu);
         if let Some(s) = surface_override {
             weather.surface = s;
+        }
+        if let Some(mask_value) = cloud_mask_override {
+            let v = (mask_value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &weather.textures.top_down_density_mask,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                std::slice::from_ref(&v),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
 
         let mut frame_uniforms = FrameUniforms {

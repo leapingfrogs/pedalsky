@@ -2107,7 +2107,12 @@ name = "ps-precip"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
+ "glam",
+ "half",
  "ps-core",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
