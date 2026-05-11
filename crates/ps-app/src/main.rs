@@ -997,10 +997,15 @@ impl RunState {
         if !gpu_passes.is_empty() {
             self.ui_handle.lock().frame_stats.gpu_passes = gpu_passes;
         }
-        // Phase 10.A4: drain probe-pixel transmittance.
+        // Phase 10.A4 / 13.10: drain probe-pixel readout
+        // (transmittance + per-component OD).
         if luts_bind_group.is_some() {
-            if let Ok(t) = self.probe.read(&self.windowed_gpu.gpu) {
-                self.ui_handle.lock().debug.probe_transmittance = t;
+            if let Ok(r) = self.probe.read(&self.windowed_gpu.gpu) {
+                let mut h = self.ui_handle.lock();
+                h.debug.probe_transmittance = r.transmittance;
+                h.debug.probe_od_rayleigh = r.od_rayleigh;
+                h.debug.probe_od_mie = r.od_mie;
+                h.debug.probe_od_ozone = r.od_ozone;
             }
         }
         // Phase 10.3 / 10.4: drain UI pending requests.

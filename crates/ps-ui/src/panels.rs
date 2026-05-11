@@ -1205,7 +1205,28 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ];
         ui.colored_label(
             Color32::LIGHT_BLUE,
-            format!("optical depth R={:.4} G={:.4} B={:.4}", od[0], od[1], od[2]),
+            format!("optical depth (total) R={:.4} G={:.4} B={:.4}", od[0], od[1], od[2]),
+        );
+        // Phase 13.10 — per-component OD breakdown along the same
+        // view ray. Sum should equal the total above (within
+        // integration error). Useful for validating which absorber
+        // is dominating the haze at the probe pixel — Rayleigh
+        // dominates blue, Mie dominates white/grey, ozone bites
+        // green at high sun-zenith angles.
+        let r = state.debug.probe_od_rayleigh;
+        let m = state.debug.probe_od_mie;
+        let o = state.debug.probe_od_ozone;
+        ui.colored_label(
+            Color32::LIGHT_BLUE,
+            format!("  Rayleigh R={:.4} G={:.4} B={:.4}", r[0], r[1], r[2]),
+        );
+        ui.colored_label(
+            Color32::LIGHT_BLUE,
+            format!("  Mie      R={:.4} G={:.4} B={:.4}", m[0], m[1], m[2]),
+        );
+        ui.colored_label(
+            Color32::LIGHT_BLUE,
+            format!("  ozone    R={:.4} G={:.4} B={:.4}", o[0], o[1], o[2]),
         );
 
         ui.separator();

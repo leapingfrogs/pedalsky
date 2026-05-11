@@ -1,9 +1,12 @@
 //! Phase 10.A4 — probe-pixel transmittance readback.
+//! Phase 13.10 — extended to include per-component optical depth
+//!               (Rayleigh / Mie / ozone).
 //!
 //! One-thread compute pass that reconstructs the world-space view ray
-//! at a probe pixel and samples the atmosphere transmittance LUT.
-//! Result lives in a 16-byte storage buffer; host reads back per frame
-//! and pushes into `UiHandle.debug.probe_transmittance`.
+//! at a probe pixel, samples the atmosphere transmittance LUT, and
+//! re-integrates per-component optical depth along the same ray.
+//! Result lives in a 64-byte storage buffer; host reads back per
+//! frame and pushes into `UiHandle.debug.probe_*` fields.
 //!
 //! No-op when atmosphere is disabled (no LUT bind group available).
 
@@ -22,6 +25,34 @@ const SHADER_REL: &str = "debug/probe_transmittance.comp.wgsl";
 struct ProbeUniformsGpu {
     pixel: [u32; 2],
     _pad: [u32; 2],
+}
+
+/// Mirrors `ProbeOutput` in `shaders/debug/probe_transmittance.comp.wgsl`.
+/// 64 bytes — four packed `vec4`s, each carrying a `vec3` payload + a
+/// trailing pad slot.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable, Debug, Default)]
+struct ProbeOutputGpu {
+    transmittance: [f32; 4],
+    od_rayleigh: [f32; 4],
+    od_mie: [f32; 4],
+    od_ozone: [f32; 4],
+}
+
+/// Phase 13.10 — host-side probe readback. Total transmittance plus
+/// per-component optical depth (Rayleigh / Mie / ozone). Each entry
+/// is RGB. Total OD is `-ln(transmittance)`.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct ProbeReadout {
+    /// Atmosphere transmittance from the camera through the
+    /// atmosphere along the probe view ray, RGB.
+    pub transmittance: [f32; 3],
+    /// Per-component Rayleigh optical depth contribution (RGB).
+    pub od_rayleigh: [f32; 3],
+    /// Per-component Mie (scatter + absorption) OD contribution (RGB).
+    pub od_mie: [f32; 3],
+    /// Per-component ozone OD contribution (RGB).
+    pub od_ozone: [f32; 3],
 }
 
 /// Probe compute pass + 16-byte readback.
@@ -101,15 +132,16 @@ impl ProbeReadback {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let output_size = std::mem::size_of::<ProbeOutputGpu>() as u64;
         let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe-output"),
-            size: 16,
+            size: output_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe-staging"),
-            size: 16,
+            size: output_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -173,12 +205,19 @@ impl ProbeReadback {
             pass.set_bind_group(3, luts_bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        encoder.copy_buffer_to_buffer(&self.output_buf, 0, &self.staging_buf, 0, 16);
+        encoder.copy_buffer_to_buffer(
+            &self.output_buf,
+            0,
+            &self.staging_buf,
+            0,
+            std::mem::size_of::<ProbeOutputGpu>() as u64,
+        );
     }
 
     /// Read back the previous frame's probe value. Blocks on
-    /// `device.poll(wait_indefinitely)`.
-    pub fn read(&self, gpu: &GpuContext) -> Result<[f32; 3]> {
+    /// `device.poll(wait_indefinitely)`. Phase 13.10 — returns the
+    /// full breakdown (transmittance + per-component OD).
+    pub fn read(&self, gpu: &GpuContext) -> Result<ProbeReadout> {
         let slice = self.staging_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -190,12 +229,32 @@ impl ProbeReadback {
         let _ = rx.recv();
         let bytes = slice.get_mapped_range().to_vec();
         self.staging_buf.unmap();
-        if bytes.len() < 16 {
-            return Ok([0.0; 3]);
+        let want = std::mem::size_of::<ProbeOutputGpu>();
+        if bytes.len() < want {
+            return Ok(ProbeReadout::default());
         }
-        let r = f32::from_le_bytes(bytes[0..4].try_into().unwrap_or([0; 4]));
-        let g = f32::from_le_bytes(bytes[4..8].try_into().unwrap_or([0; 4]));
-        let b = f32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
-        Ok([r, g, b])
+        let gpu_view: &ProbeOutputGpu = bytemuck::from_bytes(&bytes[..want]);
+        Ok(ProbeReadout {
+            transmittance: [
+                gpu_view.transmittance[0],
+                gpu_view.transmittance[1],
+                gpu_view.transmittance[2],
+            ],
+            od_rayleigh: [
+                gpu_view.od_rayleigh[0],
+                gpu_view.od_rayleigh[1],
+                gpu_view.od_rayleigh[2],
+            ],
+            od_mie: [
+                gpu_view.od_mie[0],
+                gpu_view.od_mie[1],
+                gpu_view.od_mie[2],
+            ],
+            od_ozone: [
+                gpu_view.od_ozone[0],
+                gpu_view.od_ozone[1],
+                gpu_view.od_ozone[2],
+            ],
+        })
     }
 }

@@ -132,6 +132,14 @@ pub struct UiDebugSelection {
     /// Latest probe transmittance (RGB) from the previous frame, written
     /// by the host for display in the panel.
     pub probe_transmittance: [f32; 3],
+    /// Phase 13.10 — per-component optical depth contributions at the
+    /// probe pixel. Each entry is RGB. Total OD = `-ln(transmittance)`
+    /// is computed in the panel from `probe_transmittance`.
+    pub probe_od_rayleigh: [f32; 3],
+    /// Phase 13.10 — Mie OD contribution at the probe pixel (RGB).
+    pub probe_od_mie: [f32; 3],
+    /// Phase 13.10 — ozone OD contribution at the probe pixel (RGB).
+    pub probe_od_ozone: [f32; 3],
 }
 
 impl UiState {

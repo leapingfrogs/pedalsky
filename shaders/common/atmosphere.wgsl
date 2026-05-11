@@ -213,6 +213,60 @@ fn integrate_optical_depth(p: vec3<f32>, dir: vec3<f32>, n_steps: u32) -> vec3<f
     return optical_depth;
 }
 
+/// Phase 13.10 — per-component trapezoidal integration of optical
+/// depth, returning the Rayleigh / Mie / ozone contributions
+/// separately as three vec3 channels packed into a struct. Used by
+/// the probe pixel readout to break down total OD by absorber.
+struct OpticalDepthBreakdown {
+    rayleigh: vec3<f32>,
+    mie: vec3<f32>,
+    ozone: vec3<f32>,
+};
+
+fn integrate_optical_depth_breakdown(
+    p: vec3<f32>,
+    dir: vec3<f32>,
+    n_steps: u32,
+) -> OpticalDepthBreakdown {
+    var out: OpticalDepthBreakdown;
+    out.rayleigh = vec3<f32>(0.0);
+    out.mie = vec3<f32>(0.0);
+    out.ozone = vec3<f32>(0.0);
+
+    let t_max = distance_to_atmosphere_boundary(p, dir);
+    if (t_max <= 0.0) { return out; }
+    let dt = t_max / f32(n_steps);
+    let r0 = length(p);
+    let cos_view = dot(p / max(r0, 1.0), dir);
+    let h0 = r0 - world.planet_radius_m;
+
+    // Per-component extinction at h: matches the formula in
+    // `extinction_at` but kept split per-component.
+    let d0 = atmosphere_density(h0);
+    var prev_r = world.rayleigh_scattering.rgb * d0.x;
+    var prev_m = (world.mie_scattering.rgb + world.mie_absorption.rgb) * d0.y;
+    var prev_o = world.ozone_absorption.rgb * d0.z;
+
+    for (var i = 1u; i <= n_steps; i = i + 1u) {
+        let t = f32(i) * dt;
+        let pi = p + dir * t;
+        let r_delta_num = 2.0 * t * r0 * cos_view + t * t;
+        let r_delta = r_delta_num / (max(r0, 1.0) + length(pi));
+        let h = h0 + r_delta;
+        let d = atmosphere_density(h);
+        let cur_r = world.rayleigh_scattering.rgb * d.x;
+        let cur_m = (world.mie_scattering.rgb + world.mie_absorption.rgb) * d.y;
+        let cur_o = world.ozone_absorption.rgb * d.z;
+        out.rayleigh = out.rayleigh + 0.5 * (prev_r + cur_r) * dt;
+        out.mie = out.mie + 0.5 * (prev_m + cur_m) * dt;
+        out.ozone = out.ozone + 0.5 * (prev_o + cur_o) * dt;
+        prev_r = cur_r;
+        prev_m = cur_m;
+        prev_o = cur_o;
+    }
+    return out;
+}
+
 // `sample_transmittance_lut` lives in `common/atmosphere_lut_sampling.wgsl`
 // and is only included by shaders that bind `transmittance_lut` +
 // `lut_sampler`.

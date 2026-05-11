@@ -215,10 +215,26 @@ fn probe_transmittance_returns_sensible_rgb() {
         gpu.queue.submit([encoder.finish()]);
         probe.read(gpu).expect("read probe")
     };
-    eprintln!("probe transmittance = {result:?}");
-    for c in &result {
-        assert!(c.is_finite(), "transmittance must be finite (got {result:?})");
-        assert!(*c >= 0.0 && *c <= 1.0, "transmittance out of [0,1]: {result:?}");
+    eprintln!("probe readout = {result:?}");
+    for c in &result.transmittance {
+        assert!(
+            c.is_finite(),
+            "transmittance must be finite (got {:?})",
+            result.transmittance
+        );
+        assert!(
+            *c >= 0.0 && *c <= 1.0,
+            "transmittance out of [0,1]: {:?}",
+            result.transmittance
+        );
+    }
+    // Phase 13.10 — per-component OD must also be finite and
+    // non-negative (it's an integral of non-negative extinction).
+    for od in [&result.od_rayleigh, &result.od_mie, &result.od_ozone] {
+        for c in od {
+            assert!(c.is_finite(), "OD component non-finite: {od:?}");
+            assert!(*c >= 0.0, "OD component negative: {od:?}");
+        }
     }
 }
 
