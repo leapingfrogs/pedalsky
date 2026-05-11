@@ -56,6 +56,14 @@ pub struct CloudsSubsystem {
     params_buffer: Arc<wgpu::Buffer>,
     /// Per-frame storage buffer for the layer array.
     layers_buffer: Arc<wgpu::Buffer>,
+    /// Plan §6.9 freeze-time toggle. The cloud march itself doesn't
+    /// read `simulated_seconds` (the base/detail/curl noise volumes are
+    /// purely spatial — plan principle #9 / Phase 6 design), so this
+    /// flag is currently informational. Wind-driven cloud advection
+    /// arrives in a future phase via WeatherState; that's where the
+    /// flag will gate.
+    #[allow(dead_code)]
+    freeze_time: bool,
 }
 
 /// Cloud render target bundle. Owned by `Arc<Mutex<>>` so pass closures
@@ -152,12 +160,20 @@ impl CloudRt {
 
 impl CloudsSubsystem {
     /// Construct the subsystem.
-    pub fn new(_config: &Config, gpu: &GpuContext) -> Self {
+    pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         let device = &gpu.device;
         let noise = Arc::new(CloudNoise::bake(gpu));
         let pipelines = Arc::new(CloudPipelines::new(device, &noise.layout));
 
-        let params = CloudParamsGpu::default();
+        // Seed CloudParamsGpu from config so the very first frame
+        // honours the user's initial cloud_steps / detail_strength etc.
+        let mut params = CloudParamsGpu::default();
+        let c = &config.render.clouds;
+        params.cloud_steps = c.cloud_steps;
+        params.light_steps = c.light_steps;
+        params.multi_scatter_octaves = c.multi_scatter_octaves;
+        params.detail_strength = c.detail_strength;
+        params.powder_strength = c.powder_strength;
         let mut cpu_layers = [CloudLayerGpu::zeroed(); MAX_CLOUD_LAYERS as usize];
         // Default to a single demonstration cumulus layer so the subsystem
         // produces visible output before WeatherState is wired in.
@@ -201,6 +217,7 @@ impl CloudsSubsystem {
             luts: Arc::new(Mutex::new(None)),
             params_buffer,
             layers_buffer,
+            freeze_time: c.freeze_time,
         }
     }
 
@@ -396,6 +413,23 @@ impl RenderSubsystem for CloudsSubsystem {
                 }),
             },
         ]
+    }
+
+    fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
+        // Phase 10.3: pull live UI edits into CloudParamsGpu so the
+        // next frame's prepare uploads the new values.
+        let c = &config.render.clouds;
+        self.params.cloud_steps = c.cloud_steps;
+        self.params.light_steps = c.light_steps;
+        self.params.multi_scatter_octaves = c.multi_scatter_octaves;
+        self.params.detail_strength = c.detail_strength;
+        self.params.powder_strength = c.powder_strength;
+        // freeze_time: latch a non-advancing simulated_seconds for the
+        // cloud march. The shader reads frame.simulated_seconds; we
+        // overwrite the cpu-side params if a future tunable drives it,
+        // but the canonical pause path is `WorldClock::set_paused`.
+        self.freeze_time = c.freeze_time;
+        Ok(())
     }
 
     fn enabled(&self) -> bool {

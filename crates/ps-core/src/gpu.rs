@@ -125,6 +125,26 @@ impl<'window> WindowedGpu<'window> {
         self.surface
             .configure(&self.gpu.device, &self.surface_config);
     }
+
+    /// Phase 10 — switch the surface's present mode at runtime. Best-
+    /// effort: if the requested mode isn't supported by the surface
+    /// the call falls back to FIFO (the spec-required mode).
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let caps = self.surface.get_capabilities(&self.gpu.adapter);
+        let want = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
+        };
+        if self.surface_config.present_mode == want {
+            return;
+        }
+        self.surface_config.present_mode = want;
+        self.surface
+            .configure(&self.gpu.device, &self.surface_config);
+    }
 }
 
 /// Construct a [`WindowedGpu`] bound to `window`.

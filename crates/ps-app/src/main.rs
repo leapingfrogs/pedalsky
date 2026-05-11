@@ -22,7 +22,11 @@ use anyhow::{Context, Result};
 use glam::{Vec3, Vec4};
 use ps_app::config_initial_utc;
 use ps_app::main_helpers::encode_frame_clear;
-use ps_atmosphere::{AtmosphereFactory, lut_overlay::{LutOverlay, LutOverlayUniforms}};
+use ps_atmosphere::{
+    lut_overlay::{LutOverlay, LutOverlayUniforms},
+    lut_viewer::{LutViewer, LutViewerUniforms},
+    AtmosphereFactory,
+};
 use ps_backdrop::BackdropFactory;
 use ps_clouds::CloudsFactory;
 use ps_core::{
@@ -162,6 +166,8 @@ struct RunState {
     /// `Some` when `[debug].atmosphere_lut_overlay = true` (or
     /// `--lut-overlay`) AND atmosphere is enabled.
     lut_overlay: Option<LutOverlay>,
+    /// Phase 10 fullscreen LUT viewer (gated by ui_state.debug.lut_viewer_mode).
+    lut_viewer: Option<LutViewer>,
 
     camera: ps_core::camera::FlyCamera,
     keys: KeyState,
@@ -321,15 +327,17 @@ impl RunState {
             .lock()
             .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
             .clone();
-        let lut_overlay = if config.debug.atmosphere_lut_overlay && atmosphere_luts.is_some() {
-            info!(target: "ps_app", "LUT overlay enabled");
-            Some(LutOverlay::new(
-                &windowed.gpu,
-                windowed.surface_config.format,
-            ))
-        } else {
-            None
-        };
+        // Build the LUT overlay unconditionally; the runtime check
+        // against config.debug.atmosphere_lut_overlay happens each
+        // frame so the toggle goes live without a restart.
+        let lut_overlay = atmosphere_luts.as_ref().map(|_| {
+            info!(target: "ps_app", "LUT overlay constructed (toggle gated per-frame)");
+            LutOverlay::new(&windowed.gpu, windowed.surface_config.format)
+        });
+        // Phase 10 fullscreen LUT viewer.
+        let lut_viewer = atmosphere_luts
+            .as_ref()
+            .map(|_| LutViewer::new(&windowed.gpu, windowed.surface_config.format));
 
         let camera = ps_core::camera::FlyCamera {
             position: Vec3::new(0.0, 1.7, 5.0),
@@ -390,6 +398,7 @@ impl RunState {
             weather,
             atmosphere_luts,
             lut_overlay,
+            lut_viewer,
             start: now,
             last_frame: now,
             last_camera_position: None,
@@ -650,7 +659,14 @@ impl RunState {
         };
         frame_uniforms.set_matrices(view, proj);
         // Sun angular radius from config (degrees → radians).
-        let sun_radius_rad = config.render.atmosphere.sun_angular_radius_deg.to_radians();
+        // sun_disk toggle: setting angular radius to zero hides the
+        // analytic disk (sky shader's `if (cos_view_sun > cos_disk)`
+        // branch is never taken when cos_disk = 1).
+        let sun_radius_rad = if config.render.atmosphere.sun_disk {
+            config.render.atmosphere.sun_angular_radius_deg.to_radians()
+        } else {
+            0.0
+        };
         frame_uniforms.set_sun(
             self.world.sun_direction_world,
             sun_radius_rad,
@@ -673,11 +689,19 @@ impl RunState {
                 "uniforms at first dispatch"
             );
         }
+        // Apply atmosphere tuning toggles before uploading WorldUniforms.
+        // - ozone_enabled: zero ozone_absorption when off.
+        // The multi_scattering toggle is honoured inside
+        // AtmosphereSubsystem (via `tuning_multi_scattering` field).
+        let mut atmo = self.weather.atmosphere;
+        if !config.render.atmosphere.ozone_enabled {
+            atmo.ozone_absorption = glam::Vec4::ZERO;
+        }
         // Upload the per-frame uniforms (groups 0 and 1).
         self.bindings.write(
             &self.windowed_gpu.gpu.queue,
             &frame_uniforms,
-            &self.weather.atmosphere,
+            &atmo,
         );
 
         let frame = match self.windowed_gpu.surface.get_current_texture() {
@@ -786,16 +810,49 @@ impl RunState {
         // Phase 5 debug overlay (after tone-map; writes to the swapchain
         // with LoadOp::Load so the tone-mapped scene shows through where
         // the overlay isn't drawing).
-        if let (Some(overlay), Some(luts)) = (&self.lut_overlay, &self.atmosphere_luts) {
-            let uniforms = LutOverlayUniforms::default();
-            overlay.render(
-                &mut encoder,
-                &self.windowed_gpu.gpu.queue,
-                &self.windowed_gpu.gpu.device,
-                &swap_view,
-                luts,
-                &uniforms,
-            );
+        if config.debug.atmosphere_lut_overlay {
+            if let (Some(overlay), Some(luts)) = (&self.lut_overlay, &self.atmosphere_luts) {
+                let uniforms = LutOverlayUniforms::default();
+                overlay.render(
+                    &mut encoder,
+                    &self.windowed_gpu.gpu.queue,
+                    &self.windowed_gpu.gpu.device,
+                    &swap_view,
+                    luts,
+                    &uniforms,
+                );
+            }
+        }
+        // Phase 10 fullscreen LUT viewer (gated by ui debug state).
+        let (viewer_mode, viewer_depth) = {
+            let s = self.ui_handle.lock();
+            (s.debug.lut_viewer_mode, s.debug.ap_depth_slice)
+        };
+        if viewer_mode != 0 {
+            if let (Some(viewer), Some(luts)) = (&self.lut_viewer, &self.atmosphere_luts) {
+                // Per-mode scale: transmittance is in [0,1]; per-unit-
+                // illuminance LUTs need amplification to be visible.
+                let scale = match viewer_mode {
+                    1 => 1.0,
+                    2 => 1000.0,
+                    3 => 1.0 / 5000.0,
+                    4 => 1.0 / 5000.0,
+                    _ => 1.0,
+                };
+                viewer.render(
+                    &mut encoder,
+                    &self.windowed_gpu.gpu.queue,
+                    &self.windowed_gpu.gpu.device,
+                    &swap_view,
+                    luts,
+                    &LutViewerUniforms {
+                        mode: viewer_mode,
+                        _pad: 0,
+                        depth_slice: viewer_depth,
+                        scale,
+                    },
+                );
+            }
         }
 
         self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
@@ -838,6 +895,12 @@ impl RunState {
         // 10.3: slider edits → reconfigure.
         if pending.config_dirty {
             let new_config = self.ui_handle.lock().live_config.clone();
+            // Vsync is a surface-level config; apply before
+            // App::reconfigure so the next frame presents on the new
+            // mode.
+            if new_config.window.vsync != config.window.vsync {
+                self.windowed_gpu.set_vsync(new_config.window.vsync);
+            }
             *config = new_config.clone();
             self.ev100 = new_config.render.ev100;
             self.tonemap_mode = TonemapMode::from_config(&new_config.render.tone_mapper);

@@ -724,11 +724,22 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .checkbox(&mut d.atmosphere_lut_overlay, "Atmosphere LUT overlay (2x2)")
             .changed();
         any |= ui.checkbox(&mut d.auto_exposure, "Auto exposure").changed();
-        any |= ui.checkbox(&mut d.shader_hot_reload, "Shader hot reload").changed();
-        any |= ui.checkbox(&mut d.gpu_validation, "GPU validation").changed();
         if any {
             state.pending.config_dirty = true;
         }
+        // shader_hot_reload + gpu_validation are startup-only by design
+        // (the watcher is built once at start, validation is set on
+        // device init). Show them disabled with a tooltip so the value
+        // is visible but the user can't be misled into thinking edits
+        // take effect at runtime.
+        let r = d.shader_hot_reload;
+        let g = d.gpu_validation;
+        let mut r_dummy = r;
+        let mut g_dummy = g;
+        ui.add_enabled(false, egui::Checkbox::new(&mut r_dummy, "Shader hot reload"))
+            .on_disabled_hover_text("Startup-only — edit pedalsky.toml and restart.");
+        ui.add_enabled(false, egui::Checkbox::new(&mut g_dummy, "GPU validation"))
+            .on_disabled_hover_text("Startup-only — edit pedalsky.toml and restart.");
 
         ui.separator();
         ui.label("Fullscreen LUT viewer");

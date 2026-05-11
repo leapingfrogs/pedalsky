@@ -75,7 +75,8 @@ impl AtmosphereLuts {
                 format: LUT_FORMAT,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -95,7 +96,8 @@ impl AtmosphereLuts {
                 format: LUT_FORMAT,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC,
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());

@@ -18,6 +18,7 @@
 #![deny(missing_docs)]
 
 pub mod lut_overlay;
+pub mod lut_viewer;
 
 use std::sync::{Arc, Mutex};
 
@@ -105,11 +106,18 @@ pub struct AtmosphereSubsystem {
     /// baked. They depend only on `WorldUniforms`/`AtmosphereParams`, so
     /// re-bake only on `reconfigure`.
     static_dirty: Mutex<bool>,
+
+    /// Plan §10 tuning toggle: when false the multi-scatter LUT is
+    /// cleared to zero so the sky-view bake's MS contribution
+    /// collapses. The LUT texture is allocated either way. Behind an
+    /// Arc so the multi-scatter pass closure can read it through a
+    /// shared reference.
+    tuning_multi_scattering: Arc<Mutex<bool>>,
 }
 
 impl AtmosphereSubsystem {
     /// Construct.
-    pub fn new(_config: &Config, gpu: &GpuContext) -> Self {
+    pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         let device = &gpu.device;
         let luts = Arc::new(AtmosphereLuts::new(gpu));
 
@@ -302,6 +310,9 @@ impl AtmosphereSubsystem {
             sample_trans_only,
             sample_static_only,
             static_dirty: Mutex::new(true),
+            tuning_multi_scattering: Arc::new(Mutex::new(
+                config.render.atmosphere.multi_scattering,
+            )),
         }
     }
 
@@ -408,6 +419,8 @@ impl RenderSubsystem for AtmosphereSubsystem {
         let trans_storage = self.transmittance_storage.clone();
         let ms_pipeline = self.multiscatter_pipeline.clone();
         let ms_storage = self.multiscatter_storage.clone();
+        let ms_texture = self.luts.multiscatter.clone();
+        let ms_toggle = self.tuning_multi_scattering.clone();
         let sv_pipeline = self.skyview_pipeline.clone();
         let sv_storage = self.skyview_storage.clone();
         let ap_pipeline = self.ap_pipeline.clone();
@@ -441,26 +454,59 @@ impl RenderSubsystem for AtmosphereSubsystem {
             },
             // 2. Multi-scatter — only when dirty. Latches the dirty bit
             //    off after running, so subsequent frames skip the bake.
+            //    When the multi_scattering tuning toggle is off, clear
+            //    the LUT to zero instead of dispatching the bake.
             RegisteredPass {
                 name: "atmosphere::multiscatter",
                 stage: PassStage::Compute,
                 run: Box::new({
                     let dirty = static_dirty_check.clone();
                     let bg = sample_trans_only.clone();
+                    let toggle = ms_toggle.clone();
+                    let texture = ms_texture.clone();
                     move |encoder, ctx| {
                         let mut g = dirty.lock().unwrap();
                         if !*g {
                             return;
                         }
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("atmosphere::multiscatter-bake"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&ms_pipeline);
-                        pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, &ms_storage, &[]);
-                        pass.set_bind_group(3, &bg, &[]);
-                        pass.dispatch_workgroups(4, 4, 1); // 32/8, 32/8
+                        let on = *toggle.lock().expect("ms toggle lock");
+                        if on {
+                            let mut pass = encoder.begin_compute_pass(
+                                &wgpu::ComputePassDescriptor {
+                                    label: Some("atmosphere::multiscatter-bake"),
+                                    timestamp_writes: None,
+                                },
+                            );
+                            pass.set_pipeline(&ms_pipeline);
+                            pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                            pass.set_bind_group(2, &ms_storage, &[]);
+                            pass.set_bind_group(3, &bg, &[]);
+                            pass.dispatch_workgroups(4, 4, 1); // 32/8, 32/8
+                        } else {
+                            // Multi-scatter disabled: zero the 32x32
+                            // Rgba16Float LUT so the sky-view bake's
+                            // MS contribution collapses to 0.
+                            let zeros = vec![0u8; 32 * 32 * 8];
+                            ctx.queue.write_texture(
+                                wgpu::TexelCopyTextureInfo {
+                                    texture: &texture,
+                                    mip_level: 0,
+                                    origin: wgpu::Origin3d::ZERO,
+                                    aspect: wgpu::TextureAspect::All,
+                                },
+                                &zeros,
+                                wgpu::TexelCopyBufferLayout {
+                                    offset: 0,
+                                    bytes_per_row: Some(32 * 8),
+                                    rows_per_image: Some(32),
+                                },
+                                wgpu::Extent3d {
+                                    width: 32,
+                                    height: 32,
+                                    depth_or_array_layers: 1,
+                                },
+                            );
+                        }
                         *g = false;
                     }
                 }),
@@ -548,9 +594,18 @@ impl RenderSubsystem for AtmosphereSubsystem {
         ]
     }
 
-    fn reconfigure(&mut self, _config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
-        // Mark static LUTs dirty so they re-bake on the next frame.
+    fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
+        // Mark static LUTs dirty so they re-bake on the next frame
+        // (caller invoked us because some atmosphere parameter changed).
         *self.static_dirty.lock().expect("dirty lock") = true;
+        // Pull the multi-scatter tuning toggle. The skyview pass
+        // unconditionally samples the MS LUT; when this is off we
+        // overwrite the LUT with zeros after the regular bake (see
+        // `register_passes`).
+        *self
+            .tuning_multi_scattering
+            .lock()
+            .expect("ms tuning lock") = config.render.atmosphere.multi_scattering;
         debug!("atmosphere: reconfigure → static LUTs marked dirty");
         Ok(())
     }

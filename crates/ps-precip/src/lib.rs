@@ -83,11 +83,15 @@ pub struct PrecipSubsystem {
 
     /// Two pools: one for rain, one for snow. Both are always allocated;
     /// only the kind matching the current `PrecipKind` is dispatched.
-    rain_pool: Arc<ParticlePool>,
-    snow_pool: Arc<ParticlePool>,
+    /// Behind `Arc<Mutex>` so `reconfigure` can swap the pool when
+    /// `near_particle_count` changes — pass closures captured at
+    /// `register_passes` always read the current pool.
+    rain_pool: Arc<Mutex<Arc<ParticlePool>>>,
+    snow_pool: Arc<Mutex<Arc<ParticlePool>>>,
 
-    /// Pre-built far-rain layers (3 layers).
-    far_layers: Vec<Arc<FarRainLayer>>,
+    /// Pre-built far-rain layers. Behind `Arc<Mutex<Vec<…>>>` so
+    /// `reconfigure` can resize when `far_layers` changes.
+    far_layers: Arc<Mutex<Vec<Arc<FarRainLayer>>>>,
 
     /// Compute pipeline (shared between rain + snow pools).
     advance_pipeline: Arc<wgpu::ComputePipeline>,
@@ -450,89 +454,16 @@ impl PrecipSubsystem {
         let placeholder_view =
             placeholder_mask.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let make_pool = |kind: u32, fall_mps: f32| -> Arc<ParticlePool> {
-            // Allocate the storage buffer with all particles flagged as
-            // "fresh" (age < 0) so the first compute dispatch respawns
-            // them inside the cylinder.
-            let mut initial = vec![
-                Particle {
-                    position: [0.0; 3],
-                    age: -1.0,
-                    velocity: [0.0; 3],
-                    kind,
-                };
-                count as usize
-            ];
-            for (i, p) in initial.iter_mut().enumerate() {
-                // Slight per-particle seeding so age stays negative but
-                // distinct (avoids a single first-frame draw being all
-                // identical positions).
-                p.age = -1.0 - i as f32 * 1e-6;
-            }
-            let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("precip-particle-buf"),
-                size: std::mem::size_of_val(initial.as_slice()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&particle_buf, 0, bytemuck::cast_slice(&initial));
+        let rain_pool =
+            Arc::new(Mutex::new(make_pool(device, queue, count, 0, RAIN_FALL_MPS)));
+        let snow_pool =
+            Arc::new(Mutex::new(make_pool(device, queue, count, 1, SNOW_FALL_MPS)));
 
-            let uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("precip-uniforms-buf"),
-                size: std::mem::size_of::<PrecipUniformsGpu>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            let draw_args_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("precip-draw-args"),
-                size: 16,
-                usage: wgpu::BufferUsages::INDIRECT
-                    | wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            Arc::new(ParticlePool {
-                particle_buf,
-                uniforms_buf,
-                draw_args_buf,
-                count,
-                kind,
-                fall_mps,
-            })
-        };
-
-        let rain_pool = make_pool(0, RAIN_FALL_MPS);
-        let snow_pool = make_pool(1, SNOW_FALL_MPS);
-
-        // Far rain layers (3): depths 50, 200, 1000 m per plan §8.2.
-        let layer_specs: [(f32, f32, f32, f32); 3] = [
-            // (depth_m, streak_density (per screen-height), streak_length_px, alpha)
-            (50.0, 60.0, 120.0, 1.0),
-            (200.0, 40.0, 80.0, 0.7),
-            (1000.0, 25.0, 50.0, 0.4),
-        ];
-        let mut far_layers = Vec::with_capacity(3);
-        for spec in &layer_specs {
-            let layer = FarRainLayerGpu {
-                depth_m: spec.0,
-                streak_density: spec.1,
-                streak_length_px: spec.2,
-                intensity_scale: spec.3,
-            };
-            let layer_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("precip-far-layer-buf"),
-                size: std::mem::size_of::<FarRainLayerGpu>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&layer_buf, 0, bytes_of(&layer));
-            far_layers.push(Arc::new(FarRainLayer {
-                layer_buf,
-                depth_m: spec.0,
-            }));
-        }
+        let far_layers = Arc::new(Mutex::new(make_far_layers(
+            device,
+            queue,
+            config.render.precip.far_layers,
+        )));
         let _ = placeholder_view;
 
         // Wind sampler (linear, clamp-to-edge) for the compute shader.
@@ -720,7 +651,9 @@ impl RenderSubsystem for PrecipSubsystem {
             0.0,
         ];
 
-        for (pool, active_kind) in [(&self.rain_pool, 0u32), (&self.snow_pool, 1u32)] {
+        let rain_pool = self.rain_pool.lock().expect("rain pool lock").clone();
+        let snow_pool = self.snow_pool.lock().expect("snow pool lock").clone();
+        for (pool, active_kind) in [(&rain_pool, 0u32), (&snow_pool, 1u32)] {
             // Only feed live intensity to the matching pool; the other
             // gets zero so its particles are still updated (cheap) but
             // not rendered.
@@ -750,9 +683,9 @@ impl RenderSubsystem for PrecipSubsystem {
         // compute). Both views may have been replaced by hot-reload.
         let mask_view = &ctx.weather.textures.top_down_density_mask_view;
         let wind_view = &ctx.weather.textures.wind_field_view;
-        let active_pool = match kind {
-            2 => &self.snow_pool,
-            _ => &self.rain_pool,
+        let active_pool: &ParticlePool = match kind {
+            2 => &snow_pool,
+            _ => &rain_pool,
         };
         // Reset the draw-indirect args for the active pool. Vertex count
         // is fixed at 6 (the quad); instance_count starts at 0 and the
@@ -775,8 +708,10 @@ impl RenderSubsystem for PrecipSubsystem {
             Self::build_render_bg(ctx.device, &self.bg_builder, active_pool, mask_view);
         *self.live_render_bg.lock().expect("precip: live bg lock") = Some(Arc::new(render_bg));
 
-        let mut far_bgs = Vec::with_capacity(self.far_layers.len());
-        for layer in &self.far_layers {
+        let far_layers_snapshot =
+            self.far_layers.lock().expect("far layers lock").clone();
+        let mut far_bgs = Vec::with_capacity(far_layers_snapshot.len());
+        for layer in &far_layers_snapshot {
             let bg = Self::build_far_bg(ctx.device, &self.bg_builder, active_pool, layer, mask_view);
             far_bgs.push(Arc::new(bg));
         }
@@ -815,15 +750,15 @@ impl RenderSubsystem for PrecipSubsystem {
                         let Some(bg) = bg_guard.as_ref() else {
                             return;
                         };
+                        let active: Arc<ParticlePool> = match st.kind {
+                            2 => snow.lock().expect("snow pool lock").clone(),
+                            _ => rain.lock().expect("rain pool lock").clone(),
+                        };
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("precip::advance"),
                             timestamp_writes: None,
                         });
                         pass.set_pipeline(&advance);
-                        let active = match st.kind {
-                            2 => &snow,
-                            _ => &rain,
-                        };
                         pass.set_bind_group(0, bg.as_ref(), &[]);
                         let groups = active.count.div_ceil(64);
                         pass.dispatch_workgroups(groups, 1, 1);
@@ -877,9 +812,9 @@ impl RenderSubsystem for PrecipSubsystem {
                         pass.set_pipeline(&render);
                         pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                         pass.set_bind_group(1, bg.as_ref(), &[]);
-                        let active = match st.kind {
-                            2 => &snow,
-                            _ => &rain,
+                        let active: Arc<ParticlePool> = match st.kind {
+                            2 => snow.lock().expect("snow pool lock").clone(),
+                            _ => rain.lock().expect("rain pool lock").clone(),
                         };
                         // draw_indirect reads (vertex_count,
                         // instance_count, first_vertex, first_instance)
@@ -935,7 +870,9 @@ impl RenderSubsystem for PrecipSubsystem {
                         });
                         pass.set_pipeline(&far);
                         pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        for (_layer, bg) in layers.iter().zip(bgs_guard.iter()) {
+                        let layers_snapshot =
+                            layers.lock().expect("far layers lock").clone();
+                        for (_layer, bg) in layers_snapshot.iter().zip(bgs_guard.iter()) {
                             pass.set_bind_group(1, bg.as_ref(), &[]);
                             pass.draw(0..3, 0..1);
                         }
@@ -943,6 +880,26 @@ impl RenderSubsystem for PrecipSubsystem {
                 }),
             },
         ]
+    }
+
+    fn reconfigure(&mut self, config: &Config, gpu: &GpuContext) -> anyhow::Result<()> {
+        // Plan §10.3: when near_particle_count or far_layers changes,
+        // rebuild the corresponding GPU resources so the new sliders
+        // take effect on the next frame's prepare/render.
+        let new_count = config.render.precip.near_particle_count.max(64);
+        let cur_count = self.rain_pool.lock().expect("rain pool lock").count;
+        if new_count != cur_count {
+            *self.rain_pool.lock().expect("rain pool lock") =
+                make_pool(&gpu.device, &gpu.queue, new_count, 0, RAIN_FALL_MPS);
+            *self.snow_pool.lock().expect("snow pool lock") =
+                make_pool(&gpu.device, &gpu.queue, new_count, 1, SNOW_FALL_MPS);
+        }
+        let cur_far = self.far_layers.lock().expect("far lock").len() as u32;
+        if config.render.precip.far_layers != cur_far {
+            *self.far_layers.lock().expect("far lock") =
+                make_far_layers(&gpu.device, &gpu.queue, config.render.precip.far_layers);
+        }
+        Ok(())
     }
 
     fn enabled(&self) -> bool {
@@ -968,6 +925,99 @@ impl SubsystemFactory for PrecipFactory {
 impl PrecipSubsystem {
     /// Test helper: returns the rain particle pool's count.
     pub fn rain_particle_count(&self) -> u32 {
-        self.rain_pool.count
+        self.rain_pool.lock().expect("rain pool lock").count
     }
+}
+
+fn make_pool(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    count: u32,
+    kind: u32,
+    fall_mps: f32,
+) -> Arc<ParticlePool> {
+    // Allocate the storage buffer with all particles flagged as
+    // "fresh" (age < 0) so the first compute dispatch respawns them
+    // inside the cylinder.
+    let mut initial = vec![
+        Particle {
+            position: [0.0; 3],
+            age: -1.0,
+            velocity: [0.0; 3],
+            kind,
+        };
+        count as usize
+    ];
+    for (i, p) in initial.iter_mut().enumerate() {
+        p.age = -1.0 - i as f32 * 1e-6;
+    }
+    let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("precip-particle-buf"),
+        size: std::mem::size_of_val(initial.as_slice()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&particle_buf, 0, bytemuck::cast_slice(&initial));
+    let uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("precip-uniforms-buf"),
+        size: std::mem::size_of::<PrecipUniformsGpu>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let draw_args_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("precip-draw-args"),
+        size: 16,
+        usage: wgpu::BufferUsages::INDIRECT
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    Arc::new(ParticlePool {
+        particle_buf,
+        uniforms_buf,
+        draw_args_buf,
+        count,
+        kind,
+        fall_mps,
+    })
+}
+
+fn make_far_layers(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    n: u32,
+) -> Vec<Arc<FarRainLayer>> {
+    // Plan §8.2 specifies depths 50/200/1000 m for 3 layers. For other
+    // counts we interpolate logarithmically between 50 m and 1000 m so
+    // the spec defaults are recovered exactly when n=3.
+    let n = n.max(1);
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let t = if n == 1 {
+            0.0
+        } else {
+            i as f32 / (n - 1) as f32
+        };
+        // log-spaced depth.
+        let depth_m = 50.0_f32 * (1000.0_f32 / 50.0_f32).powf(t);
+        // Density falls with depth; alpha similarly.
+        let density = 60.0 * (25.0 / 60.0_f32).powf(t);
+        let length_px = 120.0 * (50.0 / 120.0_f32).powf(t);
+        let alpha = 1.0 * (0.4_f32 / 1.0).powf(t);
+        let layer = FarRainLayerGpu {
+            depth_m,
+            streak_density: density,
+            streak_length_px: length_px,
+            intensity_scale: alpha,
+        };
+        let layer_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("precip-far-layer-buf"),
+            size: std::mem::size_of::<FarRainLayerGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&layer_buf, 0, bytes_of(&layer));
+        out.push(Arc::new(FarRainLayer { layer_buf, depth_m }));
+    }
+    out
 }
