@@ -264,8 +264,18 @@ impl RunState {
             .with_inner_size(PhysicalSize::new(initial_size.0, initial_size.1));
         let window = Arc::new(event_loop.create_window(attrs).context("create_window")?);
 
+        // Use the configured size for the initial swapchain rather than
+        // window.inner_size(): on Windows with HiDPI scaling, the latter
+        // can return a larger physical extent than the OS will let us
+        // present at, triggering Vulkan validation (currentExtent vs
+        // imageExtent mismatch). winit fires a Resized event during the
+        // first frame loop with the OS-actual physical size; the resize
+        // handler then reconfigures the swapchain and HDR target.
         let physical = window.inner_size();
-        let size = (physical.width.max(1), physical.height.max(1));
+        let size = (
+            physical.width.min(initial_size.0).max(1),
+            physical.height.min(initial_size.1).max(1),
+        );
         let windowed = ps_core::gpu::init_windowed(
             window.clone(),
             size,
