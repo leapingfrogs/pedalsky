@@ -159,5 +159,6 @@ pub fn synthesise(
             let bias = ps_core::aurora_colour_bias(&scene.aurora.predominant_colour);
             [bias[0], bias[1], bias[2], 0.0]
         },
+        scene_water: scene.water.clone(),
     })
 }

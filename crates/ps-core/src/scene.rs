@@ -101,6 +101,13 @@ pub struct Scene {
     /// `[aurora]` section render unchanged.
     #[serde(default)]
     pub aurora: Aurora,
+    /// Phase 13.5 — optional water plane. When `None` (the default
+    /// for pre-13.5 scenes) the water subsystem renders nothing.
+    /// When `Some`, the ps-water subsystem draws a rectangular
+    /// water surface with GGX specular + Fresnel sky reflection over
+    /// the configured bounds.
+    #[serde(default)]
+    pub water: Option<Water>,
 }
 
 impl Default for Scene {
@@ -112,6 +119,56 @@ impl Default for Scene {
             precipitation: Precipitation::default(),
             lightning: Lightning::default(),
             aurora: Aurora::default(),
+            water: None,
+        }
+    }
+}
+
+/// `[scene.water]` block — Phase 13.5.
+///
+/// A flat rectangular water surface. Renders with GGX/Smith specular,
+/// Fresnel-weighted sky reflection (sampled from the sky-view LUT at
+/// the reflected ray), and a procedural normal map advected with the
+/// surface wind direction. Refraction is explicitly out of scope —
+/// there is no DEM, so there's nothing under the water to refract
+/// toward.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Water {
+    /// Minimum X-coordinate (metres, world space).
+    pub xmin: f32,
+    /// Maximum X-coordinate (metres, world space).
+    pub xmax: f32,
+    /// Minimum Z-coordinate (metres, world space).
+    pub zmin: f32,
+    /// Maximum Z-coordinate (metres, world space).
+    pub zmax: f32,
+    /// Water surface altitude in metres (world Y).
+    pub altitude_m: f32,
+    /// GGX base roughness for the calm-water case. Pinned low so the
+    /// specular highlight is tight at minimum wind. Typical real-world
+    /// water sits in `[0.02, 0.10]` — choppy water leans toward 0.10,
+    /// lake-glass toward 0.02. The shader interpolates between
+    /// `roughness_min` (calm) and `roughness_max` (windy) by surface
+    /// wind speed.
+    pub roughness_min: f32,
+    /// GGX roughness ceiling for fully wind-roughed water.
+    pub roughness_max: f32,
+}
+
+impl Default for Water {
+    fn default() -> Self {
+        // 100m × 100m pond centred on the origin. The altitude sits a
+        // hair above the ground plane (y=0) so coplanar depth ties
+        // don't lose the water pass to the ground pass.
+        Self {
+            xmin: -50.0,
+            xmax: 50.0,
+            zmin: -50.0,
+            zmax: 50.0,
+            altitude_m: 0.1,
+            roughness_min: 0.02,
+            roughness_max: 0.10,
         }
     }
 }

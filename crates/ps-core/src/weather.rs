@@ -262,6 +262,9 @@ pub struct WeatherState {
     /// `aurora_colour_bias`. Stored as 4 floats so it lives next to
     /// the other scene-aurora scalars without an extra binding.
     pub scene_aurora_colour_bias: [f32; 4],
+    /// Phase 13.5 — water plane params, or `None` when the scene
+    /// has no `[water]` block. ps-water reads this via `ctx.weather`.
+    pub scene_water: Option<crate::scene::Water>,
 }
 
 impl WeatherState {
@@ -424,6 +427,7 @@ impl WeatherState {
             scene_aurora_kp: 0.0,
             scene_aurora_intensity_override: -1.0,
             scene_aurora_colour_bias: [0.10, 0.85, 0.05, 0.0],
+            scene_water: None,
         }
     }
 }

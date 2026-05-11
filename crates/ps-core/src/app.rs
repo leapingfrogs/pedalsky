@@ -55,6 +55,7 @@ pub trait SubsystemFactory: Send + Sync {
             "precipitation" => f.precipitation,
             "wet_surface" => f.wet_surface,
             "windsock" => f.windsock,
+            "water" => f.water,
             "backdrop" => f.backdrop,
             "tint" => f.tint,
             other => {

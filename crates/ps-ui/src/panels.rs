@@ -39,6 +39,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
                 ui.separator();
                 wet_surface_panel(ui, state);
                 ui.separator();
+                water_panel(ui, state);
+                ui.separator();
                 precipitation_panel(ui, state);
                 ui.separator();
                 godrays_panel(ui, state);
@@ -494,6 +496,7 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= ui.checkbox(&mut s.aurora, "Aurora").changed();
         any |= ui.checkbox(&mut s.bloom, "Bloom").changed();
         any |= ui.checkbox(&mut s.windsock, "Windsock").changed();
+        any |= ui.checkbox(&mut s.water, "Water").changed();
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
@@ -1306,6 +1309,58 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 ui.label(format!("{total_ms:>8.3} ms"));
                 ui.end_row();
             });
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13.5 — water plane editor.
+//
+// Toggles the optional `[scene.water]` block on/off and exposes its
+// bounds, altitude, and roughness range. When off, the scene-side
+// field is `None` and the water subsystem renders nothing.
+// ---------------------------------------------------------------------------
+
+fn water_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Water", |ui| {
+        let Some(scene) = state.latest_scene.as_ref() else {
+            ui.label("(awaiting first frame to mirror Scene)");
+            return;
+        };
+        let mut new_scene = scene.clone();
+        let mut any = false;
+
+        let mut enabled = new_scene.water.is_some();
+        if ui.checkbox(&mut enabled, "Water plane present").changed() {
+            new_scene.water = if enabled {
+                Some(ps_core::Water::default())
+            } else {
+                None
+            };
+            any = true;
+        }
+        if let Some(w) = new_scene.water.as_mut() {
+            any |= drag_f32(ui, &mut w.xmin, "xmin (m)", -1000.0..=1000.0, 1.0);
+            any |= drag_f32(ui, &mut w.xmax, "xmax (m)", -1000.0..=1000.0, 1.0);
+            any |= drag_f32(ui, &mut w.zmin, "zmin (m)", -1000.0..=1000.0, 1.0);
+            any |= drag_f32(ui, &mut w.zmax, "zmax (m)", -1000.0..=1000.0, 1.0);
+            any |= drag_f32(ui, &mut w.altitude_m, "altitude (m)", -100.0..=100.0, 0.1);
+            any |= Slider::new(&mut w.roughness_min, 0.001..=0.2)
+                .text("roughness_min")
+                .max_decimals(4)
+                .ui(ui)
+                .changed();
+            any |= Slider::new(&mut w.roughness_max, 0.001..=0.5)
+                .text("roughness_max")
+                .max_decimals(4)
+                .ui(ui)
+                .changed();
+        } else {
+            ui.label("(no water plane on this scene — tick to add)");
+        }
+        if any {
+            state.latest_scene = Some(new_scene.clone());
+            state.pending.live_scene = Some(new_scene);
         }
     });
 }

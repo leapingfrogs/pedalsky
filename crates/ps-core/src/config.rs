@@ -244,6 +244,11 @@ pub struct SubsystemFlags {
     /// Phase 13.6 windsock (3D wind direction indicator).
     #[serde(default)]
     pub windsock: bool,
+    /// Phase 13.5 water plane (gated additionally by the scene having
+    /// a `[water]` block — when absent the subsystem builds but its
+    /// pass closure is a no-op).
+    #[serde(default = "default_true")]
+    pub water: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
@@ -267,6 +272,7 @@ impl Default for SubsystemFlags {
             aurora: true,
             bloom: true,
             windsock: false,
+            water: true,
             backdrop: true,
             tint: false,
         }

@@ -22,6 +22,7 @@ use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
+use ps_water::WaterFactory;
 use ps_windsock::WindsockFactory;
 use std::sync::Arc;
 
@@ -144,6 +145,7 @@ impl HeadlessApp {
             .with_factory(Box::new(BackdropFactory))
             .with_factory(Box::new(atmosphere_factory))
             .with_factory(Box::new(GroundFactory))
+            .with_factory(Box::new(WaterFactory))
             .with_factory(Box::new(clouds_factory))
             .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))

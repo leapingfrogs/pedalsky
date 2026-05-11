@@ -179,6 +179,36 @@ fn pedalsky_toml_at_workspace_root_boots_the_app() {
     let _ = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new from workspace toml");
 }
 
+/// Phase 13.5 — water subsystem builds and renders one frame when
+/// the scene supplies a `[water]` block. Asserts no GPU validation
+/// regressions; the exact pixel values depend on lat/lon and time.
+#[test]
+fn water_subsystem_renders_one_frame() {
+    let Some(gpu) = gpu() else { return };
+    use ps_core::{Scene, WorldState, camera::FlyCamera};
+
+    let mut config = config_with_ev0_passthrough();
+    config.render.subsystems.atmosphere = true;
+    config.render.subsystems.ground = true;
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+    config.render.subsystems.water = true;
+
+    let mut scene = Scene::default();
+    scene.water = Some(ps_core::Water::default());
+
+    let setup = TestSetup::new(gpu, &config, (96, 64));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    let world = WorldState::new(
+        chrono::Utc::now(),
+        config.world.latitude_deg,
+        config.world.longitude_deg,
+        config.world.ground_elevation_m as f64,
+    );
+    let camera = FlyCamera::default();
+    let _pixels = app.render_one_frame_with_scene(gpu, camera, &scene, world);
+}
+
 /// Phase 13.6 — the windsock subsystem renders cleanly when atmosphere
 /// is enabled (the shader binds the AP LUT, so the pass needs the LUTs
 /// to be live). With no GPU validation errors this smoke test just

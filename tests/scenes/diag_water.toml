@@ -1,0 +1,45 @@
+# tests/scenes/diag_water.toml — Phase 13.5 diagnostic scene.
+#
+# A small lake (50m × 50m) at world origin, water altitude 0 m, with a
+# light wind so the GGX specular breaks up but the Fresnel sky
+# reflection is still recognisable.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 17.0
+dewpoint_c     = 7.0
+pressure_hpa   = 1018.0
+wind_dir_deg   = 200.0
+wind_speed_mps = 3.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2300.0
+coverage           = 0.4
+density_scale      = 1.0
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
+
+[water]
+xmin       = -25.0
+xmax       =  25.0
+zmin       = -15.0
+zmax       =  15.0
+altitude_m = 0.1
+roughness_min = 0.02
+roughness_max = 0.10

@@ -196,6 +196,7 @@ mod tests {
             precipitation: Precipitation::default(),
             lightning: Lightning::default(),
             aurora: Aurora::default(),
+            water: None,
         }
     }
 

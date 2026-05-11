@@ -227,6 +227,7 @@ mod tests {
             precipitation: ps_core::Precipitation::default(),
             lightning: ps_core::Lightning::default(),
             aurora: ps_core::Aurora::default(),
+            water: None,
         }
     }
 

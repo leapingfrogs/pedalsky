@@ -41,6 +41,7 @@ use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
+use ps_water::WaterFactory;
 use ps_windsock::WindsockFactory;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -1408,6 +1409,11 @@ fn build_app(
         .with_factory(Box::new(BackdropFactory))
         .with_factory(Box::new(atmosphere_factory))
         .with_factory(Box::new(GroundFactory))
+        // Phase 13.5 — water draws after ground at PassStage::Opaque
+        // (registration order tie-break). Gated by both the
+        // [render.subsystems].water flag and the scene having a
+        // [water] block.
+        .with_factory(Box::new(WaterFactory))
         .with_factory(Box::new(clouds_factory))
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))

@@ -1,0 +1,16 @@
+[package]
+name = "ps-water"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky Phase 13.5: water surface (GGX specular, Fresnel sky reflection, wind-advected normals)"
+
+[dependencies]
+ps-core.workspace   = true
+wgpu.workspace      = true
+glam.workspace      = true
+bytemuck.workspace  = true
+anyhow.workspace    = true
+tracing.workspace   = true
