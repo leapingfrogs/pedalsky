@@ -22,7 +22,7 @@ publish = false
 
 [workspace.dependencies]
 # GPU + windowing
-wgpu       = "29"
+wgpu       = { version = "29", features = ["trace"] }
 winit      = "0.30"
 pollster   = "0.3"
 

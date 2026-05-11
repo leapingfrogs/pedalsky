@@ -165,6 +165,7 @@ pub fn init_windowed<'window, T>(
     initial_size: (u32, u32),
     vsync: bool,
     gpu_validation: bool,
+    gpu_trace_dir: Option<std::path::PathBuf>,
 ) -> Result<WindowedGpu<'window>, GpuError>
 where
     T: Into<wgpu::SurfaceTarget<'window>>,
@@ -174,6 +175,7 @@ where
         initial_size,
         vsync,
         gpu_validation,
+        gpu_trace_dir,
     ))
 }
 
@@ -182,6 +184,7 @@ async fn init_windowed_async<'window, T>(
     (width, height): (u32, u32),
     vsync: bool,
     gpu_validation: bool,
+    gpu_trace_dir: Option<std::path::PathBuf>,
 ) -> Result<WindowedGpu<'window>, GpuError>
 where
     T: Into<wgpu::SurfaceTarget<'window>>,
@@ -213,7 +216,7 @@ where
             required_features: required_features(adapter.features()),
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
+            trace: trace_from_dir(gpu_trace_dir.as_deref()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         })
         .await?;
@@ -316,7 +319,7 @@ async fn init_headless_async(gpu_validation: bool) -> Result<GpuContext, GpuErro
             required_features: required_features(adapter.features()),
             required_limits: limits,
             memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
+            trace: trace_from_dir(None),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         })
         .await?;
@@ -328,4 +331,24 @@ async fn init_headless_async(gpu_validation: bool) -> Result<GpuContext, GpuErro
         device: Arc::new(device),
         queue: Arc::new(queue),
     })
+}
+
+/// Build a [`wgpu::Trace`] from an optional output directory. When the
+/// directory is `Some`, this requires the `wgpu` crate to be built with
+/// the `trace` feature; the workspace pins it on. The directory must
+/// exist before `request_device` is called or wgpu will silently emit
+/// to a sub-directory tree it cannot create.
+fn trace_from_dir(dir: Option<&std::path::Path>) -> wgpu::Trace {
+    match dir {
+        Some(path) => {
+            if let Err(e) = std::fs::create_dir_all(path) {
+                warn!(error = %e, path = %path.display(),
+                      "failed to create gpu-trace directory; tracing disabled");
+                return wgpu::Trace::Off;
+            }
+            info!(path = %path.display(), "wgpu trace enabled — writing to directory");
+            wgpu::Trace::Directory(path.to_path_buf())
+        }
+        None => wgpu::Trace::Off,
+    }
 }

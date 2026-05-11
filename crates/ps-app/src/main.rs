@@ -69,6 +69,14 @@ fn main() -> Result<()> {
     // on independently of the config file.
     let cli_lut_overlay = argv.iter().any(|a| a == "--lut-overlay");
 
+    // CLI override: `--gpu-trace <dir>` enables wgpu API call tracing
+    // to the named directory (plan §GPU debugging).
+    let gpu_trace_dir = argv
+        .iter()
+        .position(|a| a == "--gpu-trace")
+        .and_then(|i| argv.get(i + 1))
+        .map(PathBuf::from);
+
     let config_path = workspace_root.join("pedalsky.toml");
     let mut config =
         Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
@@ -97,7 +105,7 @@ fn main() -> Result<()> {
     );
 
     let event_loop = EventLoop::new().context("create EventLoop")?;
-    let mut shell = AppShell::new(config, scene, config_path, scene_path);
+    let mut shell = AppShell::new(config, scene, config_path, scene_path, gpu_trace_dir);
     event_loop.run_app(&mut shell).context("event loop")?;
     Ok(())
 }
@@ -119,16 +127,26 @@ struct AppShell {
     scene: Scene,
     config_path: PathBuf,
     scene_path: PathBuf,
+    /// Plan §GPU debugging — wgpu API trace output directory if `--gpu-trace`
+    /// was passed on the command line.
+    gpu_trace_dir: Option<PathBuf>,
     state: Option<RunState>,
 }
 
 impl AppShell {
-    fn new(config: Config, scene: Scene, config_path: PathBuf, scene_path: PathBuf) -> Self {
+    fn new(
+        config: Config,
+        scene: Scene,
+        config_path: PathBuf,
+        scene_path: PathBuf,
+        gpu_trace_dir: Option<PathBuf>,
+    ) -> Self {
         Self {
             config,
             scene,
             config_path,
             scene_path,
+            gpu_trace_dir,
             state: None,
         }
     }
@@ -225,6 +243,7 @@ impl ApplicationHandler for AppShell {
             &self.scene,
             &self.config_path,
             &self.scene_path,
+            self.gpu_trace_dir.clone(),
         ) {
             Ok(s) => self.state = Some(s),
             Err(e) => {
@@ -279,6 +298,7 @@ impl RunState {
         scene: &Scene,
         config_path: &std::path::Path,
         scene_path: &std::path::Path,
+        gpu_trace_dir: Option<PathBuf>,
     ) -> Result<Self> {
         let initial_size = (config.window.width, config.window.height);
         let attrs = Window::default_attributes()
@@ -303,6 +323,7 @@ impl RunState {
             size,
             config.window.vsync,
             config.debug.gpu_validation,
+            gpu_trace_dir,
         )
         .context("init_windowed")?;
 
