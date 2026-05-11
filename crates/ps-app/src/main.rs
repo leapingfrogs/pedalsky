@@ -133,14 +133,16 @@ struct RunState {
     /// `weather.atmosphere`.
     bindings: ps_core::FrameWorldBindings,
 
-    tonemap: Tonemap,
-    /// Phase 9.2 debug auto-exposure compute pass + read-back staging.
-    /// Always allocated; only dispatched when
-    /// `config.debug.auto_exposure = true`.
-    auto_exposure: ps_postprocess::AutoExposure,
-    /// Latest auto-exposure-derived EV100 from the previous frame's
-    /// read-back. `None` until the first auto-exposure read completes.
-    auto_exposure_ev100: Option<f32>,
+    /// Phase 9.1 tonemap (and Phase 9.2 auto-exposure) shared with the
+    /// in-graph `TonemapSubsystem`. Stored as `Arc`s so the host can
+    /// rebuild bindings on resize while the subsystem holds independent
+    /// references.
+    tonemap: std::sync::Arc<Tonemap>,
+    auto_exposure: std::sync::Arc<ps_postprocess::AutoExposure>,
+    /// Side-channel handle to push per-frame state into the
+    /// in-graph TonemapSubsystem and to drain its auto-exposure
+    /// staging buffer after `queue.submit`.
+    tonemap_handle: ps_postprocess::TonemapHandle,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
     app: App,
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
@@ -274,10 +276,22 @@ impl RunState {
 
         let hdr = HdrFramebufferImpl::new(&windowed.gpu, size);
         let bindings = ps_core::FrameWorldBindings::new(&windowed.gpu.device);
-        let tonemap = Tonemap::new(&windowed.gpu.device, &hdr, windowed.surface_config.format);
-        let auto_exposure = ps_postprocess::AutoExposure::new(&windowed.gpu.device, &hdr);
+        let tonemap = std::sync::Arc::new(Tonemap::new(
+            &windowed.gpu.device,
+            &hdr,
+            windowed.surface_config.format,
+        ));
+        let auto_exposure = std::sync::Arc::new(ps_postprocess::AutoExposure::new(
+            &windowed.gpu.device,
+            &hdr,
+        ));
 
-        let (app, atmosphere_luts_cell) = build_app(config, &windowed.gpu)?;
+        let (app, atmosphere_luts_cell, tonemap_handle) = build_app(
+            config,
+            &windowed.gpu,
+            tonemap.clone(),
+            auto_exposure.clone(),
+        )?;
         let atmosphere_luts = atmosphere_luts_cell
             .lock()
             .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
@@ -336,7 +350,7 @@ impl RunState {
             bindings,
             tonemap,
             auto_exposure,
-            auto_exposure_ev100: None,
+            tonemap_handle,
             app,
             camera,
             keys: KeyState::default(),
@@ -686,31 +700,20 @@ impl RunState {
             luts_bind_group,
             frame_uniforms: &frame_uniforms,
             weather: &self.weather,
+            tonemap_target: Some(&swap_view),
+            tonemap_target_format: self.windowed_gpu.surface_config.format,
         };
+        // Phase 9.1: push per-frame state into the in-graph tonemap
+        // subsystem. The actual dispatch happens inside App::frame at
+        // PassStage::ToneMap, with auto-exposure dispatched before
+        // tonemap when the debug flag is on.
+        self.tonemap_handle
+            .set_state(ps_postprocess::TonemapState {
+                ev100: self.ev100,
+                mode: self.tonemap_mode,
+                auto_exposure_enabled: config.debug.auto_exposure,
+            });
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
-
-        // Phase 9.2 debug auto-exposure: dispatch the reduction pass so
-        // the staging buffer holds an updated value for next frame's
-        // read-back. Skipped when the [debug] flag is off.
-        if config.debug.auto_exposure {
-            self.auto_exposure.dispatch(&mut encoder);
-        }
-
-        // Tone-map. When auto-exposure is on, prefer the latest derived
-        // EV100 (one-frame lag from the previous frame's read-back);
-        // otherwise the user-configured value.
-        let tm_ev100 = if config.debug.auto_exposure {
-            self.auto_exposure_ev100.unwrap_or(self.ev100)
-        } else {
-            self.ev100
-        };
-        self.tonemap.render(
-            &mut encoder,
-            &self.windowed_gpu.gpu.queue,
-            &swap_view,
-            tm_ev100,
-            self.tonemap_mode,
-        );
 
         // Phase 5 debug overlay (after tone-map; writes to the swapchain
         // with LoadOp::Load so the tone-mapped scene shows through where
@@ -729,15 +732,9 @@ impl RunState {
 
         self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
         // Phase 9.2: drain the auto-exposure staging buffer (one-frame
-        // lag). Read-back blocks; that's acceptable for a debug mode.
-        if config.debug.auto_exposure {
-            if let Some(ev) = self
-                .auto_exposure
-                .read_back_ev100(&self.windowed_gpu.gpu.device)
-            {
-                self.auto_exposure_ev100 = Some(ev);
-            }
-        }
+        // lag). The handle no-ops when auto-exposure is off.
+        self.tonemap_handle
+            .drain_auto_exposure(&self.windowed_gpu.gpu);
         frame.present();
 
         self.frame_index = self.frame_index.wrapping_add(1);
@@ -761,9 +758,24 @@ type AtmosphereLutsCell =
 
 /// Build the app. Returns the `App` plus the LUTs cell published by
 /// `AtmosphereFactory` (Some after build if atmosphere is enabled).
-fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<(App, AtmosphereLutsCell)> {
+fn build_app(
+    config: &Config,
+    gpu: &ps_core::GpuContext,
+    tonemap: std::sync::Arc<Tonemap>,
+    auto_exposure: std::sync::Arc<ps_postprocess::AutoExposure>,
+) -> Result<(App, AtmosphereLutsCell, ps_postprocess::TonemapHandle)> {
     let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
     let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
+    let (tonemap_factory, tonemap_handle) = ps_postprocess::TonemapFactory::new();
+    tonemap_handle.inject(
+        tonemap,
+        auto_exposure,
+        ps_postprocess::TonemapState {
+            ev100: config.render.ev100,
+            mode: ps_postprocess::TonemapMode::from_config(&config.render.tone_mapper),
+            auto_exposure_enabled: config.debug.auto_exposure,
+        },
+    );
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
         .with_factory(Box::new(atmosphere_factory))
@@ -771,7 +783,8 @@ fn build_app(config: &Config, gpu: &ps_core::GpuContext) -> Result<(App, Atmosph
         .with_factory(Box::new(clouds_factory))
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
+        .with_factory(Box::new(tonemap_factory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
-    Ok((app, luts_cell))
+    Ok((app, luts_cell, tonemap_handle))
 }

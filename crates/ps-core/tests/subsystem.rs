@@ -76,5 +76,7 @@ fn _ctx_smoke(
         luts_bind_group: luts_bg,
         frame_uniforms,
         weather,
+        tonemap_target: None,
+        tonemap_target_format: wgpu::TextureFormat::Rgba8UnormSrgb,
     };
 }

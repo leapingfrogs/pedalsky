@@ -77,4 +77,13 @@ pub struct RenderContext<'a> {
     /// for wind_field/density mask) can rebuild bind groups against the
     /// live views inside the pass.
     pub weather: &'a WeatherState,
+    /// Final post-tonemap target for `PassStage::ToneMap` and `Overlay`
+    /// passes (the swapchain in the windowed binary, an offscreen
+    /// `Rgba8Unorm` texture in the headless test harness). `None` for
+    /// hosts that want to drive the tonemap externally.
+    pub tonemap_target: Option<&'a wgpu::TextureView>,
+    /// Output format of `tonemap_target`. Used by the tonemap pipeline
+    /// to validate it was built for the right format. Ignored when
+    /// `tonemap_target` is `None`.
+    pub tonemap_target_format: wgpu::TextureFormat,
 }

@@ -2096,6 +2096,7 @@ dependencies = [
 name = "ps-postprocess"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytemuck",
  "ps-core",
  "tracing",

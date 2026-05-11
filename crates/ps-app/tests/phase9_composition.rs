@@ -56,6 +56,27 @@ fn average_rgb(pixels: &[u8]) -> [f32; 3] {
 }
 
 // ---------------------------------------------------------------------------
+// §9.1 — render order: tonemap registered as a PassStage::ToneMap pass
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tonemap_is_registered_as_in_graph_pass() {
+    use ps_core::PassStage;
+    let Some(gpu) = gpu() else { return };
+    let config = baseline_config();
+    let setup = TestSetup::new(gpu, &config, (64, 64));
+    let app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    // The HeadlessApp's internal `App` must include exactly one
+    // `PassStage::ToneMap` pass — that's the in-graph tonemap subsystem.
+    let stages = app.app_for_test().pass_stages();
+    let count = stages.iter().filter(|s| **s == PassStage::ToneMap).count();
+    assert_eq!(
+        count, 1,
+        "expected exactly one ToneMap-stage pass; got stages = {stages:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // §9.1 — depth-aware cloud termination
 // ---------------------------------------------------------------------------
 

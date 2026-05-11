@@ -15,6 +15,8 @@
 //!
 //! Gated by `[debug] auto_exposure = true`. Off by default.
 
+use std::sync::Mutex;
+
 use bytemuck::{Pod, Zeroable};
 use ps_core::HdrFramebuffer;
 
@@ -34,7 +36,9 @@ pub struct AutoExposure {
     bind_group_layout: wgpu::BindGroupLayout,
     output_buf: wgpu::Buffer,
     staging_buf: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    /// Bound to the HDR target. Mutex so the host can rebuild on
+    /// resize through a shared `Arc<AutoExposure>` reference.
+    bind_group: Mutex<wgpu::BindGroup>,
 }
 
 impl AutoExposure {
@@ -98,7 +102,8 @@ impl AutoExposure {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let bind_group = build_bind_group(device, &bind_group_layout, hdr, &output_buf);
+        let bind_group =
+            Mutex::new(build_bind_group(device, &bind_group_layout, hdr, &output_buf));
 
         Self {
             pipeline,
@@ -109,10 +114,11 @@ impl AutoExposure {
         }
     }
 
-    /// Rebuild the bind group after a framebuffer resize.
-    pub fn rebuild_bindings(&mut self, device: &wgpu::Device, hdr: &HdrFramebuffer) {
-        self.bind_group =
-            build_bind_group(device, &self.bind_group_layout, hdr, &self.output_buf);
+    /// Rebuild the bind group after a framebuffer resize. Takes `&self`
+    /// so the host can call this through a shared `Arc<AutoExposure>`.
+    pub fn rebuild_bindings(&self, device: &wgpu::Device, hdr: &HdrFramebuffer) {
+        let bg = build_bind_group(device, &self.bind_group_layout, hdr, &self.output_buf);
+        *self.bind_group.lock().expect("auto-exposure bind group lock") = bg;
     }
 
     /// Dispatch the auto-exposure compute pass and copy the output to
@@ -120,12 +126,13 @@ impl AutoExposure {
     /// for the frame.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
         {
+            let bg = self.bind_group.lock().expect("auto-exposure bg lock");
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("auto-exposure"),
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(0, &*bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
         encoder.copy_buffer_to_buffer(

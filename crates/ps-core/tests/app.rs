@@ -480,6 +480,8 @@ fn frame_actually_calls_prepare_and_passes_in_pass_stage_order() {
         luts_bind_group: None,
         frame_uniforms: &frame_uniforms,
         weather: &weather,
+        tonemap_target: None,
+        tonemap_target_format: wgpu::TextureFormat::Rgba8UnormSrgb,
     };
     let mut encoder = gpu
         .device

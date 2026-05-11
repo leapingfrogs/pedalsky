@@ -33,8 +33,12 @@ pub struct TestSetup {
     pub output_view: wgpu::TextureView,
     /// Staging buffer for readback.
     pub staging: wgpu::Buffer,
-    /// Tone-map pass writing into `output_view`.
-    pub tonemap: Tonemap,
+    /// Tone-map pass writing into `output_view`. Shared with the
+    /// in-graph `TonemapSubsystem` via Arc.
+    pub tonemap: Arc<Tonemap>,
+    /// Phase 9.2 auto-exposure compute pass. Shared with the in-graph
+    /// `TonemapSubsystem` via Arc.
+    pub auto_exposure: Arc<ps_postprocess::AutoExposure>,
     /// Phase 4 §4.2 — bind groups 0 (FrameUniforms) and 1 (WorldUniforms).
     pub bindings: ps_core::FrameWorldBindings,
     /// Pixel size.
@@ -73,7 +77,12 @@ impl TestSetup {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let tonemap = Tonemap::new(&gpu.device, &hdr, wgpu::TextureFormat::Rgba8Unorm);
+        let tonemap = Arc::new(Tonemap::new(
+            &gpu.device,
+            &hdr,
+            wgpu::TextureFormat::Rgba8Unorm,
+        ));
+        let auto_exposure = Arc::new(ps_postprocess::AutoExposure::new(&gpu.device, &hdr));
         let bindings = ps_core::FrameWorldBindings::new(&gpu.device);
 
         Self {
@@ -82,6 +91,7 @@ impl TestSetup {
             output_view,
             staging,
             tonemap,
+            auto_exposure,
             bindings,
             size: (w, h),
             padded_bytes_per_row,
@@ -101,6 +111,8 @@ pub struct HeadlessApp {
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
     /// when atmosphere is disabled in config.
     atmosphere_luts: Option<Arc<ps_core::AtmosphereLuts>>,
+    /// Phase 9.1: side-channel handle to the in-graph TonemapSubsystem.
+    tonemap_handle: ps_postprocess::TonemapHandle,
 }
 
 impl HeadlessApp {
@@ -108,6 +120,16 @@ impl HeadlessApp {
     pub fn new(gpu: &GpuContext, config: &Config, setup: TestSetup) -> Result<Self> {
         let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
         let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
+        let (tonemap_factory, tonemap_handle) = ps_postprocess::TonemapFactory::new();
+        tonemap_handle.inject(
+            setup.tonemap.clone(),
+            setup.auto_exposure.clone(),
+            ps_postprocess::TonemapState {
+                ev100: config.render.ev100,
+                mode: TonemapMode::from_config(&config.render.tone_mapper),
+                auto_exposure_enabled: config.debug.auto_exposure,
+            },
+        );
         let app = AppBuilder::new()
             .with_factory(Box::new(BackdropFactory))
             .with_factory(Box::new(atmosphere_factory))
@@ -115,6 +137,7 @@ impl HeadlessApp {
             .with_factory(Box::new(clouds_factory))
             .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))
+            .with_factory(Box::new(tonemap_factory))
             .build(config, gpu)
             .context("AppBuilder::build")?;
         let atmosphere_luts = luts_cell
@@ -128,6 +151,7 @@ impl HeadlessApp {
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
             last_config: config.clone(),
             atmosphere_luts,
+            tonemap_handle,
         })
     }
 
@@ -135,6 +159,12 @@ impl HeadlessApp {
     /// integration tests. Returns `None` when atmosphere is disabled.
     pub fn atmosphere_luts_for_diag(&self) -> Option<&Arc<ps_core::AtmosphereLuts>> {
         self.atmosphere_luts.as_ref()
+    }
+
+    /// Test-only accessor for the inner `ps_core::App`. Used by Phase 9
+    /// tests that introspect registered passes.
+    pub fn app_for_test(&self) -> &App {
+        &self.app
     }
 
     /// Apply a new config in place (mirrors the hot-reload path).
@@ -319,16 +349,20 @@ impl HeadlessApp {
             luts_bind_group,
             frame_uniforms: &frame_uniforms,
             weather: &weather,
+            tonemap_target: Some(&self.setup.output_view),
+            tonemap_target_format: wgpu::TextureFormat::Rgba8Unorm,
         };
+        // Phase 9.1: push per-frame state into the in-graph tonemap
+        // subsystem; the tonemap pass runs at PassStage::ToneMap inside
+        // App::frame writing to render_ctx.tonemap_target (the offscreen
+        // output view).
+        self.tonemap_handle
+            .set_state(ps_postprocess::TonemapState {
+                ev100: self.ev100,
+                mode: self.tonemap_mode,
+                auto_exposure_enabled: self.last_config.debug.auto_exposure,
+            });
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
-
-        self.setup.tonemap.render(
-            &mut encoder,
-            &gpu.queue,
-            &self.setup.output_view,
-            self.ev100,
-            self.tonemap_mode,
-        );
 
         // Copy output → staging.
         encoder.copy_texture_to_buffer(
@@ -353,6 +387,8 @@ impl HeadlessApp {
             },
         );
         gpu.queue.submit([encoder.finish()]);
+        // Phase 9.2: drain any pending auto-exposure read-back.
+        self.tonemap_handle.drain_auto_exposure(gpu);
 
         // Map + read.
         let slice = self.setup.staging.slice(..);

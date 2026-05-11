@@ -4,6 +4,8 @@
 //! writes a `*Srgb` swapchain texture. The GPU encodes linear→sRGB on store,
 //! so the shader output is linear.
 
+use std::sync::Mutex;
+
 use bytemuck::{Pod, Zeroable};
 use ps_core::HdrFramebuffer;
 
@@ -61,7 +63,11 @@ pub struct Tonemap {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    /// Bound to the HDR target. Behind a `Mutex` so resize-rebuild
+    /// (which the host triggers via [`Self::rebuild_bindings`]) can run
+    /// through a shared `Arc<Tonemap>` reference without exclusive
+    /// ownership.
+    bind_group: Mutex<wgpu::BindGroup>,
     output_format: wgpu::TextureFormat,
 }
 
@@ -155,7 +161,8 @@ impl Tonemap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = build_bind_group(device, &bind_group_layout, hdr, &sampler, &uniforms);
+        let bind_group =
+            Mutex::new(build_bind_group(device, &bind_group_layout, hdr, &sampler, &uniforms));
 
         Self {
             pipeline,
@@ -172,15 +179,17 @@ impl Tonemap {
         self.output_format
     }
 
-    /// Rebind to a new HDR target after resize.
-    pub fn rebuild_bindings(&mut self, device: &wgpu::Device, hdr: &HdrFramebuffer) {
-        self.bind_group = build_bind_group(
+    /// Rebind to a new HDR target after resize. Takes `&self` so the
+    /// host can call this through a shared `Arc<Tonemap>` reference.
+    pub fn rebuild_bindings(&self, device: &wgpu::Device, hdr: &HdrFramebuffer) {
+        let bg = build_bind_group(
             device,
             &self.bind_group_layout,
             hdr,
             &self.sampler,
             &self.uniforms,
         );
+        *self.bind_group.lock().expect("tonemap bind group lock") = bg;
     }
 
     /// Encode the tone-map pass into `encoder`, reading the HDR target and
@@ -219,8 +228,9 @@ impl Tonemap {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        let bg = self.bind_group.lock().expect("tonemap bind group lock");
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, &*bg, &[]);
         pass.draw(0..3, 0..1);
     }
 }

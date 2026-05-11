@@ -7,7 +7,9 @@
 #![deny(missing_docs)]
 
 pub mod auto_exposure;
+pub mod subsystem;
 pub mod tonemap;
 
 pub use auto_exposure::AutoExposure;
+pub use subsystem::{TonemapFactory, TonemapHandle, TonemapState, TonemapSubsystem};
 pub use tonemap::{Tonemap, TonemapMode};
