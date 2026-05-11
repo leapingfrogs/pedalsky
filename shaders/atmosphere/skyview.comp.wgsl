@@ -145,6 +145,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         transmittance = transmittance * sample_transmit;
     }
 
+    // Ground-bounce term (Hillaire 2020 §6). If the ray hits the planet
+    // surface inside the atmosphere, add the sun-illuminated bounce
+    // attenuated by ground albedo / π and the integrated transmittance
+    // back to the camera.
+    var t_planet: vec2<f32>;
+    let hit_planet = ray_sphere_intersect_origin(p, view_dir, world.planet_radius_m, &t_planet);
+    if (hit_planet && t_planet.x > 0.0) {
+        // Sample point on the planet surface.
+        let p_ground = p + view_dir * t_planet.x;
+        let n_ground = normalize(p_ground);
+        let sun_visibility_ground = sample_transmittance_lut(p_ground, sun_dir);
+        let n_dot_l = max(dot(n_ground, sun_dir), 0.0);
+        // Per-unit-illuminance bounce radiance reaching the camera.
+        let bounce = world.ground_albedo.rgb * (1.0 / 3.14159265)
+                   * n_dot_l * sun_visibility_ground;
+        luminance = luminance + transmittance * bounce;
+    }
+
     // Store per-unit-illuminance radiance.  The sky shader multiplies
     // by `frame.sun_illuminance.rgb` at sample time.  Keeping the LUT
     // in unit space means the f16 storage range comfortably fits

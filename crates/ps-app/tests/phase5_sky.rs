@@ -70,6 +70,45 @@ fn sky_pass_produces_non_black_output_at_midday() {
 }
 
 #[test]
+fn ground_bounce_lifts_downward_sky_above_zero() {
+    // Plan §5.3 (Hillaire 2020 §6): a ray that hits the planet inside the
+    // sky pass picks up a ground-bounce term proportional to ground_albedo
+    // and the sun-to-ground transmittance. Disable ground geometry so the
+    // sky pass's downward output isn't overpainted, then look down and
+    // confirm the result is non-trivially bright.
+    let Some(gpu) = gpu() else { return };
+    let mut config = Config::default();
+    config.render.ev100 = 15.0;
+    config.render.tone_mapper = "ACESFilmic".into();
+    config.render.subsystems.atmosphere = true;
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+    config.render.subsystems.ground = false;
+    config.render.subsystems.clouds = false;
+    config.render.subsystems.precipitation = false;
+
+    let setup = TestSetup::new(gpu, &config, (64, 64));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    // Pitch 60 degrees down so the camera frame is dominated by below-
+    // horizon rays.
+    let camera = ps_core::camera::FlyCamera {
+        pitch: -60_f32.to_radians(),
+        ..ps_core::camera::FlyCamera::default()
+    };
+    let pixels = app.render_one_frame_with(gpu, camera);
+    let avg = average_rgb(&pixels);
+    eprintln!("downward sky (ground bounce) avg = {avg:?}");
+    let total = avg[0] + avg[1] + avg[2];
+    // Earth ground_albedo defaults to (0.18, 0.18, 0.18); midday sun gives
+    // ~100k lux at the surface → bounce of ~5700 cd/m² per channel, well
+    // above the EV100=15 noise floor after ACES.
+    assert!(
+        total > 0.05,
+        "expected ground bounce to brighten downward sky; got {avg:?}"
+    );
+}
+
+#[test]
 fn atmosphere_pipeline_dispatches_cleanly() {
     let Some(gpu) = gpu() else { return };
 
