@@ -446,7 +446,18 @@ impl Default for AuroraTuning {
     fn default() -> Self {
         Self {
             march_steps: 8,
-            peak_emission: 1500.0,
+            // Visible auroras run ~1–1000 cd/m² depending on
+            // display strength. The shader output is
+            // peak_emission × mean_density × colour_bias, and
+            // mean_density typically lands in 0.05..0.2 along an
+            // active curtain ray. Scenes that show auroras are
+            // night-time (sun below horizon), so the tone-mapper
+            // sees a very dark frame and we need the curtain peak
+            // to land well above the tonemap's noise floor at the
+            // default ev100 ≈ 14 used by the reference scenes.
+            // 30000 lands a kp=5 active display visible without
+            // blowing out the green channel.
+            peak_emission: 30000.0,
             motion_hz: 0.05,
             min_latitude_abs_deg: 50.0,
             peak_latitude_abs_deg: 65.0,

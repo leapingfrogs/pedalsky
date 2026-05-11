@@ -44,6 +44,11 @@ pub struct RenderArgs {
     /// Phase 12.3 — override the lightning RNG seed for deterministic
     /// strikes. `None` keeps the seed from the engine config block.
     pub seed: Option<u64>,
+    /// Phase 12.5 — override observer latitude in degrees. `None`
+    /// keeps the value from `pedalsky.toml [world] latitude_deg`.
+    /// Useful for headless renders of high-latitude scenes (auroras
+    /// at 65°N, polar twilight).
+    pub latitude_deg: Option<f64>,
 }
 
 /// Detect `render <args...>` after the binary name. Returns `None`
@@ -61,6 +66,7 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
     let mut yaw_deg: f32 = 0.0;
     let mut pitch_deg: f32 = 5.0;
     let mut seed: Option<u64> = None;
+    let mut latitude_deg: Option<f64> = None;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--scene" => scene = iter.next().map(PathBuf::from),
@@ -80,6 +86,9 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
             }
             "--seed" => {
                 seed = iter.next().and_then(|s| s.parse().ok());
+            }
+            "--latitude-deg" => {
+                latitude_deg = iter.next().and_then(|s| s.parse().ok());
             }
             _ => {
                 eprintln!("unknown render flag: {arg}");
@@ -108,6 +117,7 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
         yaw_deg,
         pitch_deg,
         seed,
+        latitude_deg,
     })
 }
 
@@ -137,6 +147,11 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     // lightning-bearing scenes are reproducible.
     if let Some(s) = args.seed {
         config.render.lightning.seed = s;
+    }
+    // Phase 12.5 — apply --latitude-deg override for high-latitude
+    // headless renders (auroras, polar twilight).
+    if let Some(lat) = args.latitude_deg {
+        config.world.latitude_deg = lat;
     }
 
     // Init headless GPU.

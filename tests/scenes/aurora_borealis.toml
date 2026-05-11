@@ -1,0 +1,34 @@
+# Phase 12.5 diagnostic — aurora borealis at lat 65°N, midnight UTC
+# (use --latitude-deg 65 on the render CLI), kp = 5 (active display).
+# Rendered with no clouds, dark surface, looking north.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = -10.0
+dewpoint_c     = -15.0
+pressure_hpa   = 1018.0
+wind_dir_deg   = 0.0
+wind_speed_mps = 2.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.30
+
+[clouds]
+# No layers — clean sky so the aurora is unambiguous.
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
+
+[aurora]
+kp_index           = 5.0
+intensity_override = -1.0      # derive from kp_index
+predominant_colour = "green"

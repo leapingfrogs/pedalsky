@@ -137,18 +137,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let extent = aurora.config.z;
     let t_motion = aurora.config.x;
 
-    var accum = vec3<f32>(0.0);
+    // Integrate density along the ray. Dividing by n_steps gives a
+    // mean density independent of march resolution. Auroras are
+    // optically thin so visible luminance is just emission ×
+    // density (no 1/r falloff — line emission, not reflection).
+    var density_accum = 0.0;
     var t = t_enter;
     for (var i = 0; i < n_steps; i = i + 1) {
         let p = cam_world + view_dir * t;
-        let d = curtain_density(p, t_motion, extent);
-        // The colour-biased emission scalar already encodes the
-        // peak luminance × intensity gate × kp curve; scale by
-        // density per step and the segment length (in km, to
-        // keep numerical magnitudes reasonable).
-        accum = accum + aurora.emission.rgb * d * (dt / 1000.0);
+        density_accum = density_accum + curtain_density(p, t_motion, extent);
         t = t + dt;
     }
+    let mean_density = density_accum / max(f32(n_steps), 1.0);
+    let accum = aurora.emission.rgb * mean_density;
 
     // Clamp to non-negative so an over-aggressive emission scalar
     // never produces NaN-tail when the additive blend hits the HDR
