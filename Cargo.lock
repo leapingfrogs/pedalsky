@@ -2457,6 +2457,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "chrono",
+ "exr",
  "glam",
  "half",
  "image",

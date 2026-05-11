@@ -214,13 +214,12 @@ impl RenderSubsystem for GroundSubsystem {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
         let mut surface = ctx.weather.surface;
-        // The wet_surface master toggle gates Phase 7.2 / 7.3 features.
-        // Zero the inputs here so the shader's branches collapse cleanly
-        // to the dry path without a separate uniform.
+        // The wet_surface master toggle (Phase 7.2 / 7.3) gates only the
+        // wetness + puddle features — snow is a distinct ground material
+        // and stays driven by the scene's snow_depth_m + temperature_c.
         if !self.wet_surface_enabled {
             surface.ground_wetness = 0.0;
             surface.puddle_coverage = 0.0;
-            surface.snow_depth_m = 0.0;
         }
         ctx.queue
             .write_buffer(&self.inner.surface_buf, 0, bytes_of(&surface));
