@@ -162,6 +162,18 @@ impl HeadlessApp {
         gpu: &GpuContext,
         camera: ps_core::camera::FlyCamera,
     ) -> Vec<u8> {
+        self.render_one_frame_with_surface(gpu, camera, None)
+    }
+
+    /// Variant of [`Self::render_one_frame_with`] that lets the caller
+    /// inject a custom `SurfaceParams` (otherwise the stub default is
+    /// used). Useful for Phase 7 wet-surface / snow tests.
+    pub fn render_one_frame_with_surface(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+        surface_override: Option<ps_core::SurfaceParams>,
+    ) -> Vec<u8> {
         let (w, h) = self.setup.size;
         let aspect = w as f32 / h as f32;
         let view = camera.view_matrix();
@@ -169,7 +181,10 @@ impl HeadlessApp {
         // World state for tests defaults to J2000.0 noon at the equator —
         // gives a sun overhead, useful for sky tests.
         let world = ps_core::WorldState::default();
-        let weather = ps_core::WeatherState::stub_for_tests(gpu);
+        let mut weather = ps_core::WeatherState::stub_for_tests(gpu);
+        if let Some(s) = surface_override {
+            weather.surface = s;
+        }
 
         let mut frame_uniforms = FrameUniforms {
             // Use the supplied camera position so tests can place the

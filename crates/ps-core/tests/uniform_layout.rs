@@ -6,7 +6,7 @@
 //! alignment drift between CPU and GPU.
 
 use naga::front::wgsl::Frontend;
-use ps_core::{FrameUniformsGpu, WorldUniformsGpu};
+use ps_core::{FrameUniformsGpu, SurfaceParams, WorldUniformsGpu};
 
 fn parse_module(src: &str) -> naga::Module {
     Frontend::new()
@@ -50,5 +50,18 @@ fn world_uniforms_size_matches_wgsl() {
     assert_eq!(
         wgsl_size, rust_size,
         "WGSL WorldUniforms = {wgsl_size} B, Rust WorldUniformsGpu = {rust_size} B"
+    );
+}
+
+#[test]
+fn surface_params_size_matches_wgsl() {
+    let src = ps_core::shaders::COMMON_UNIFORMS_WGSL;
+    let module = parse_module(src);
+    let wgsl_size =
+        struct_size(&module, "SurfaceParams").expect("WGSL SurfaceParams struct must be declared");
+    let rust_size = std::mem::size_of::<SurfaceParams>() as u32;
+    assert_eq!(
+        wgsl_size, rust_size,
+        "WGSL SurfaceParams = {wgsl_size} B, Rust SurfaceParams = {rust_size} B"
     );
 }

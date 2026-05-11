@@ -47,3 +47,20 @@ struct WorldUniforms {
     ground_albedo: vec4<f32>,
     haze_extinction_per_m: vec4<f32>,
 };
+
+// Mirrors `ps-core::weather::SurfaceParams`. 48 bytes; std140-aligned by
+// virtue of a contiguous block of f32s with two trailing pad scalars.
+struct SurfaceParams {
+    visibility_m: f32,
+    temperature_c: f32,
+    dewpoint_c: f32,
+    pressure_hpa: f32,
+    wind_dir_deg: f32,
+    wind_speed_mps: f32,
+    ground_wetness: f32,
+    puddle_coverage: f32,
+    snow_depth_m: f32,
+    puddle_start: f32,
+    _pad_0: f32,
+    _pad_1: f32,
+};
