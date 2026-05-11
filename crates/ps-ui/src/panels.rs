@@ -23,6 +23,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 world_panel(ui, state);
                 ui.separator();
+                camera_panel(ui, state);
+                ui.separator();
                 render_panel(ui, state);
                 ui.separator();
                 subsystem_panel(ui, state);
@@ -331,6 +333,57 @@ fn jump_solar(state: &mut UiState, event: SolarEvent) {
 
 // chrono::Timelike for hour/minute/second on DateTime.
 use chrono::Timelike;
+
+// ---------------------------------------------------------------------------
+// Camera panel — fov / near / speed (plan §0.4)
+// ---------------------------------------------------------------------------
+
+fn camera_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Camera", |ui| {
+        let Some(current) = state.latest_camera else {
+            ui.label("(awaiting first frame to mirror camera state)");
+            return;
+        };
+        let mut cam = current;
+        let mut changed = false;
+
+        let mut fov_deg = cam.fov_y_rad.to_degrees();
+        if Slider::new(&mut fov_deg, 20.0..=120.0)
+            .text("FOV (vertical, °)")
+            .max_decimals(2)
+            .ui(ui)
+            .changed()
+        {
+            cam.fov_y_rad = fov_deg.to_radians();
+            changed = true;
+        }
+
+        if Slider::new(&mut cam.near_m, 0.01..=10.0)
+            .text("Near plane (m)")
+            .logarithmic(true)
+            .max_decimals(4)
+            .ui(ui)
+            .changed()
+        {
+            changed = true;
+        }
+
+        if Slider::new(&mut cam.speed_mps, 0.1..=200.0)
+            .text("Speed (m/s)")
+            .logarithmic(true)
+            .max_decimals(2)
+            .ui(ui)
+            .changed()
+        {
+            changed = true;
+        }
+
+        if changed {
+            state.latest_camera = Some(cam);
+            state.pending.live_camera = Some(cam);
+        }
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Render panel — EV100, tone mapper, vsync, screenshot

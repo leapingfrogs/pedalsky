@@ -980,11 +980,23 @@ impl RunState {
             self.resynthesise_weather(scene, config);
         }
 
+        // Plan §0.4 — apply camera fov/near/speed slider edits.
+        if let Some(cam) = pending.live_camera {
+            self.camera.fov_y = cam.fov_y_rad;
+            self.camera.near_m = cam.near_m;
+            self.camera.speed_mps = cam.speed_mps;
+        }
+
         // Push live mirrors into the UI for the next frame's panels.
         {
             let mut s = self.ui_handle.lock();
             s.latest_atmosphere = Some(self.weather.atmosphere);
             s.latest_scene = Some(scene.clone());
+            s.latest_camera = Some(ps_ui::CameraSettings {
+                fov_y_rad: self.camera.fov_y,
+                near_m: self.camera.near_m,
+                speed_mps: self.camera.speed_mps,
+            });
         }
 
         Ok(())

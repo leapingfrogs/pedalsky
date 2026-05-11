@@ -27,7 +27,10 @@ use ps_core::{
     SubsystemFactory,
 };
 
-pub use state::{UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState, UiWorldReadout};
+pub use state::{
+    CameraSettings, UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState,
+    UiWorldReadout,
+};
 
 /// Stable subsystem name.
 pub const NAME: &str = "ui";

@@ -46,6 +46,22 @@ pub struct UiPending {
     /// layers). Host replaces the in-memory Scene and re-synthesises
     /// WeatherState.
     pub live_scene: Option<Scene>,
+
+    /// Plan §0.4 — pending camera fov/near/speed edit from the World
+    /// panel. Host applies to its FlyCamera on the next frame.
+    pub live_camera: Option<CameraSettings>,
+}
+
+/// Snapshot of the host's camera configuration that the World panel
+/// edits. Plan §0.4 — fov, near, speed sliders.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct CameraSettings {
+    /// Vertical field of view in radians.
+    pub fov_y_rad: f32,
+    /// Near-plane distance in metres.
+    pub near_m: f32,
+    /// Movement speed in metres per second.
+    pub speed_mps: f32,
 }
 
 /// Read-only frame stats the host pushes into the UI for the Debug panel.
@@ -98,6 +114,10 @@ pub struct UiState {
     /// each frame). The atmosphere coefficient panel reads current
     /// values from here.
     pub latest_atmosphere: Option<AtmosphereParams>,
+    /// Mirror of the host's live `FlyCamera` settings (fov, near,
+    /// speed) — host pushes each frame; the World panel reads from
+    /// here and writes edits to `pending.live_camera`.
+    pub latest_camera: Option<CameraSettings>,
 }
 
 /// Debug-panel toggles that don't belong in `Config`.
@@ -125,6 +145,7 @@ impl UiState {
             debug: UiDebugSelection::default(),
             latest_scene: None,
             latest_atmosphere: None,
+            latest_camera: None,
         }
     }
 }
