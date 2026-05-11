@@ -436,42 +436,46 @@ fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
             return;
         };
         let mut atmo = current;
+        let defaults = ps_core::AtmosphereParams::default();
         let mut any = false;
         // Planet geometry.
-        any |= drag_f32(ui, &mut atmo.planet_radius_m, "planet_radius_m",
-                         1.0e6..=1.0e8, 1000.0);
-        any |= drag_f32(ui, &mut atmo.atmosphere_top_m, "atmosphere_top_m",
-                         1.0e4..=2.0e6, 1000.0);
-        any |= drag_f32(ui, &mut atmo.rayleigh_scale_height_m,
-                         "rayleigh_scale_height_m", 100.0..=20000.0, 100.0);
-        any |= drag_f32(ui, &mut atmo.mie_scale_height_m,
-                         "mie_scale_height_m", 100.0..=10000.0, 100.0);
+        any |= f32_with_reset(ui, &mut atmo.planet_radius_m, defaults.planet_radius_m,
+                              "planet_radius_m", 1.0e6..=1.0e8, 1000.0);
+        any |= f32_with_reset(ui, &mut atmo.atmosphere_top_m, defaults.atmosphere_top_m,
+                              "atmosphere_top_m", 1.0e4..=2.0e6, 1000.0);
+        any |= f32_with_reset(ui, &mut atmo.rayleigh_scale_height_m,
+                              defaults.rayleigh_scale_height_m,
+                              "rayleigh_scale_height_m", 100.0..=20000.0, 100.0);
+        any |= f32_with_reset(ui, &mut atmo.mie_scale_height_m, defaults.mie_scale_height_m,
+                              "mie_scale_height_m", 100.0..=10000.0, 100.0);
         // Rayleigh scattering (per-channel).
         ui.label("Rayleigh scattering (per metre)");
-        any |= drag_vec4_xyz(ui, &mut atmo.rayleigh_scattering, "rayleigh", 1e-7);
+        any |= vec3_with_reset(ui, &mut atmo.rayleigh_scattering,
+                                defaults.rayleigh_scattering, "rayleigh", 1e-7);
         // Mie scattering / absorption.
         ui.label("Mie scattering (per metre)");
-        any |= drag_vec4_xyz(ui, &mut atmo.mie_scattering, "mie_s", 1e-7);
+        any |= vec3_with_reset(ui, &mut atmo.mie_scattering,
+                                defaults.mie_scattering, "mie_s", 1e-7);
         ui.label("Mie absorption (per metre)");
-        any |= drag_vec4_xyz(ui, &mut atmo.mie_absorption, "mie_a", 1e-7);
-        any |= Slider::new(&mut atmo.mie_g, 0.0..=0.99)
-            .text("mie_g (HG anisotropy)")
-            .max_decimals(4)
-            .ui(ui)
-            .changed();
+        any |= vec3_with_reset(ui, &mut atmo.mie_absorption,
+                                defaults.mie_absorption, "mie_a", 1e-7);
+        any |= f32_with_reset(ui, &mut atmo.mie_g, defaults.mie_g,
+                              "mie_g (HG anisotropy)", 0.0..=0.99, 0.01);
         // Ozone.
         ui.label("Ozone absorption (per metre)");
-        any |= drag_vec4_xyz(ui, &mut atmo.ozone_absorption, "ozone", 1e-8);
-        any |= drag_f32(ui, &mut atmo.ozone_center_m, "ozone_center_m",
-                         0.0..=80000.0, 100.0);
-        any |= drag_f32(ui, &mut atmo.ozone_thickness_m, "ozone_thickness_m",
-                         100.0..=80000.0, 100.0);
+        any |= vec3_with_reset(ui, &mut atmo.ozone_absorption,
+                                defaults.ozone_absorption, "ozone", 1e-8);
+        any |= f32_with_reset(ui, &mut atmo.ozone_center_m, defaults.ozone_center_m,
+                              "ozone_center_m", 0.0..=80000.0, 100.0);
+        any |= f32_with_reset(ui, &mut atmo.ozone_thickness_m, defaults.ozone_thickness_m,
+                              "ozone_thickness_m", 100.0..=80000.0, 100.0);
         // Ground albedo (for atmosphere bounce).
         ui.label("Ground albedo (atmosphere bounce)");
-        any |= drag_vec4_xyz(ui, &mut atmo.ground_albedo, "albedo", 0.01);
+        any |= vec3_with_reset(ui, &mut atmo.ground_albedo,
+                                defaults.ground_albedo, "albedo", 0.01);
 
-        if ui.button("Reset to Earth defaults").clicked() {
-            atmo = ps_core::AtmosphereParams::default();
+        if ui.button("Reset all to Earth defaults").clicked() {
+            atmo = defaults;
             any = true;
         }
 
@@ -480,6 +484,82 @@ fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.pending.live_atmosphere = Some(atmo);
         }
     });
+}
+
+/// f32 slider with a per-field reset (↺) button. Returns true if
+/// either the slider value or a reset click changed `value`.
+fn f32_with_reset(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    default: f32,
+    label: &str,
+    range: std::ops::RangeInclusive<f32>,
+    speed: f32,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let mut v = *value;
+        if DragValue::new(&mut v)
+            .range(*range.start()..=*range.end())
+            .speed(speed)
+            .max_decimals(6)
+            .ui(ui)
+            .changed()
+        {
+            *value = v;
+            changed = true;
+        }
+        ui.label(label);
+        if ui
+            .small_button("↺")
+            .on_hover_text("Reset to Earth default")
+            .clicked()
+            && *value != default
+        {
+            *value = default;
+            changed = true;
+        }
+    });
+    changed
+}
+
+/// vec3 (xyz) drag-input row with a per-field reset button.
+fn vec3_with_reset(
+    ui: &mut egui::Ui,
+    value: &mut glam::Vec4,
+    default: glam::Vec4,
+    label: &str,
+    speed: f32,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for (i, suffix) in ["r", "g", "b"].iter().enumerate() {
+            ui.label(format!("{label}.{suffix}"));
+            let mut v = match i {
+                0 => value.x,
+                1 => value.y,
+                _ => value.z,
+            };
+            if DragValue::new(&mut v).speed(speed).max_decimals(8).ui(ui).changed() {
+                match i {
+                    0 => value.x = v,
+                    1 => value.y = v,
+                    _ => value.z = v,
+                }
+                changed = true;
+            }
+        }
+        if ui
+            .small_button("↺")
+            .on_hover_text("Reset to Earth default")
+            .clicked()
+            && *value != default
+        {
+            *value = default;
+            changed = true;
+        }
+    });
+    changed
 }
 
 fn drag_f32(
@@ -507,35 +587,6 @@ fn drag_f32(
     .inner
 }
 
-fn drag_vec4_xyz(
-    ui: &mut egui::Ui,
-    value: &mut glam::Vec4,
-    label: &str,
-    speed: f32,
-) -> bool {
-    let mut any = false;
-    ui.horizontal(|ui| {
-        ui.label(format!("{label}.r"));
-        let mut x = value.x;
-        if DragValue::new(&mut x).speed(speed).max_decimals(8).ui(ui).changed() {
-            value.x = x;
-            any = true;
-        }
-        ui.label(format!("{label}.g"));
-        let mut y = value.y;
-        if DragValue::new(&mut y).speed(speed).max_decimals(8).ui(ui).changed() {
-            value.y = y;
-            any = true;
-        }
-        ui.label(format!("{label}.b"));
-        let mut z = value.z;
-        if DragValue::new(&mut z).speed(speed).max_decimals(8).ui(ui).changed() {
-            value.z = z;
-            any = true;
-        }
-    });
-    any
-}
 
 // ---------------------------------------------------------------------------
 // Clouds panel — every CloudsTuning field + per-layer accordions
@@ -692,6 +743,7 @@ fn wet_surface_panel(ui: &mut egui::Ui, state: &mut UiState) {
 
 fn precipitation_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("Precipitation", |ui| {
+        // Engine-side pool tuning (config).
         let p = &mut state.live_config.render.precip;
         let mut any = false;
         any |= Slider::new(&mut p.near_particle_count, 1024..=32_768)
@@ -705,10 +757,50 @@ fn precipitation_panel(ui: &mut egui::Ui, state: &mut UiState) {
         if any {
             state.pending.config_dirty = true;
         }
-        ui.label(
-            "Type and intensity are scene-side (`scene.precipitation.type`, \
-             `intensity_mm_per_h`). Edit the scene TOML to change them.",
-        );
+
+        ui.separator();
+        // Scene-side type + intensity.
+        let Some(scene) = state.latest_scene.as_ref() else {
+            ui.label("(awaiting first frame to mirror Scene)");
+            return;
+        };
+        let mut new_scene = scene.clone();
+        let mut scene_changed = false;
+        ui.horizontal(|ui| {
+            ui.label("type");
+            ComboBox::from_id_salt("ps-ui-precip-kind")
+                .selected_text(format!("{:?}", new_scene.precipitation.kind))
+                .show_ui(ui, |ui| {
+                    use ps_core::PrecipKind;
+                    for k in [
+                        PrecipKind::None,
+                        PrecipKind::Rain,
+                        PrecipKind::Snow,
+                        PrecipKind::Sleet,
+                    ] {
+                        if ui
+                            .selectable_label(
+                                new_scene.precipitation.kind == k,
+                                format!("{k:?}"),
+                            )
+                            .clicked()
+                            && new_scene.precipitation.kind != k
+                        {
+                            new_scene.precipitation.kind = k;
+                            scene_changed = true;
+                        }
+                    }
+                });
+        });
+        scene_changed |= Slider::new(&mut new_scene.precipitation.intensity_mm_per_h, 0.0..=50.0)
+            .text("intensity_mm_per_h")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        if scene_changed {
+            state.latest_scene = Some(new_scene.clone());
+            state.pending.live_scene = Some(new_scene);
+        }
     });
 }
 
@@ -788,6 +880,17 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ui.colored_label(
             Color32::LIGHT_BLUE,
             format!("transmittance R={:.4} G={:.4} B={:.4}", t[0], t[1], t[2]),
+        );
+        // Optical depth = -ln(T). Clamp T to a small floor so the log
+        // stays finite when transmittance is zero.
+        let od = [
+            -(t[0].max(1e-12)).ln(),
+            -(t[1].max(1e-12)).ln(),
+            -(t[2].max(1e-12)).ln(),
+        ];
+        ui.colored_label(
+            Color32::LIGHT_BLUE,
+            format!("optical depth R={:.4} G={:.4} B={:.4}", od[0], od[1], od[2]),
         );
 
         ui.separator();

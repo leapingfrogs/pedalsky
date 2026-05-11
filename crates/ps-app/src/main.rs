@@ -950,7 +950,7 @@ impl RunState {
             }
         }
         if let Some(path) = pending.save_scene {
-            if let Err(e) = self.write_scene_toml(&path, config) {
+            if let Err(e) = self.write_scene_toml(&path, config, scene) {
                 warn!(error = %e, "save scene failed");
             }
         }
@@ -1150,12 +1150,54 @@ impl RunState {
         Ok((out, w, h))
     }
 
-    fn write_scene_toml(&self, path: &std::path::Path, config: &Config) -> Result<()> {
-        // Save the live Config + the synthesised Scene back to TOML.
-        // Engine config:
+    fn write_scene_toml(
+        &self,
+        path: &std::path::Path,
+        config: &Config,
+        scene: &Scene,
+    ) -> Result<()> {
+        // Save the live Config + the live Scene as a TOML pair. Plan
+        // §10.4 / Appendices A & B.
+        //
+        // - If the user-supplied path looks like a scene file
+        //   (`<name>.scene.toml`), write the scene there directly and
+        //   write the engine config alongside as `<name>.toml`.
+        // - Otherwise treat the supplied path as the engine config and
+        //   sidecar the scene as `<stem>.scene.toml`.
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("pedalsky");
+        let user_picked_scene_path = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|n| n.contains(".scene."));
+
+        let (config_path, scene_path): (std::path::PathBuf, std::path::PathBuf) =
+            if user_picked_scene_path {
+                let stem_no_scene =
+                    stem.strip_suffix(".scene").unwrap_or(stem);
+                (
+                    parent.join(format!("{stem_no_scene}.toml")),
+                    path.to_path_buf(),
+                )
+            } else {
+                (
+                    path.to_path_buf(),
+                    parent.join(format!("{stem}.scene.toml")),
+                )
+            };
+
         let config_toml = toml::to_string_pretty(config).context("toml encode config")?;
-        std::fs::write(path, config_toml).with_context(|| format!("write {}", path.display()))?;
-        info!(target: "ps_app", path = %path.display(), "wrote engine config TOML");
+        std::fs::write(&config_path, config_toml)
+            .with_context(|| format!("write {}", config_path.display()))?;
+        info!(target: "ps_app", path = %config_path.display(), "wrote engine config TOML");
+
+        let scene_toml = toml::to_string_pretty(scene).context("toml encode scene")?;
+        std::fs::write(&scene_path, scene_toml)
+            .with_context(|| format!("write {}", scene_path.display()))?;
+        info!(target: "ps_app", path = %scene_path.display(), "wrote scene TOML");
         Ok(())
     }
 }
