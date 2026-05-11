@@ -34,6 +34,24 @@
 // Phase 9.1: per-pixel HDR depth used as the cloud march t_max so
 // clouds correctly clip behind opaque geometry.
 @group(2) @binding(9) var scene_depth: texture_depth_2d;
+// Phase 12.1: per-pixel cloud-type override grid (R8Uint). Sampled
+// via textureLoad with integer coords (no sampler — interpolating a
+// type index would be meaningless). Value 255 is the sentinel "use
+// the layer's cloud_type instead"; values 0..7 select a specific
+// cloud type for this pixel regardless of the layer's default.
+@group(2) @binding(10) var cloud_type_grid: texture_2d<u32>;
+
+/// Sentinel value in the cloud_type_grid meaning "use the per-layer
+/// cloud_type rather than a per-pixel override". Mirrors the Rust
+/// constant `ps_synthesis::cloud_type_grid::SENTINEL`.
+const CLOUD_TYPE_SENTINEL: u32 = 255u;
+/// Spatial extent (metres) the cloud_type_grid covers — matches the
+/// weather map's extent (synthesis uploads at 128×128 over the same
+/// 32 km square centred on world origin).
+const CLOUD_TYPE_GRID_EXTENT_M: f32 = 32000.0;
+/// Resolution of the cloud_type_grid texture (square; matches
+/// `ps_synthesis::cloud_type_grid::SIZE`).
+const CLOUD_TYPE_GRID_SIZE: i32 = 128;
 
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut:  texture_2d<f32>;
@@ -214,6 +232,30 @@ fn world_to_weather_uv(xz: vec2<f32>) -> vec2<f32> {
     return xz / max(params.weather_scale_m, 1.0) + vec2<f32>(0.5);
 }
 
+/// Look up the effective cloud-type index for a sample position.
+/// Phase 12.1 — when the per-pixel grid has a non-sentinel value at
+/// this XZ, use it; otherwise fall back to the layer's default
+/// `cloud_type`. The grid is sampled with `textureLoad` because
+/// interpolating type indices is meaningless (you can't be "halfway
+/// between cumulus and stratus" — you need a discrete value).
+fn effective_cloud_type(p_xz: vec2<f32>, layer: CloudLayerGpu) -> u32 {
+    // World XZ → texel coordinate in the 128×128 grid covering
+    // [-CLOUD_TYPE_GRID_EXTENT_M/2, +/2] on each axis.
+    let half = CLOUD_TYPE_GRID_EXTENT_M * 0.5;
+    let u = (p_xz.x + half) / CLOUD_TYPE_GRID_EXTENT_M;
+    let v = (p_xz.y + half) / CLOUD_TYPE_GRID_EXTENT_M;
+    // Clamp to texel range so out-of-extent samples read the edge.
+    let tx = clamp(i32(u * f32(CLOUD_TYPE_GRID_SIZE)),
+                   0, CLOUD_TYPE_GRID_SIZE - 1);
+    let ty = clamp(i32(v * f32(CLOUD_TYPE_GRID_SIZE)),
+                   0, CLOUD_TYPE_GRID_SIZE - 1);
+    let t = textureLoad(cloud_type_grid, vec2<i32>(tx, ty), 0).r;
+    if (t == CLOUD_TYPE_SENTINEL) {
+        return layer.cloud_type;
+    }
+    return t;
+}
+
 /// Schneider 2015/2017 cloud density at world position `p`.
 /// `p_alt` is the precomputed altitude (m) at `p`.
 fn sample_density(
@@ -228,7 +270,9 @@ fn sample_density(
     let lf_fbm = base.g * 0.625 + base.b * 0.25 + base.a * 0.125;
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
-    let profile = ndf(h, layer.cloud_type);
+    // Phase 12.1: per-pixel cloud type override (or layer default).
+    let cloud_type = effective_cloud_type(p.xz, layer);
+    let profile = ndf(h, cloud_type);
     var cloud = base_cloud * profile;
 
     // Coverage from synthesised weather × per-layer scalar.

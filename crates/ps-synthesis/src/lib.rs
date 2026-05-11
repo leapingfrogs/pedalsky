@@ -14,6 +14,7 @@
 //! - [`koschmieder`] — visibility → Mie haze coefficient.
 //! - [`cloud_layers`] — per-layer envelope synthesis from `Scene` layers.
 //! - [`weather_map`] — 128×128 RGBA16Float coverage / cloud-base / precip texture.
+//! - [`cloud_type_grid`] — Phase 12.1 per-pixel cloud-type R8Uint texture.
 //! - [`wind_field`] — 32×32×16 RGBA16Float (u, v, w, turbulence) profile.
 //! - [`density_mask`] — 2D top-down density mask for precipitation occlusion.
 //! - [`ndf`] — vertical density profile (mirror of Phase 6 §6.4 WGSL).
@@ -22,6 +23,7 @@
 #![deny(missing_docs)]
 
 pub mod cloud_layers;
+pub mod cloud_type_grid;
 pub mod density_mask;
 pub mod koschmieder;
 pub mod ndf;

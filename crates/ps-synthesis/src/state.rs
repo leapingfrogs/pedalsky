@@ -13,6 +13,7 @@ use ps_core::{
 };
 
 use crate::cloud_layers::{check_non_overlap, synthesise_cloud_layers};
+use crate::cloud_type_grid::CloudTypeGrid;
 use crate::density_mask::TopDownMask;
 use crate::haze_extinction_per_m;
 use crate::weather_map::WeatherMap;
@@ -97,6 +98,11 @@ pub fn synthesise(
     let mask = TopDownMask::synthesise(&cloud_layers);
     let (m_tex, m_view) = mask.upload(&gpu.device, &gpu.queue);
 
+    // Phase 12.1 — per-pixel cloud-type override grid. Sentinel-
+    // filled (255) when the scene has no `coverage_grid.type_path`.
+    let type_grid = CloudTypeGrid::synthesise(scene);
+    let (ct_tex, ct_view) = type_grid.upload(&gpu.device, &gpu.queue);
+
     // Cloud-layers storage buffer — at least one slot so the shader's
     // array<...> binding is non-empty.
     let cloud_layer_count = cloud_layers.len() as u32;
@@ -128,6 +134,8 @@ pub fn synthesise(
             wind_field_view: wf_view,
             top_down_density_mask: m_tex,
             top_down_density_mask_view: m_view,
+            cloud_type_grid: ct_tex,
+            cloud_type_grid_view: ct_view,
         },
         cloud_layers_buffer,
         cloud_layer_count,

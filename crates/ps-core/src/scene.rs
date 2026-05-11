@@ -295,18 +295,43 @@ impl Default for Lightning {
 
 impl Scene {
     /// Read and parse a scene from `path`. Does **not** call [`validate`](Self::validate).
+    ///
+    /// Relative paths inside `[clouds.coverage_grid]` (`data_path`,
+    /// `type_path`) are resolved against `path`'s parent directory so
+    /// that downstream synthesis can open them by absolute path
+    /// without needing the caller to remember the scene's base.
     pub fn load(path: &Path) -> Result<Self, SceneError> {
         let bytes = std::fs::read_to_string(path).map_err(|source| SceneError::Io {
             path: path.to_path_buf(),
             source,
         })?;
-        Self::parse(&bytes).map_err(|e| match e {
+        let mut scene = Self::parse(&bytes).map_err(|e| match e {
             SceneError::Parse { source, .. } => SceneError::Parse {
                 path: path.to_path_buf(),
                 source,
             },
             other => other,
-        })
+        })?;
+        if let Some(base) = path.parent() {
+            scene.resolve_relative_paths(base);
+        }
+        Ok(scene)
+    }
+
+    /// Rewrite relative paths inside `[clouds.coverage_grid]` so they
+    /// are absolute (or at least anchored to a known base). Idempotent
+    /// when paths are already absolute.
+    fn resolve_relative_paths(&mut self, base: &Path) {
+        if let Some(grid) = self.clouds.coverage_grid.as_mut() {
+            if grid.data_path.is_relative() {
+                grid.data_path = base.join(&grid.data_path);
+            }
+            if let Some(tp) = grid.type_path.as_mut() {
+                if tp.is_relative() {
+                    *tp = base.join(&*tp);
+                }
+            }
+        }
     }
 
     /// Parse a scene from an in-memory string.

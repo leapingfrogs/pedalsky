@@ -381,6 +381,13 @@ impl RenderSubsystem for CloudsSubsystem {
                                     &ctx.framebuffer.depth_view,
                                 ),
                             },
+                            // Phase 12.1: per-pixel cloud-type grid.
+                            wgpu::BindGroupEntry {
+                                binding: 10,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &ctx.weather.textures.cloud_type_grid_view,
+                                ),
+                            },
                         ],
                     });
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

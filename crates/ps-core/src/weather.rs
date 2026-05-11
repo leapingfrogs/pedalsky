@@ -195,6 +195,13 @@ pub struct WeatherTextures {
     pub top_down_density_mask: wgpu::Texture,
     /// Default view onto `top_down_density_mask`.
     pub top_down_density_mask_view: wgpu::TextureView,
+    /// Phase 12.1 — 128×128 R8Uint per-pixel cloud-type override
+    /// grid. Pixel value 0..7 selects a cloud type (matching
+    /// [`crate::CloudType`]); value 255 is the sentinel "use the
+    /// per-layer cloud_type instead".
+    pub cloud_type_grid: wgpu::Texture,
+    /// Default view onto `cloud_type_grid`.
+    pub cloud_type_grid_view: wgpu::TextureView,
 }
 
 /// Synthesised weather state passed through `PrepareContext` to every
@@ -332,6 +339,31 @@ impl WeatherState {
                 depth_or_array_layers: 1,
             },
         );
+        // Phase 12.1 — cloud type grid (R8Uint). Stub filled with 255
+        // (sentinel meaning "use per-layer type"); tests that need a
+        // specific override should upload their own.
+        let (cloud_type_grid, cloud_type_grid_view) =
+            make_2d("stub-cloud-type-grid", wgpu::TextureFormat::R8Uint);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &cloud_type_grid,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[255u8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(1),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+
         let cloud_layers_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stub-cloud-layers"),
             size: std::mem::size_of::<CloudLayerGpu>() as u64,
@@ -352,6 +384,8 @@ impl WeatherState {
                 wind_field_view,
                 top_down_density_mask,
                 top_down_density_mask_view,
+                cloud_type_grid,
+                cloud_type_grid_view,
             },
             cloud_layers_buffer,
             cloud_layer_count: 0,

@@ -465,6 +465,20 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            // Phase 12.1 binding 10: per-pixel cloud-type grid
+            // (R8Uint). Sampled via textureLoad with integer
+            // coordinates — no sampler needed. Sentinel value 255
+            // means "use the layer's cloud_type instead".
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
 }
