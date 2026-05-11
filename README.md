@@ -1,116 +1,277 @@
 # PedalSky
 
 A composable, dependency-injected wgpu-based weather renderer test harness.
-See `Pedalsky corrected implementation plan.md` for the full architectural
-specification.
+
+PedalSky takes a weather scene description (cloud layers, surface conditions,
+precipitation, time and location) and renders a physically based, photometric
+sky + clouds + ground + precipitation scene from a fly camera. Every tunable
+parameter is exposed as a UI slider; every renderable is a separately
+toggleable subsystem.
+
+The full architectural specification is in
+`Pedalsky corrected implementation plan.md`. Phases 0 through 11 are
+complete; a per-phase audit lives at the bottom of this file.
 
 ## Status
 
-This codebase is being built phase by phase against the plan.
-
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Cargo workspace, GPU init, HDR framebuffer + reverse-Z depth, fly camera, ACES tone-mapper, checker ground, winit window | **Done** |
-| 1 | Config + scene schemas, `RenderSubsystem` trait, contexts, `AppBuilder` + factories, hot-reload watcher, demo Backdrop / Tint subsystems, headless integration tests | **Done** |
-| 2+ | World/sun, weather synthesis, atmosphere, clouds, ground (PBR), precipitation, post-process, UI, golden-image regression | Not started |
+| 0 | Workspace, GPU init, HDR + reverse-Z, fly camera, ACES tone-mapper | Done |
+| 1 | Config schema, `RenderSubsystem` trait, `AppBuilder`, hot-reload | Done |
+| 2 | `WorldClock`, NREL SPA sun, Meeus 47 moon, TOA solar illuminance | Done |
+| 3 | Weather synthesis pipeline (atmosphere, weather map, wind, mask, layers) | Done |
+| 4 | Per-frame uniforms, render-graph executor, shared shader helpers | Done |
+| 5 | Hillaire 2020 atmosphere — 4 LUTs, sky raymarch, AP application | Done |
+| 6 | Schneider/Hillaire volumetric clouds — noise volumes, march, composite | Done |
+| 7 | PBR ground + Lagarde wet surface + snow + Halton-spawned ripples | Done |
+| 8 | Precipitation — particle compute + far rain streaks + Marshall-Palmer | Done |
+| 9 | Composition, ACES, EV100 exposure, debug auto-exposure | Done |
+| 10 | egui panel system: world / render / atmosphere / clouds / wet / precip / debug | Done |
+| 11 | 8 reference scenes, headless `render` subcommand, golden-image regression | Done |
 
-## Repository layout
+Cross-cutting items still outstanding (each maps to a future task):
+`--seed`, `--gpu-trace`, shader hot-reload, GPU timestamp queries,
+side-by-side comparison mode, naga std140 build-time linter.
 
-```
-pedalsky/
-├── Cargo.toml                  # workspace
-├── pedalsky.toml               # engine root config
-├── scenes/                     # weather scene fixtures
-│   └── broken_cumulus_afternoon.toml
-├── crates/
-│   ├── ps-core/                # config, scene, traits, contexts, app, hot-reload, gpu, framebuffer, camera
-│   ├── ps-postprocess/         # ACES Filmic / Passthrough tone-mapper
-│   ├── ps-ground/              # Phase 0 procedural checker plane (Phase 7 replaces with PBR)
-│   ├── ps-backdrop/            # Phase 1 demo: HDR clear at SkyBackdrop
-│   ├── ps-tint/                # Phase 1 demo: fullscreen RGB multiply at PostProcess
-│   └── ps-app/                 # winit window + render loop + headless test harness
-├── shaders/
-│   ├── ground/                 # Phase 0 checker shader
-│   ├── postprocess/            # tone-map shader
-│   └── tint/                   # Phase 1 demo tint shader
-└── assets/                     # noise volumes (Phase 6+)
-```
+## Install and build
 
-## Building and running
-
-Requires a recent Rust toolchain (`rust-version = 1.85`).
+Requires Rust 1.85+ and a wgpu-compatible GPU (the project is developed
+against Vulkan on NVIDIA but should run on any back-end wgpu supports).
 
 ```sh
 cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo run --bin ps-app
 ```
 
-`cargo run --bin ps-app` currently:
+131 tests run across the workspace; all should pass.
 
-1. Locates `pedalsky.toml` at the workspace root.
-2. Loads and validates it, logging a structured summary at `info` level.
-3. Loads the scene file pointed to by `[paths] weather`, validates it.
-4. Opens a window per `[window]`, initialises wgpu, allocates an HDR
-   `Rgba16Float` colour target plus a reverse-Z `Depth32Float` depth
-   buffer, builds the ACES Filmic tone-mapper and the placeholder ground
-   plane.
-5. Drives a fly camera (WASD, mouse-look while LMB-held, Space/Ctrl to
-   ascend/descend, Q/E to roll, Shift to sprint) and renders the scene at
-   the surface format's native rate.
+## Running the live app
 
-The window stays open until you close it; press **Esc** to release the
-mouse, **F4** to exit.
-
-## Configuration
-
-`pedalsky.toml` at the workspace root is the engine config. It uses
-`#[serde(deny_unknown_fields)]` everywhere — typos are surfaced as load
-errors. Every block has sensible defaults so partial configs work.
-
-Subsystems are toggled via `[render.subsystems]`:
-
-```toml
-[render.subsystems]
-ground        = true
-atmosphere    = true
-clouds        = true
-precipitation = false
-wet_surface   = false
-backdrop      = true   # Phase 1 demo subsystem
-tint          = false  # Phase 1 demo subsystem
+```sh
+cargo run --release --bin ps-app
 ```
 
-Setting a flag to `false` removes the subsystem from the render graph
-entirely — its factory is never invoked, no GPU resources are allocated.
+The window opens at the resolution set in `pedalsky.toml [window]`. The
+left side has the egui control panel; the rest is the render viewport.
 
-## Scene files
+Camera bindings:
 
-`[paths] weather` selects the scene config (default
-`scenes/broken_cumulus_afternoon.toml`). Each scene is a self-contained TOML
-file — see Appendix B of the plan for the schema.
+| Key | Action |
+|---|---|
+| W / A / S / D | Forward / strafe |
+| Space / Ctrl  | Up / down |
+| Q / E         | Roll left / right |
+| Shift         | Sprint (×4) |
+| LMB-drag      | Mouse-look |
+| Esc           | Release mouse |
+| F4            | Quit |
 
-Cloud layers are validated for non-overlap:
+The fly camera's position, pitch, and yaw are persistent for the session.
+
+## Running the test harness
+
+The headless render subcommand drives the same render path as the live
+app but without a window. It produces four artifacts per invocation:
+the tonemapped PNG, the linear HDR EXR, a JSON dump of the synthesised
+weather state, and a TOML log of every config value used.
+
+```sh
+cargo run --bin ps-app -- render \
+    --scene tests/scenes/broken_cumulus_afternoon.toml \
+    --time 2026-05-10T14:30:00Z \
+    --output out/broken_cumulus_afternoon
+```
+
+Optional `--width <px>` and `--height <px>` (default 1280×720).
+
+The eight reference scenes in `tests/scenes/` are exercised by
+`cargo test -p ps-app --test golden`, which renders each headlessly and
+compares to `tests/golden/<scene>.png` via SSIM (tolerance ≥ 0.99).
+
+When a deliberate visual change lands and you want to update the
+goldens:
+
+```sh
+cargo run --bin ps-bless          # regenerates every golden under tests/golden/
+git diff tests/golden/             # inspect the diffs before committing
+```
+
+The per-scene status of the regression goldens lives at
+`tests/golden/README.md`.
+
+## Authoring a scene
+
+A scene is a self-contained TOML file describing a meteorological
+situation. Schema is pinned by `schema_version = 1`; `Scene::load`
+rejects unknown fields. See Appendix B of the plan or any of
+`tests/scenes/*.toml` for working examples.
+
+Minimum scene:
 
 ```toml
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 17.0
+dewpoint_c     = 7.0
+pressure_hpa   = 1018.0
+wind_dir_deg   = 240.0
+wind_speed_mps = 5.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
 [[clouds.layers]]
-type = "Cumulus"
-base_m = 1500.0
-top_m  = 2300.0
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2300.0
+coverage           = 0.5
+density_scale      = 1.0
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
 ```
 
-A scene with two layers covering overlapping altitude ranges is rejected at
-load time with a `SceneError::OverlappingCloudLayers` naming both indices.
+Notes:
+
+- `coverage` is METAR-natural: 0.25 ≈ FEW, 0.5 ≈ BKN, 1.0 ≈ OVC. The
+  synthesis pipeline pre-biases this onto the cloud march's Schneider
+  visible band so authors don't need to know the underlying remap.
+- `cloud_type` is one of `Cumulus`, `Stratus`, `Stratocumulus`,
+  `Altocumulus`, `Altostratus`, `Cirrus`, `Cirrostratus`, `Cumulonimbus`.
+- Multiple `[[clouds.layers]]` blocks must be **vertically disjoint**;
+  `Scene::validate` rejects overlap with a structured error naming the
+  offending pair.
+- `snow_depth_m > 0` together with `temperature_c < 0.5` switches the
+  ground material from PBR to snow. This is independent of the
+  `wet_surface` master toggle in `pedalsky.toml`.
+- `[clouds.coverage_grid]` lets a scene attach a per-pixel coverage
+  grid. The `data_path` is a row-major little-endian f32 binary; a
+  reference generator lives at
+  `crates/ps-app/examples/generate_mountain_wave.rs`. (Runtime loading
+  of the grid is deferred to v2; today the layer's scalar `coverage`
+  is the fallback.)
+
+To use a scene with the live app, point `pedalsky.toml`'s
+`[paths] weather` at it. To use a scene with the headless renderer,
+pass `--scene <path>` directly.
+
+## Noise baking
+
+The cloud march samples four noise textures (Schneider/Nubis):
+
+- 128³ base shape (Perlin–Worley + Worley FBM at three frequencies)
+- 32³ detail (Worley FBM at three frequencies)
+- 128² 2D curl noise (Perlin curl)
+- 64² 2D blue noise (void-and-cluster, spatial only — no temporal jitter)
+
+These are baked on the GPU at first launch and cached to
+`assets/noise/*.bin` keyed by content hash. Subsequent launches skip
+the bake and load the cache.
+
+To force a re-bake, delete `assets/noise/`. (No bin files are shipped;
+making the bake reproducible is part of the test harness.)
+
+## UI panels
+
+The egui overlay is docked on the left edge. Each section is a
+collapsible accordion.
+
+- **World** — date/time controls; equinox/solstice/dawn/dusk shortcuts;
+  lat/lon override; pause; time scale; read-only sun/moon altitude +
+  azimuth + Julian day.
+- **Render** — EV100, tone-mapper choice, HDR/PNG screenshot buttons.
+  Screenshots write to `[paths] screenshot_dir`.
+- **Subsystems** — checkboxes that enable/disable each render subsystem
+  on the fly.
+- **Atmosphere** — every field of `AtmosphereParams` as a slider with
+  numeric input. Per-field reset button (↺) and a "Reset to Earth
+  defaults" button.
+- **Clouds** — engine-side `CloudParams` (cloud_steps, light_steps,
+  multi-scatter octaves, detail strength, powder strength, freeze
+  time…); per-layer accordions for `CloudLayerGpu` fields (base, top,
+  coverage, density_scale, biases).
+- **Wet surface** — wetness, puddle_coverage, puddle_start,
+  snow_depth_m.
+- **Precipitation** — kind (None/Rain/Snow/Sleet) and
+  intensity_mm_per_h.
+- **Debug** — fullscreen LUT viewers (transmittance / multi-scatter /
+  sky-view as 2D, AP with a depth slice slider 0..32 km); per-pixel
+  probe readouts (transmittance, optical depth at the cursor).
+
+Slider edits route through the same `subsystem.reconfigure(&config,
+&gpu)` path as file-watcher hot-reload. Editing `pedalsky.toml` while
+the app runs has the same effect as moving the equivalent slider.
+
+## Producing HDR EXR output
+
+Two paths:
+
+1. **From the live app**: open the Render panel, click "Screenshot HDR
+   (EXR)". The file lands in `[paths] screenshot_dir` (default
+   `screenshots/`).
+2. **From the headless render**: `cargo run --bin ps-app -- render
+   --scene <…> --output <base>` always emits `<base>.exr` alongside
+   the PNG.
+
+EXRs are linear-space `Rgba16Float` straight from the HDR target — no
+tone-map applied. Use them for downstream colour science, comparison
+against a reference, or pulling raw luminance values via
+`crates/ps-app/examples/dump_exr_centre.rs`:
+
+```sh
+cargo run --example dump_exr_centre -p ps-app -- screenshots/foo.exr
+```
+
+## Repository layout
+
+```
+pedalsky/
+├── Cargo.toml                          # workspace
+├── pedalsky.toml                       # engine root config (live app)
+├── Pedalsky corrected implementation plan.md
+├── README.md
+├── scenes/                             # live-app scene fixtures
+│   └── broken_cumulus_afternoon.toml
+├── tests/
+│   ├── scenes/                         # 8 reference scenes (Phase 11.1)
+│   ├── scenes/presets/                 # binary coverage grids
+│   └── golden/                         # blessed PNGs + status README
+├── crates/
+│   ├── ps-core/                # config, scene, traits, world, gpu, framebuffer, camera, hot-reload
+│   ├── ps-synthesis/           # weather scene → GPU resources
+│   ├── ps-atmosphere/          # Hillaire 2020 sky/atmosphere LUTs + sky shader
+│   ├── ps-clouds/              # Schneider/Nubis volumetric clouds
+│   ├── ps-ground/              # PBR ground + Lagarde wet + snow + Halton ripples
+│   ├── ps-precip/              # particle rain/snow + far streaks
+│   ├── ps-postprocess/         # ACES filmic + auto-exposure
+│   ├── ps-backdrop/            # Phase 1 demo: HDR clear at SkyBackdrop
+│   ├── ps-tint/                # Phase 1 demo: fullscreen RGB multiply
+│   ├── ps-ui/                  # egui panels + screenshot writers
+│   └── ps-app/                 # winit window + render loop + headless test harness + ps-bless
+└── shaders/                            # WGSL by subsystem
+```
 
 ## Hot reload
 
-`ps_core::HotReload` watches `pedalsky.toml` and the scene file via `notify`
-and emits debounced (`200 ms` default) `WatchEvent::ConfigChanged` /
-`WatchEvent::SceneChanged` events on a crossbeam channel. The watcher
-itself does not parse — the caller re-loads, re-validates, and either calls
-`App::reconfigure(&new_config, &gpu)` to apply the change in place or drops
-and rebuilds affected subsystems via their factories.
+`ps_core::HotReload` watches `pedalsky.toml` and the active scene file
+via `notify`, debouncing changes (200 ms default) into
+`WatchEvent::ConfigChanged` / `WatchEvent::SceneChanged` events on a
+crossbeam channel. The `ps-app` binary polls this channel every frame
+and either calls `App::reconfigure(&new_config, &gpu)` to apply the
+change in place or drops and rebuilds affected subsystems via their
+factories.
 
 ```rust
 use ps_core::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};
@@ -119,80 +280,85 @@ let watcher = HotReload::watch(&config_path, &scene_path, DEFAULT_DEBOUNCE)?;
 for event in watcher.events() {
     match event {
         WatchEvent::ConfigChanged(_) => /* re-load, validate, app.reconfigure(...) */ (),
-        WatchEvent::SceneChanged(_) => /* re-load and re-synthesise */ (),
-        WatchEvent::Error(msg) => tracing::warn!(%msg, "hot-reload error"),
+        WatchEvent::SceneChanged(_)  => /* re-load and re-synthesise */ (),
+        WatchEvent::Error(msg)       => tracing::warn!(%msg, "hot-reload error"),
     }
 }
 ```
 
-The `ps-app` binary wires this into the winit main loop; editing
-`pedalsky.toml` while the app is running calls `App::reconfigure(...)`
-on the next frame.
+WGSL hot-reload (per plan §Cross-Cutting/Shader hot-reload) is parsed
+from `[debug] shader_hot_reload` but not yet wired — see "Outstanding
+cross-cutting items" below.
 
-## Testing
+## Tests
 
 ```sh
 cargo test --workspace
 ```
 
-The `crates/ps-core/tests/` integration tests cover:
+131 tests across the workspace. The headline categories:
 
-- **`config.rs`** (9 tests) — round-trip of the workspace `pedalsky.toml`,
-  defaults for partial configs, rejection of unknown fields, range checks,
-  schema evolution guards, file-existence validation via
-  `validate_with_base`.
-- **`scene.rs`** (5 tests) — round-trip of
-  `scenes/broken_cumulus_afternoon.toml`, PascalCase-serialised cloud type
-  round-trip across all eight variants, vertical-overlap rejection,
-  `deny_unknown_fields` enforcement, future-schema-version rejection.
-- **`subsystem.rs`** (2 tests) — `PassStage` ordering, the trait derive
-  set, a compile-only smoke test that exercises every field of
-  `PrepareContext` / `RenderContext`.
-- **`app.rs`** (7 tests) — disabled-subsystem factories are not invoked,
-  enabled factories are, multi-stage pass flattening sorts by `PassStage`,
-  `prepare()` runs in the order given by each subsystem's minimum
-  `PassStage`, behavioural test that drives `App::frame` end-to-end and
-  asserts on the actual call order, `reconfigure()` adds/drops subsystems
-  on the fly, duplicate factory names are rejected.
-- **`hot_reload.rs`** (4 tests) — config change emits `ConfigChanged`,
-  scene change emits `SceneChanged`, a burst of writes within the debounce
-  window collapses to one event, invalid TOML still emits an event.
+- `ps-core` — config, scene, subsystem trait, app, hot-reload.
+- `ps-synthesis` — weather map, wind field, density mask, layer envelopes.
+- `ps-atmosphere` — pipeline, sky pass output, ground bounce.
+- `ps-clouds` — pipeline, noise volume content, cumulus visibility.
+- `ps-ground` — pipeline, wet/snow paths, wet flag gating.
+- `ps-precip` — pipeline, rain/snow distinguishability, cloud-mask occlusion, ripple effect.
+- `ps-postprocess` — tone-mapper, EV scale, auto-exposure.
+- `ps-ui` — state round-trip, slider routing, GPU-timestamp drain.
+- `ps-app` — Phase 5–11 integration tests including the golden-image
+  regression `cargo test -p ps-app --test golden`.
 
-The `crates/ps-app/tests/integration.rs` file adds 4 headless-render
-integration tests covering Backdrop, Tint, runtime reconfigure, and a
-boot-from-real-`pedalsky.toml` smoke test. Total: **31 tests**.
+A diagnostic `dump_exr_centre` example reads the centre column of any
+EXR (useful for verifying HDR luminance values against expected
+photometric calculations).
 
-## Known cross-cutting gaps (Phase 2+)
+## Outstanding cross-cutting items
 
-The following plan-mandated cross-cutting items are intentionally deferred
-because they need code from later phases or runtime infrastructure outside
-the Phase 0/1 scope. Each is captured here so a future implementer can
-pick them up:
+These plan-mandated cross-cutting items are not yet wired. Each is a
+small, well-scoped task captured here for a future implementer:
 
-- **`--seed <u64>` CLI flag** (plan §Cross-Cutting/Determinism) — needs RNG
-  paths to seed first; Phase 6 owns blue-noise jitter and Phase 8 owns
-  particle spawning, both of which thread `seed` through their state.
-- **`--gpu-trace <dir>` flag** (plan §GPU debugging) — wgpu trace API
-  changed considerably between releases; will land alongside Phase 5
-  when there's something non-trivial to trace.
-- **Shader hot-reload** (plan §Cross-Cutting/Shader hot-reload) —
-  `[debug] shader_hot_reload` is parsed today but unused. Wire alongside
-  Phase 5 when WGSL pipelines start landing.
-- **Camera UI sliders for fov / near / speed** (plan §0.4) — Phase 10
-  egui overlay owns this.
-- **README depth on noise baking, UI panels, golden-image updates, EXR
-  output** (plan §README deliverable) — these document features owned by
-  Phase 6 (noise bake), Phase 10 (UI), Phase 11 (goldens, EXR). Will land
-  with each phase.
-- **`ps-app render` headless subcommand** writing PNG/EXR to
-  `paths.screenshot_dir` — Phase 11.
-- **Reconfigure-only-affected-subsystems** (plan §1.6) — current
-  implementation calls `reconfigure()` on every live subsystem on any
-  config change. Subsystems internally no-op when their slice of the
-  config hasn't changed, so the spirit is preserved; the letter ("diff
-  against the live config; for each affected subsystem") wants a
-  per-subsystem diff that's more useful when Phase 10's UI starts firing
-  reconfigures at slider rates.
+- **`--seed <u64>` CLI flag** (plan §Cross-Cutting/Determinism) — needs
+  to thread through blue-noise jitter and precipitation particle
+  spawning to make full-frame outputs bit-deterministic.
+- **`--gpu-trace <dir>` flag** (plan §GPU debugging) — wraps
+  `wgpu::DeviceDescriptor::trace`.
+- **WGSL shader hot-reload** (plan §Cross-Cutting/Shader hot-reload) —
+  `notify` watcher on `shaders/`; on change, the affected pipeline
+  rebuilds and compilation errors surface in the egui overlay.
+- **GPU timestamp queries** (plan §10.2 Debug panel) — every
+  `RenderPassDescriptor::timestamp_writes` is currently `None`; wire
+  through the existing `ps_ui::UiState::gpu_timestamps` channel.
+- **Camera UI sliders** (plan §0.4) — fov / near / speed should be in
+  the World panel.
+- **Side-by-side comparison mode** (plan §10.5, explicitly stretch).
+- **Naga std140 layout linter as a build/test step** (plan §4.1) —
+  layout mismatches surface today only as wgpu validation errors at
+  pipeline-creation time.
+
+## Implementation principles
+
+These are taken verbatim from the plan and apply to all code:
+
+1. **Physical correctness first.** Use the equations, units, and constants
+   from the cited papers; no "looks close" approximations.
+2. **HDR everywhere internal.** Render targets are `Rgba16Float`. The
+   tone-mapper is the very last stage.
+3. **Photometric units.** Sun illuminance ≈ 127 500 lux at TOA; sky
+   luminance in cd/m².
+4. **Linear-space throughout.** sRGB → linear at sample time; linear
+   → sRGB only at swapchain present.
+5. **Reverse-Z depth.** `Depth32Float`, near plane → 1.0, far → 0.0.
+6. **Right-handed Y-up world coordinates.** +X east, +Y up, +Z south.
+   Planet centre at world `(0, -ground_radius_m, 0)`.
+7. **Composable subsystems.** Every renderable implements
+   `RenderSubsystem`. Disabling one in `[render.subsystems]` removes
+   it from the render graph cleanly.
+8. **Every tunable shader uniform is a UI slider.** No magic numbers
+   in shader bodies.
+9. **Deterministic for given inputs.** Same config + same time produces
+   the same image (modulo the determinism gaps noted above).
+10. **Testability.** Every subsystem has a headless render path.
 
 ## License
 

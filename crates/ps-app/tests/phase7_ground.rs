@@ -251,36 +251,75 @@ fn snow_above_freezing_does_not_render() {
 
 #[test]
 fn wet_surface_flag_off_disables_wet_path() {
+    // Plan §7.3 separates wetness/puddles (gated by the wet_surface
+    // master toggle) from snow (gated only by temperature_c < 0.5 &&
+    // snow_depth_m > 0). With wet_surface=false a wet+puddle input
+    // should collapse to the dry render, but snow inputs should still
+    // render — they're a different ground material.
     let Some(gpu) = gpu() else { return };
     let mut config = baseline_config();
     config.render.subsystems.wet_surface = false;
     let setup = TestSetup::new(gpu, &config, (128, 128));
     let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
 
-    let wet = SurfaceParams {
+    let wet_no_snow = SurfaceParams {
         ground_wetness: 1.0,
         puddle_coverage: 1.0,
         puddle_start: 0.0,
-        snow_depth_m: 0.05,
-        temperature_c: -2.0,
+        snow_depth_m: 0.0,
+        temperature_c: 10.0,
         ..SurfaceParams::default()
     };
     let dry = SurfaceParams::default();
 
-    let wet_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet));
+    let wet_pixels =
+        app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet_no_snow));
     let dry_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(dry));
 
     let (wet_avg, _) = ground_pixels_avg(&wet_pixels);
     let (dry_avg, _) = ground_pixels_avg(&dry_pixels);
     let wet_mean = (wet_avg[0] + wet_avg[1] + wet_avg[2]) / 3.0;
     let dry_mean = (dry_avg[0] + dry_avg[1] + dry_avg[2]) / 3.0;
-    eprintln!("flag-off: wet input={wet_mean:.3}, dry input={dry_mean:.3}");
-    // With the flag off, wet/snow inputs should be ignored — the two
-    // renders must collapse to the same image.
+    eprintln!("flag-off (no snow): wet input={wet_mean:.3}, dry input={dry_mean:.3}");
     assert!(
         (wet_mean - dry_mean).abs() < 0.01,
-        "wet_surface=false should bypass wet/snow regardless of SurfaceParams \
-         (got wet={wet_mean:.3}, dry={dry_mean:.3})"
+        "wet_surface=false must zero ground_wetness/puddle_coverage so a wet input \
+         collapses to dry (got wet={wet_mean:.3}, dry={dry_mean:.3})"
+    );
+}
+
+#[test]
+fn wet_surface_flag_off_does_not_disable_snow() {
+    // Plan §7.3 — snow is a distinct ground material, gated only by
+    // (temperature_c < 0.5 && snow_depth_m > 0). The wet_surface master
+    // toggle controls wetness/puddles only.
+    let Some(gpu) = gpu() else { return };
+    let mut config = baseline_config();
+    config.render.subsystems.wet_surface = false;
+    let setup = TestSetup::new(gpu, &config, (128, 128));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+
+    let snow = SurfaceParams {
+        ground_wetness: 0.0,
+        puddle_coverage: 0.0,
+        snow_depth_m: 0.05,
+        temperature_c: -2.0,
+        ..SurfaceParams::default()
+    };
+    let dry = SurfaceParams::default();
+
+    let snow_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(snow));
+    let dry_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(dry));
+
+    let (snow_avg, _) = ground_pixels_avg(&snow_pixels);
+    let (dry_avg, _) = ground_pixels_avg(&dry_pixels);
+    let snow_mean = (snow_avg[0] + snow_avg[1] + snow_avg[2]) / 3.0;
+    let dry_mean = (dry_avg[0] + dry_avg[1] + dry_avg[2]) / 3.0;
+    eprintln!("flag-off (snow): snow input={snow_mean:.3}, dry input={dry_mean:.3}");
+    assert!(
+        snow_mean > dry_mean + 0.05,
+        "wet_surface=false must NOT disable snow rendering — snow ground should still \
+         be substantially brighter than dry (got snow={snow_mean:.3}, dry={dry_mean:.3})"
     );
 }
 

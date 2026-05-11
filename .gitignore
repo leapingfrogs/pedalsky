@@ -6,4 +6,5 @@
 .DS_Store
 /out_test
 /tests/golden-diffs
+/scenes/saved*
 output.log
