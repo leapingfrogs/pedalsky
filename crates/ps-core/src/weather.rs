@@ -231,6 +231,11 @@ pub struct WeatherState {
     pub cloud_layers_buffer: wgpu::Buffer,
     /// Number of valid entries in `cloud_layers_buffer`.
     pub cloud_layer_count: u32,
+    /// Phase 12.3 — Poisson trigger rate for the lightning subsystem,
+    /// taken verbatim from `Scene.lightning.strikes_per_min_per_km2`.
+    /// Lives here so `LightningSubsystem::prepare` can read it via
+    /// `ctx.weather` without needing a separate scene reference.
+    pub scene_strikes_per_min_per_km2: f32,
 }
 
 impl WeatherState {
@@ -389,6 +394,7 @@ impl WeatherState {
             },
             cloud_layers_buffer,
             cloud_layer_count: 0,
+            scene_strikes_per_min_per_km2: 0.0,
         }
     }
 }

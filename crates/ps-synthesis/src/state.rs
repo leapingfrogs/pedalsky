@@ -148,5 +148,6 @@ pub fn synthesise(
         },
         cloud_layers_buffer,
         cloud_layer_count,
+        scene_strikes_per_min_per_km2: scene.lightning.strikes_per_min_per_km2,
     })
 }

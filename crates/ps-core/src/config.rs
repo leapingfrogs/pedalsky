@@ -178,6 +178,9 @@ pub struct RenderConfig {
     /// Phase 12.4 godrays tuning.
     #[serde(default)]
     pub godrays: GodraysTuning,
+    /// Phase 12.3 lightning tuning.
+    #[serde(default)]
+    pub lightning: LightningTuning,
     /// Phase 1 demo: BackdropSubsystem tuning.
     pub backdrop: BackdropTuning,
     /// Phase 1 demo: TintSubsystem tuning.
@@ -197,6 +200,7 @@ impl Default for RenderConfig {
             clouds: CloudsTuning::default(),
             precip: PrecipTuning::default(),
             godrays: GodraysTuning::default(),
+            lightning: LightningTuning::default(),
             backdrop: BackdropTuning::default(),
             tint: TintTuning::default(),
         }
@@ -220,6 +224,9 @@ pub struct SubsystemFlags {
     /// Phase 12.4 screen-space crepuscular rays / godrays.
     #[serde(default = "default_true")]
     pub godrays: bool,
+    /// Phase 12.3 lightning subsystem (bolts + cloud illumination).
+    #[serde(default = "default_true")]
+    pub lightning: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
@@ -239,6 +246,7 @@ impl Default for SubsystemFlags {
             precipitation: false,
             wet_surface: false,
             godrays: true,
+            lightning: true,
             backdrop: true,
             tint: false,
         }
@@ -351,6 +359,47 @@ impl Default for GodraysTuning {
             decay: 0.96,
             intensity: 0.6,
             bright_threshold: 5000.0,
+        }
+    }
+}
+
+/// Phase 12.3 lightning tuning. The trigger rate comes from the
+/// scene's `[lightning] strikes_per_min_per_km2`; this block carries
+/// engine-side render/intensity tunables that aren't naturally
+/// per-scene.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LightningTuning {
+    /// Deterministic seed for the strike RNG. Fixed seed → identical
+    /// strikes across renders; useful for headless --render workflow
+    /// and golden tests.
+    pub seed: u64,
+    /// Peak per-strike emission proxy (cd/m²·sr) for the cloud
+    /// illumination uniform at the moment of pulse peak. Real cloud-
+    /// to-ground bolts run 10⁹..10¹⁰ at the channel; we damp this
+    /// down for the cloud volume contribution since the bolt itself
+    /// renders separately.
+    pub peak_cloud_illuminance: f32,
+    /// Maximum number of concurrently-active strikes in the ring
+    /// buffer. Older strikes are evicted when this fills.
+    pub max_active_strikes: u32,
+    /// Bolt trunk peak emission proxy (cd/m²·sr). Drives the
+    /// billboarded quad geometry's fragment colour at pulse peak.
+    pub bolt_peak_emission: f32,
+    /// Horizontal falloff radius (m) packed into
+    /// `frame.lightning_illuminance.w`. Cloud cells beyond this
+    /// distance from the strongest strike see attenuated flash.
+    pub illumination_radius_m: f32,
+}
+
+impl Default for LightningTuning {
+    fn default() -> Self {
+        Self {
+            seed: 0xC10D5C0DE_u64,
+            peak_cloud_illuminance: 50_000.0,
+            max_active_strikes: 8,
+            bolt_peak_emission: 5.0e8,
+            illumination_radius_m: 8000.0,
         }
     }
 }

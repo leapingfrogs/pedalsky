@@ -26,6 +26,7 @@ ps-synthesis.workspace   = true
 ps-backdrop.workspace    = true
 ps-tint.workspace        = true
 ps-godrays.workspace     = true
+ps-lightning.workspace   = true
 ps-ui.workspace          = true
 toml.workspace           = true
 

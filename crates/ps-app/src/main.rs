@@ -29,6 +29,7 @@ use ps_atmosphere::{
 };
 use ps_backdrop::BackdropFactory;
 use ps_godrays::GodraysFactory;
+use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, HdrFramebufferImpl, HotReload, PrepareContext,
@@ -209,6 +210,11 @@ struct RunState {
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
     /// when `[render.subsystems].atmosphere = false`.
     atmosphere_luts: Option<std::sync::Arc<ps_core::AtmosphereLuts>>,
+    /// Phase 12.3: snapshot publish handle from `LightningFactory`.
+    /// `None` when lightning was disabled at build. Read after
+    /// `App::frame` to splice cloud illumination into the next
+    /// `FrameUniforms` upload.
+    lightning_publish: Option<LightningPublish>,
     /// Phase 5 debug overlay drawing the four LUTs onto the swapchain.
     /// `Some` when `[debug].atmosphere_lut_overlay = true` (or
     /// `--lut-overlay`) AND atmosphere is enabled.
@@ -368,7 +374,7 @@ impl RunState {
 
         let probe = ps_app::probe::ProbeReadback::new(&windowed.gpu);
         let ui_handle = ps_ui::UiHandle::new(config.clone());
-        let (app, atmosphere_luts_cell, tonemap_handle, ui_bridge) = build_app(
+        let (app, atmosphere_luts_cell, lightning_cell, tonemap_handle, ui_bridge) = build_app(
             config,
             &windowed.gpu,
             tonemap.clone(),
@@ -377,6 +383,10 @@ impl RunState {
             window.clone(),
             windowed.surface_config.format,
         )?;
+        let lightning_publish = lightning_cell
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lightning cell poisoned: {e}"))?
+            .clone();
         let atmosphere_luts = atmosphere_luts_cell
             .lock()
             .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
@@ -476,6 +486,7 @@ impl RunState {
             world,
             weather,
             atmosphere_luts,
+            lightning_publish,
             lut_overlay,
             lut_viewer,
             start: now,
@@ -781,6 +792,18 @@ impl RunState {
             self.weather.sun_illuminance,
             self.world.toa_illuminance_lux,
         );
+
+        // Phase 12.3 — splice the previous frame's published lightning
+        // snapshot into the uniforms. The lightning subsystem's
+        // prepare() runs *after* this upload (PrepareContext exposes
+        // FrameUniforms by `&`), so we accept a single-frame lag — at
+        // 60 Hz that is ~16ms against the strike's 200 ms lifetime,
+        // visually imperceptible.
+        if let Some(publish) = &self.lightning_publish {
+            let snap = *publish.lock().expect("lightning publish lock");
+            frame_uniforms.lightning_illuminance = snap.illuminance;
+            frame_uniforms.lightning_origin_world = snap.origin_world;
+        }
 
         // Phase 5 diagnostic: log the key uniforms once at startup so we can
         // verify atmosphere bakes are receiving non-zero values. After the
@@ -1327,6 +1350,12 @@ impl RunState {
 type AtmosphereLutsCell =
     std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<ps_core::AtmosphereLuts>>>>;
 
+/// Cell into which `LightningFactory` deposits its snapshot publish
+/// handle. The host reads the inner `LightningPublish` after each
+/// `App::frame` to splice cloud illumination into `FrameUniforms`
+/// before the GPU upload.
+type LightningPublishCell = std::sync::Arc<std::sync::Mutex<Option<LightningPublish>>>;
+
 /// Build the app. Returns the `App` plus the LUTs cell published by
 /// `AtmosphereFactory` (Some after build if atmosphere is enabled).
 #[allow(clippy::type_complexity)]
@@ -1341,10 +1370,12 @@ fn build_app(
 ) -> Result<(
     App,
     AtmosphereLutsCell,
+    LightningPublishCell,
     ps_postprocess::TonemapHandle,
     std::sync::Arc<ps_ui::UiBridge>,
 )> {
     let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
+    let (lightning_factory, lightning_cell) = LightningFactory::new();
     let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
     let (tonemap_factory, tonemap_handle) = ps_postprocess::TonemapFactory::new();
     tonemap_handle.inject(
@@ -1370,9 +1401,13 @@ fn build_app(
         // gates on `[render.subsystems].godrays` itself, and the
         // pass closure no-ops when the sun is off-screen.
         .with_factory(Box::new(GodraysFactory))
+        // Phase 12.3 — lightning sits at Translucent (after clouds).
+        // Built unconditionally; LightningFactory gates on
+        // `[render.subsystems].lightning` itself.
+        .with_factory(Box::new(lightning_factory))
         .with_factory(Box::new(tonemap_factory))
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
-    Ok((app, luts_cell, tonemap_handle, ui_bridge))
+    Ok((app, luts_cell, lightning_cell, tonemap_handle, ui_bridge))
 }

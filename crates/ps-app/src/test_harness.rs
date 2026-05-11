@@ -10,6 +10,7 @@ use glam::Vec4;
 use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
 use ps_godrays::GodraysFactory;
+use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, GpuContext, HdrFramebufferImpl, PrepareContext,
@@ -112,6 +113,10 @@ pub struct HeadlessApp {
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
     /// when atmosphere is disabled in config.
     atmosphere_luts: Option<Arc<ps_core::AtmosphereLuts>>,
+    /// Phase 12.3: snapshot publish handle from `LightningFactory`.
+    /// `None` when lightning is disabled. Read between frames to
+    /// splice cloud illumination into FrameUniforms.
+    lightning_publish: Option<LightningPublish>,
     /// Phase 9.1: side-channel handle to the in-graph TonemapSubsystem.
     tonemap_handle: ps_postprocess::TonemapHandle,
 }
@@ -120,6 +125,7 @@ impl HeadlessApp {
     /// Build with the same factory set the binary registers.
     pub fn new(gpu: &GpuContext, config: &Config, setup: TestSetup) -> Result<Self> {
         let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
+        let (lightning_factory, lightning_cell) = LightningFactory::new();
         let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
         let (tonemap_factory, tonemap_handle) = ps_postprocess::TonemapFactory::new();
         tonemap_handle.inject(
@@ -139,12 +145,17 @@ impl HeadlessApp {
             .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))
             .with_factory(Box::new(GodraysFactory))
+            .with_factory(Box::new(lightning_factory))
             .with_factory(Box::new(tonemap_factory))
             .build(config, gpu)
             .context("AppBuilder::build")?;
         let atmosphere_luts = luts_cell
             .lock()
             .map_err(|e| anyhow::anyhow!("luts cell poisoned: {e}"))?
+            .clone();
+        let lightning_publish = lightning_cell
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lightning cell poisoned: {e}"))?
             .clone();
         Ok(Self {
             setup,
@@ -153,6 +164,7 @@ impl HeadlessApp {
             tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
             last_config: config.clone(),
             atmosphere_luts,
+            lightning_publish,
             tonemap_handle,
         })
     }
@@ -353,6 +365,14 @@ impl HeadlessApp {
             glam::Vec3::splat(world.toa_illuminance_lux),
             world.toa_illuminance_lux,
         );
+        // Phase 12.3 — splice prior-frame lightning snapshot. For
+        // single-frame renders (the golden suite) the snapshot is
+        // zero, so no cloud-illumination drift here.
+        if let Some(publish) = &self.lightning_publish {
+            let snap = *publish.lock().expect("lightning publish lock");
+            frame_uniforms.lightning_illuminance = snap.illuminance;
+            frame_uniforms.lightning_origin_world = snap.origin_world;
+        }
 
         let mut encoder = gpu
             .device
@@ -522,6 +542,14 @@ impl HeadlessApp {
             glam::Vec3::splat(world.toa_illuminance_lux),
             world.toa_illuminance_lux,
         );
+        // Phase 12.3 — splice prior-frame lightning snapshot. For
+        // single-frame renders (the golden suite) the snapshot is
+        // zero, so no cloud-illumination drift here.
+        if let Some(publish) = &self.lightning_publish {
+            let snap = *publish.lock().expect("lightning publish lock");
+            frame_uniforms.lightning_illuminance = snap.illuminance;
+            frame_uniforms.lightning_origin_world = snap.origin_world;
+        }
 
         let mut encoder = gpu
             .device

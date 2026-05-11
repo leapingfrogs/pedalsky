@@ -2825,6 +2825,7 @@ dependencies = [
  "ps-core",
  "ps-godrays",
  "ps-ground",
+ "ps-lightning",
  "ps-postprocess",
  "ps-precip",
  "ps-synthesis",
@@ -2908,6 +2909,18 @@ dependencies = [
 
 [[package]]
 name = "ps-ground"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "ps-core",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-lightning"
 version = "0.1.0"
 dependencies = [
  "anyhow",
