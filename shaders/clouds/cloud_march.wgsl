@@ -325,6 +325,23 @@ fn sample_sky_ambient(p: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
 // Main fragment shader
 // ---------------------------------------------------------------------------
 
+/// Phase 12.2 — fragment output. Two MRT attachments:
+///   - `luminance`  : premultiplied RGB radiance from the cloud
+///                    column, with aerial-perspective applied. The
+///                    composite pass adds this to the destination
+///                    HDR target unattenuated.
+///   - `transmittance`: per-channel atmospheric transmittance
+///                    through the entire cloud column. The composite
+///                    pass multiplies the destination HDR target by
+///                    this per channel before adding `luminance`.
+///                    For a pixel with no cloud the cloud_march
+///                    pass is cleared to (1, 1, 1, 1) and the
+///                    composite leaves the dst unchanged.
+struct CloudOut {
+    @location(0) luminance: vec4<f32>,
+    @location(1) transmittance: vec4<f32>,
+};
+
 struct LayerHit {
     idx: u32,
     t0: f32,
@@ -333,7 +350,7 @@ struct LayerHit {
 };
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut) -> CloudOut {
     let ray = compute_view_ray(in.pos.xy);
     let cos_theta = dot(ray.dir, frame.sun_direction.xyz);
 
@@ -480,20 +497,37 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // Composition target: premultiplied luminance + scalar opacity.
+    // Phase 12.2 — RGB transmittance compositing.
+    //
+    // attachment 0 = luminance (premultiplied along the ray;
+    //                AP-applied below)
+    // attachment 1 = transmittance (per-channel atmospheric
+    //                transmittance through the cloud column,
+    //                bypasses AP because AP attenuates the cloud's
+    //                own emission, not the destination HDR pixel
+    //                visible through the cloud — that pixel was
+    //                already AP-attenuated in the sky/ground pass).
+    //
+    // A scalar opacity proxy `cloud_opacity` is still useful for
+    // weighting AP inscatter contribution (a fully transparent
+    // pixel should contribute no AP, since "AP from inside the
+    // cloud" only makes physical sense where there's cloud).
     let t_lum = dot(transmittance, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let cloud_alpha = 1.0 - t_lum;
+    let cloud_opacity = 1.0 - t_lum;
 
-    // Aerial perspective on the cloud luminance (plan §6.7). Sample the
-    // AP LUT at the luminance-weighted depth so the haze is applied where
-    // the cloud's light actually came from. AP_FAR_M matches the bake
-    // (plan §5.2.4 — 32 km linear); samples beyond that clamp.
+    // Aerial perspective on the cloud luminance (plan §6.7). Sample
+    // the AP LUT at the luminance-weighted depth so the haze is
+    // applied where the cloud's light actually came from. AP_FAR_M
+    // matches the bake (plan §5.2.4 — 32 km linear); samples beyond
+    // that clamp.
     let t_cloud = t_weight / max(t_weight_norm, 1e-6);
-    if (cloud_alpha > 1e-4) {
+    var luminance_out = luminance;
+    if (cloud_opacity > 1e-4) {
         // The AP LUT is baked with gid.y=0 at screen top (the bake
-        // negates ndc.y when reconstructing view_dir from inv_view_proj).
-        // Sample with raw screen-fractional UV — frag.y/h is 0 at top —
-        // so v=0 reads the row whose stored ray matches this fragment.
+        // negates ndc.y when reconstructing view_dir from
+        // inv_view_proj). Sample with raw screen-fractional UV —
+        // frag.y/h is 0 at top — so v=0 reads the row whose stored
+        // ray matches this fragment.
         let viewport = frame.viewport_size.xy;
         let ap_uvw = vec3<f32>(
             in.pos.x / viewport.x,
@@ -501,13 +535,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             clamp(t_cloud / 32000.0, 0.0, 1.0),
         );
         let ap = textureSampleLevel(aerial_perspective_lut, lut_sampler, ap_uvw, 0.0);
-        // Premultiplied form: cloud_lum is already pre-multiplied by
-        // cloud_alpha along the ray. Attenuate by AP transmittance, then
-        // add AP inscatter scaled by cloud_alpha so the haze only affects
-        // the opaque parts of the cloud (the transparent parts let the
-        // sky through, and the sky pass already has its own atmospheric
-        // contribution baked in).
-        return vec4<f32>(luminance * ap.a + ap.rgb * cloud_alpha, cloud_alpha);
+        // Cloud's own light is dimmed by AP transmittance; AP
+        // inscatter is added scaled by cloud_opacity so haze only
+        // shows where the cloud is solid enough to see it against.
+        luminance_out = luminance * ap.a + ap.rgb * cloud_opacity;
     }
-    return vec4<f32>(luminance, cloud_alpha);
+
+    var out: CloudOut;
+    out.luminance = vec4<f32>(luminance_out, 1.0);
+    out.transmittance = vec4<f32>(transmittance, 1.0);
+    return out;
 }

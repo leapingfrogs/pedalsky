@@ -1,12 +1,25 @@
-// Phase 6.7 — premultiplied-alpha cloud composite.
+// Phase 6.7 — cloud composite into the HDR target.
 //
-// Reads the cloud RT (premultiplied luminance, scalar opacity) and blits
-// it over the HDR target with the standard `One, OneMinusSrcAlpha` blend
-// state. The blend state is configured on the pipeline; this fragment
-// just emits the cloud sample unchanged.
+// Phase 12.2 — RGB transmittance via dual-source blending.
 
-@group(0) @binding(0) var cloud_target: texture_2d<f32>;
-@group(0) @binding(1) var cloud_sampler: sampler;
+enable dual_source_blending;
+//
+// The cloud march writes two MRT attachments:
+//   binding 0: premultiplied luminance from the cloud column
+//              (AP-applied; ready to add to dst)
+//   binding 1: per-channel atmospheric transmittance through the
+//              cloud column (1.0 where there's no cloud)
+//
+// This pass emits both as dual-source blend outputs at @location(0).
+// The pipeline blend state is configured as
+//   final.rgb = src0.rgb * One  +  dst.rgb * src1.rgb
+// which is exactly the per-channel compositing equation: dst sky
+// (atmosphere or ground) is dimmed by the cloud's per-channel
+// transmittance, and the cloud's own light is added unattenuated.
+
+@group(0) @binding(0) var cloud_luminance: texture_2d<f32>;
+@group(0) @binding(1) var cloud_transmittance: texture_2d<f32>;
+@group(0) @binding(2) var cloud_sampler: sampler;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -24,7 +37,21 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
+struct CompositeOut {
+    /// src0: premultiplied luminance, added unattenuated to dst.
+    @location(0) @blend_src(0) luminance: vec4<f32>,
+    /// src1: per-channel transmittance; multiplies dst before add.
+    @location(0) @blend_src(1) transmittance: vec4<f32>,
+};
+
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSampleLevel(cloud_target, cloud_sampler, in.uv, 0.0);
+fn fs_main(in: VsOut) -> CompositeOut {
+    let luminance =
+        textureSampleLevel(cloud_luminance, cloud_sampler, in.uv, 0.0);
+    let transmittance =
+        textureSampleLevel(cloud_transmittance, cloud_sampler, in.uv, 0.0);
+    var out: CompositeOut;
+    out.luminance = luminance;
+    out.transmittance = transmittance;
+    return out;
 }

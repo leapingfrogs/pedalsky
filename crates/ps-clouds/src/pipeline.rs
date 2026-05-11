@@ -20,11 +20,15 @@ const CLOUD_COMPOSITE_BAKED: &str =
     include_str!("../../../shaders/clouds/cloud_composite.wgsl");
 const CLOUD_COMPOSITE_REL: &str = "clouds/cloud_composite.wgsl";
 
-/// Group-0 bind layout for the composite pass: cloud RT view + sampler.
+/// Group-0 bind layout for the composite pass: cloud-luminance RT
+/// view + cloud-transmittance RT view + shared sampler. Phase 12.2 —
+/// the composite uses dual-source blending to apply per-channel
+/// transmittance to the destination HDR target.
 pub fn composite_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("clouds-composite-bgl"),
         entries: &[
+            // Premultiplied luminance attachment.
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -35,8 +39,20 @@ pub fn composite_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayo
                 },
                 count: None,
             },
+            // RGB transmittance attachment.
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // Shared sampler.
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
@@ -104,11 +120,21 @@ impl CloudPipelines {
             fragment: Some(wgpu::FragmentState {
                 module: &march_module,
                 entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: HdrFramebuffer::COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                // Two MRT attachments (Phase 12.2):
+                //   0: premultiplied luminance (no blend; written verbatim)
+                //   1: RGB transmittance through the cloud column
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
@@ -147,15 +173,27 @@ impl CloudPipelines {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: HdrFramebuffer::COLOR_FORMAT,
+                    // Phase 12.2: dual-source blending. The fragment
+                    // emits `src0 = luminance` (location 0, blend_src 0)
+                    // and `src1 = transmittance` (location 0,
+                    // blend_src 1). The blend then computes
+                    //   final.rgb = luminance.rgb * 1
+                    //             + dst.rgb * transmittance.rgb
+                    // which is the correct per-channel compositing
+                    // equation for RGB transmittance through a
+                    // pre-illuminated column.
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            dst_factor: wgpu::BlendFactor::Src1,
                             operation: wgpu::BlendOperation::Add,
                         },
+                        // Alpha pipeline: we don't use the HDR target's
+                        // alpha channel downstream, but configure a
+                        // matching dual-source blend for consistency.
                         alpha: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            dst_factor: wgpu::BlendFactor::Src1,
                             operation: wgpu::BlendOperation::Add,
                         },
                     }),

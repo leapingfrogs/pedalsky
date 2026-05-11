@@ -25,10 +25,31 @@ fn main() -> std::io::Result<()> {
     let cx = w / 2;
     println!("# {path}");
     println!("# resolution: {w}x{h}");
-    println!("# centre column (x={cx}), y → R G B");
-    for y in (0..h).step_by(40) {
-        let p = buf[y][cx];
-        println!("y={y:4}  R={:.3}  G={:.3}  B={:.3}", p.0, p.1, p.2);
+
+    // A small `--scan-y N` mode: dump R/G/B and R:B ratio across the
+    // whole row at y=N. Useful for finding chromatic shifts across
+    // cloud edges (Phase 12.2 RGB transmittance verification).
+    let scan_y: Option<usize> = std::env::args()
+        .position(|a| a == "--scan-y")
+        .and_then(|i| std::env::args().nth(i + 1))
+        .and_then(|s| s.parse().ok());
+
+    if let Some(y) = scan_y {
+        println!("# scan row y={y}: x → R G B (R/B)");
+        for x in (0..w).step_by(40) {
+            let p = buf[y][x];
+            let ratio = if p.2 > 1e-3 { p.0 / p.2 } else { 0.0 };
+            println!(
+                "x={x:4}  R={:.1}  G={:.1}  B={:.1}  R/B={ratio:.3}",
+                p.0, p.1, p.2
+            );
+        }
+    } else {
+        println!("# centre column (x={cx}), y → R G B");
+        for y in (0..h).step_by(40) {
+            let p = buf[y][cx];
+            println!("y={y:4}  R={:.3}  G={:.3}  B={:.3}", p.0, p.1, p.2);
+        }
     }
     Ok(())
 }

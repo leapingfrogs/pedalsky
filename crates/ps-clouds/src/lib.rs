@@ -66,14 +66,26 @@ pub struct CloudsSubsystem {
     freeze_time: bool,
 }
 
-/// Cloud render target bundle. Owned by `Arc<Mutex<>>` so pass closures
-/// can both inspect and replace it without taking ownership of `Self`.
+/// Cloud render target bundle. Two `Rgba16Float` attachments —
+/// luminance (premultiplied along the ray, AP-applied) and RGB
+/// transmittance through the cloud column. The composite pass reads
+/// both and uses dual-source blending to apply
+/// `dst = luminance + dst * transmittance` per channel into the HDR
+/// target (plan §6.6 RGB transmittance / Phase 12.2).
+///
+/// Owned by `Arc<Mutex<>>` so pass closures can both inspect and
+/// replace it without taking ownership of `Self`.
 pub struct CloudRt {
-    /// Color attachment (Rgba16Float; same format as the HDR target).
-    color: wgpu::Texture,
-    /// View on `color`.
-    color_view: wgpu::TextureView,
-    /// Bind group used by the composite pass to sample `color`.
+    /// Premultiplied luminance attachment (Rgba16Float; matches HDR).
+    luminance: wgpu::Texture,
+    /// View on `luminance`.
+    luminance_view: wgpu::TextureView,
+    /// RGB transmittance attachment (Rgba16Float; .a unused).
+    transmittance: wgpu::Texture,
+    /// View on `transmittance`.
+    transmittance_view: wgpu::TextureView,
+    /// Bind group used by the composite pass to sample both
+    /// attachments + a shared sampler.
     composite_bg: wgpu::BindGroup,
     /// Pixel size — used to detect framebuffer resize.
     size: (u32, u32),
@@ -107,8 +119,10 @@ impl CloudRt {
         size: (u32, u32),
     ) {
         let new = Self::build(device, composite_layout, &self.sampler, size);
-        self.color = new.color;
-        self.color_view = new.color_view;
+        self.luminance = new.luminance;
+        self.luminance_view = new.luminance_view;
+        self.transmittance = new.transmittance;
+        self.transmittance_view = new.transmittance_view;
         self.composite_bg = new.composite_bg;
         self.size = size;
     }
@@ -119,38 +133,51 @@ impl CloudRt {
         sampler: &wgpu::Sampler,
         (w, h): (u32, u32),
     ) -> Self {
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("clouds-rt"),
-            size: wgpu::Extent3d {
-                width: w.max(1),
-                height: h.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: HdrFramebuffer::COLOR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let make_attachment = |label: &'static str| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w.max(1),
+                    height: h.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HdrFramebuffer::COLOR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            (tex, view)
+        };
+        let (luminance, luminance_view) = make_attachment("clouds-rt-luminance");
+        let (transmittance, transmittance_view) =
+            make_attachment("clouds-rt-transmittance");
         let composite_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("clouds-composite-bg"),
             layout: composite_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color_view),
+                    resource: wgpu::BindingResource::TextureView(&luminance_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&transmittance_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         });
         Self {
-            color,
-            color_view,
+            luminance,
+            luminance_view,
+            transmittance,
+            transmittance_view,
             composite_bg,
             size: (w.max(1), h.max(1)),
             sampler: sampler.clone(),
@@ -358,20 +385,43 @@ impl RenderSubsystem for CloudsSubsystem {
                     });
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("clouds::march"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &rt.color_view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.0,
-                                    g: 0.0,
-                                    b: 0.0,
-                                    a: 0.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
+                        color_attachments: &[
+                            // Attachment 0: premultiplied luminance.
+                            // Cleared to zero so pixels with no cloud
+                            // contribute no light.
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &rt.luminance_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 0.0,
+                                        g: 0.0,
+                                        b: 0.0,
+                                        a: 0.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                            // Attachment 1: RGB transmittance through the
+                            // cloud column. Cleared to (1, 1, 1, 1) so
+                            // pixels with no cloud let the destination
+                            // HDR through unchanged at composite time.
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &rt.transmittance_view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: 1.0,
+                                        g: 1.0,
+                                        b: 1.0,
+                                        a: 1.0,
+                                    }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            }),
+                        ],
                         depth_stencil_attachment: None,
                         timestamp_writes: None,
                         occlusion_query_set: None,

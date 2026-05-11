@@ -53,7 +53,11 @@ fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
         | wgpu::Features::TEXTURE_BINDING_ARRAY
         | wgpu::Features::FLOAT32_FILTERABLE
         | wgpu::Features::TIMESTAMP_QUERY
-        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        // Phase 12.2 — RGB cloud transmittance via dual-source blending
+        // (composite pass outputs src0 = luminance, src1 = transmittance,
+        // blend factor (One, Src1Color) per channel).
+        | wgpu::Features::DUAL_SOURCE_BLENDING;
     let granted = wanted & adapter_features;
     let missing = wanted - granted;
     if !missing.is_empty() {
