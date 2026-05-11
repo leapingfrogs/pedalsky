@@ -20,7 +20,8 @@ use ps_core::{
     SubsystemFactory,
 };
 
-const SHADER_SRC: &str = include_str!("../../../shaders/tint/multiply.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/tint/multiply.wgsl");
+const SHADER_REL: &str = "tint/multiply.wgsl";
 
 /// Stable subsystem name (matches `[render.subsystems].tint`).
 pub const NAME: &str = "tint";
@@ -53,9 +54,10 @@ impl TintSubsystem {
     /// Construct.
     pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         let device = &gpu.device;
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tint/multiply.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tint-bgl"),

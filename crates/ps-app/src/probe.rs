@@ -14,7 +14,8 @@ use ps_core::{
     GpuContext,
 };
 
-const SHADER_SRC: &str = include_str!("../../../shaders/debug/probe_transmittance.comp.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/debug/probe_transmittance.comp.wgsl");
+const SHADER_REL: &str = "debug/probe_transmittance.comp.wgsl";
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable, Debug)]
@@ -36,11 +37,12 @@ impl ProbeReadback {
     /// Build pipeline + buffers.
     pub fn new(gpu: &GpuContext) -> Self {
         let device = &gpu.device;
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let composed = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_ATMOSPHERE_WGSL,
             ps_core::shaders::COMMON_ATMOSPHERE_LUT_SAMPLING_WGSL,
-            SHADER_SRC,
+            &live_src,
         ]);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("probe-transmittance.comp"),

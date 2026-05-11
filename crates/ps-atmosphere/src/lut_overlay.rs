@@ -8,7 +8,8 @@
 use bytemuck::{Pod, Zeroable};
 use ps_core::{AtmosphereLuts, GpuContext};
 
-const SHADER_SRC: &str = include_str!("../../../shaders/atmosphere/lut_overlay.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/atmosphere/lut_overlay.wgsl");
+const SHADER_REL: &str = "atmosphere/lut_overlay.wgsl";
 
 /// Per-frame uniforms uploaded to the overlay shader.
 #[repr(C)]
@@ -53,9 +54,10 @@ impl LutOverlay {
     /// overlay writes into.
     pub fn new(gpu: &GpuContext, output_format: wgpu::TextureFormat) -> Self {
         let device = &gpu.device;
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("atmosphere::lut_overlay.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("atmosphere::lut_overlay-bgl"),

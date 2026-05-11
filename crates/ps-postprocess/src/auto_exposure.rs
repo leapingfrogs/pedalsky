@@ -20,7 +20,9 @@ use std::sync::Mutex;
 use bytemuck::{Pod, Zeroable};
 use ps_core::HdrFramebuffer;
 
-const SHADER_SRC: &str = include_str!("../../../shaders/postprocess/auto_exposure.comp.wgsl");
+const SHADER_BAKED: &str =
+    include_str!("../../../shaders/postprocess/auto_exposure.comp.wgsl");
+const SHADER_REL: &str = "postprocess/auto_exposure.comp.wgsl";
 
 /// Mirror of the WGSL `AeOutput` struct.
 #[repr(C)]
@@ -44,9 +46,10 @@ pub struct AutoExposure {
 impl AutoExposure {
     /// Build the compute pipeline + buffers.
     pub fn new(device: &wgpu::Device, hdr: &HdrFramebuffer) -> Self {
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("auto_exposure.comp"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
 
         let bind_group_layout =

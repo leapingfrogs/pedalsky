@@ -8,7 +8,8 @@
 use bytemuck::{Pod, Zeroable};
 use ps_core::{atmosphere_lut_bind_group_layout, AtmosphereLuts, GpuContext};
 
-const SHADER_SRC: &str = include_str!("../../../shaders/atmosphere/lut_viewer.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/atmosphere/lut_viewer.wgsl");
+const SHADER_REL: &str = "atmosphere/lut_viewer.wgsl";
 
 /// Per-frame uniform passed to the viewer shader.
 #[repr(C)]
@@ -51,9 +52,10 @@ impl LutViewer {
     /// Build the pipeline.
     pub fn new(gpu: &GpuContext, output_format: wgpu::TextureFormat) -> Self {
         let device = &gpu.device;
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lut_viewer.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
         // Group 0 reuses the canonical atmosphere LUT bind layout
         // (transmittance/MS/skyview/AP/sampler at bindings 0..=4) and

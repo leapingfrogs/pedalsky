@@ -122,6 +122,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Resolve the workspace `shaders/` directory from a known-inside-
+/// the-workspace path (we use the loaded config path).
+fn workspace_root_for_shaders(config_path: &std::path::Path) -> PathBuf {
+    config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("shaders")
+}
+
 fn workspace_root() -> Result<PathBuf> {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     loop {
@@ -229,6 +239,10 @@ struct RunState {
     title_prefix: String,
 
     hot_reload: HotReload,
+    /// Plan §Cross-Cutting/Shader hot-reload. `None` when the
+    /// `[debug] shader_hot_reload` flag is off or the watcher failed
+    /// to start.
+    shader_hot_reload: Option<ps_core::ShaderHotReload>,
 }
 
 #[derive(Default)]
@@ -386,6 +400,31 @@ impl RunState {
         let hot_reload = HotReload::watch(config_path, scene_path, DEFAULT_DEBOUNCE)
             .context("starting hot-reload watcher")?;
 
+        // Plan §Cross-Cutting/Shader hot-reload — when the flag is on,
+        // register the workspace's `shaders/` directory with the loader
+        // so subsystems read live source, then start a recursive
+        // watcher that fires `App::reconfigure` on change.
+        let shader_hot_reload = if config.debug.shader_hot_reload {
+            let shaders_root = workspace_root_for_shaders(config_path);
+            ps_core::shaders::set_workspace_root(Some(shaders_root.clone()));
+            match ps_core::ShaderHotReload::watch(&shaders_root, DEFAULT_DEBOUNCE) {
+                Ok(w) => {
+                    info!(
+                        target: "ps_app",
+                        path = %shaders_root.display(),
+                        "shader hot-reload watching"
+                    );
+                    Some(w)
+                }
+                Err(e) => {
+                    warn!(error = %e, "failed to start shader hot-reload watcher");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let initial_utc = config_initial_utc(config);
         let world = ps_core::WorldState::new(
             initial_utc,
@@ -446,6 +485,7 @@ impl RunState {
             fps_accum_frames: 0,
             title_prefix,
             hot_reload,
+            shader_hot_reload,
         })
     }
 
@@ -589,6 +629,34 @@ impl RunState {
     }
 
     fn poll_hot_reload(&mut self, config: &mut Config, scene: &mut Scene) {
+        // Plan §Cross-Cutting/Shader hot-reload — drain shader-change
+        // events and rebuild affected pipelines via App::reconfigure.
+        // The reconfigure path is the same as the config-change path,
+        // so subsystems re-read their WGSL via load_shader (which now
+        // returns the freshly-edited file content).
+        if let Some(watcher) = self.shader_hot_reload.as_ref() {
+            let mut any = false;
+            let mut last_path: Option<PathBuf> = None;
+            for event in watcher.events().try_iter() {
+                match event {
+                    ps_core::ShaderWatchEvent::Changed(path) => {
+                        any = true;
+                        last_path = Some(path);
+                    }
+                    ps_core::ShaderWatchEvent::Error(msg) => {
+                        warn!(%msg, "shader hot-reload watcher error");
+                    }
+                }
+            }
+            if any {
+                info!(target: "ps_app", path = ?last_path,
+                      "shader changed — rebuilding subsystems");
+                if let Err(e) = self.app.reconfigure(config, &self.windowed_gpu.gpu) {
+                    warn!(error = %e, "App::reconfigure (shader change) failed");
+                }
+            }
+        }
+
         loop {
             match self.hot_reload.events().try_recv() {
                 Ok(WatchEvent::ConfigChanged(path)) => {

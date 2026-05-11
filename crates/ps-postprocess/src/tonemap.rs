@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use bytemuck::{Pod, Zeroable};
 use ps_core::HdrFramebuffer;
 
-const SHADER_SRC: &str = include_str!("../../../shaders/postprocess/tonemap.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/postprocess/tonemap.wgsl");
+const SHADER_REL: &str = "postprocess/tonemap.wgsl";
 
 /// Tone-map curve choice.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
@@ -80,9 +81,10 @@ impl Tonemap {
         hdr: &HdrFramebuffer,
         output_format: wgpu::TextureFormat,
     ) -> Self {
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tonemap.wgsl"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+            source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tonemap-bgl"),

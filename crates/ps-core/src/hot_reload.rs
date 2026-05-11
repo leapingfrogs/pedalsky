@@ -27,6 +27,17 @@ pub enum WatchEvent {
     Error(String),
 }
 
+/// Events emitted by the shader watcher (plan §Cross-Cutting/Shader
+/// hot-reload). Each `Changed` carries the path under `shaders/` that
+/// triggered the event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShaderWatchEvent {
+    /// A WGSL file under `shaders/` was created/modified/removed.
+    Changed(PathBuf),
+    /// `notify` reported an error.
+    Error(String),
+}
+
 /// File classification used internally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WatchedKind {
@@ -131,6 +142,129 @@ impl Drop for HotReload {
             if let Err(e) = handle.join() {
                 error!("hot-reload debounce thread panicked: {e:?}");
             }
+        }
+    }
+}
+
+/// Recursive watcher over a `shaders/` directory. Emits debounced
+/// [`ShaderWatchEvent::Changed`] events on any `.wgsl` change. The host
+/// receives, calls `App::reconfigure(...)` (or a focused
+/// `App::rebuild_pipelines`) and the subsystems pick up the new source
+/// via [`crate::shaders::load_shader`].
+pub struct ShaderHotReload {
+    rx: Receiver<ShaderWatchEvent>,
+    _watcher: RecommendedWatcher,
+    stop: Arc<Mutex<bool>>,
+    debounce_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl ShaderHotReload {
+    /// Watch the given `shaders/` directory recursively.
+    pub fn watch(shaders_root: &Path, debounce: Duration) -> notify::Result<Self> {
+        let (raw_tx, raw_rx) = unbounded::<PathBuf>();
+        let (tx, rx) = unbounded::<ShaderWatchEvent>();
+        let tx_for_watcher = tx.clone();
+
+        let mut watcher = notify::recommended_watcher(
+            move |res: notify::Result<notify::Event>| match res {
+                Ok(event) => {
+                    if !is_relevant_event(&event.kind) {
+                        return;
+                    }
+                    for path in event.paths {
+                        // Only emit for .wgsl files; the watcher fires for
+                        // editor temp files (`.swp`, `~`-suffixed) too.
+                        if path.extension().is_some_and(|e| e == "wgsl") {
+                            if let Err(e) = raw_tx.send(path) {
+                                warn!("shader watcher channel send failed: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx_for_watcher.send(ShaderWatchEvent::Error(err.to_string()));
+                }
+            },
+        )?;
+        watcher.watch(shaders_root, RecursiveMode::Recursive)?;
+
+        let stop = Arc::new(Mutex::new(false));
+        let stop_for_thread = stop.clone();
+        let tx_for_thread = tx.clone();
+        let debounce_thread = thread::spawn(move || {
+            shader_debounce_loop(raw_rx, tx_for_thread, debounce, stop_for_thread);
+        });
+
+        Ok(Self {
+            rx,
+            _watcher: watcher,
+            stop,
+            debounce_thread: Some(debounce_thread),
+        })
+    }
+
+    /// Receiver of debounced shader events.
+    pub fn events(&self) -> &Receiver<ShaderWatchEvent> {
+        &self.rx
+    }
+}
+
+impl Drop for ShaderHotReload {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.stop.lock() {
+            *s = true;
+        }
+        if let Some(handle) = self.debounce_thread.take() {
+            if let Err(e) = handle.join() {
+                error!("shader hot-reload debounce thread panicked: {e:?}");
+            }
+        }
+    }
+}
+
+fn shader_debounce_loop(
+    raw_rx: Receiver<PathBuf>,
+    tx: Sender<ShaderWatchEvent>,
+    debounce: Duration,
+    stop: Arc<Mutex<bool>>,
+) {
+    // Single per-shader-file pending slot; collapse the bursts that
+    // editors emit on save (write + truncate + rename can fire 3-4
+    // events within milliseconds).
+    use std::collections::HashMap;
+    let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
+    loop {
+        match stop.lock() {
+            Ok(g) if *g => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        let next_deadline = pending.values().min().copied();
+        let timeout = match next_deadline {
+            Some(d) => d.saturating_duration_since(Instant::now()),
+            None => Duration::from_millis(50),
+        };
+        match raw_rx.recv_timeout(timeout) {
+            Ok(path) => {
+                debug!(?path, "raw shader watcher event");
+                pending.insert(path, Instant::now() + debounce);
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                let ready: Vec<PathBuf> = pending
+                    .iter()
+                    .filter_map(|(p, d)| (now >= *d).then(|| p.clone()))
+                    .collect();
+                for p in ready {
+                    pending.remove(&p);
+                    let event = ShaderWatchEvent::Changed(p);
+                    debug!(?event, "emitting debounced shader event");
+                    if let Err(e) = tx.send(event) {
+                        warn!("shader debounce send failed: {e}");
+                    }
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
     }
 }

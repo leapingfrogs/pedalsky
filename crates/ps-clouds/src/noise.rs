@@ -17,9 +17,13 @@
 
 use ps_core::GpuContext;
 
-const BASE_NOISE_SHADER: &str = include_str!("../../../shaders/clouds/noise_base.comp.wgsl");
-const DETAIL_NOISE_SHADER: &str = include_str!("../../../shaders/clouds/noise_detail.comp.wgsl");
-const CURL_NOISE_SHADER: &str = include_str!("../../../shaders/clouds/noise_curl.comp.wgsl");
+const BASE_NOISE_BAKED: &str = include_str!("../../../shaders/clouds/noise_base.comp.wgsl");
+const BASE_NOISE_REL: &str = "clouds/noise_base.comp.wgsl";
+const DETAIL_NOISE_BAKED: &str =
+    include_str!("../../../shaders/clouds/noise_detail.comp.wgsl");
+const DETAIL_NOISE_REL: &str = "clouds/noise_detail.comp.wgsl";
+const CURL_NOISE_BAKED: &str = include_str!("../../../shaders/clouds/noise_curl.comp.wgsl");
+const CURL_NOISE_REL: &str = "clouds/noise_curl.comp.wgsl";
 
 /// Base shape volume edge in voxels.
 pub const BASE_SIZE: u32 = 128;
@@ -131,12 +135,16 @@ impl CloudNoise {
         );
         let blue_noise_view = blue_noise.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Bake passes.
+        // Bake passes. Hot-reload-aware shader sources.
+        let base_src = ps_core::shaders::load_shader(BASE_NOISE_REL, BASE_NOISE_BAKED);
+        let detail_src =
+            ps_core::shaders::load_shader(DETAIL_NOISE_REL, DETAIL_NOISE_BAKED);
+        let curl_src = ps_core::shaders::load_shader(CURL_NOISE_REL, CURL_NOISE_BAKED);
         bake_3d(
             device,
             queue,
             "clouds::noise-base-bake",
-            BASE_NOISE_SHADER,
+            &base_src,
             &base_view,
             wgpu::TextureFormat::Rgba8Unorm,
             BASE_SIZE,
@@ -145,7 +153,7 @@ impl CloudNoise {
             device,
             queue,
             "clouds::noise-detail-bake",
-            DETAIL_NOISE_SHADER,
+            &detail_src,
             &detail_view,
             wgpu::TextureFormat::Rgba8Unorm,
             DETAIL_SIZE,
@@ -154,7 +162,7 @@ impl CloudNoise {
             device,
             queue,
             "clouds::noise-curl-bake",
-            CURL_NOISE_SHADER,
+            &curl_src,
             &curl_view,
             wgpu::TextureFormat::Rg8Unorm,
             CURL_SIZE,

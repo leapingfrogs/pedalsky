@@ -11,9 +11,14 @@ use ps_core::{
     HdrFramebuffer,
 };
 
-const CLOUD_UNIFORMS_WGSL: &str = include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
-const CLOUD_MARCH_WGSL: &str = include_str!("../../../shaders/clouds/cloud_march.wgsl");
-const CLOUD_COMPOSITE_WGSL: &str = include_str!("../../../shaders/clouds/cloud_composite.wgsl");
+const CLOUD_UNIFORMS_BAKED: &str =
+    include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
+const CLOUD_UNIFORMS_REL: &str = "clouds/cloud_uniforms.wgsl";
+const CLOUD_MARCH_BAKED: &str = include_str!("../../../shaders/clouds/cloud_march.wgsl");
+const CLOUD_MARCH_REL: &str = "clouds/cloud_march.wgsl";
+const CLOUD_COMPOSITE_BAKED: &str =
+    include_str!("../../../shaders/clouds/cloud_composite.wgsl");
+const CLOUD_COMPOSITE_REL: &str = "clouds/cloud_composite.wgsl";
 
 /// Group-0 bind layout for the composite pass: cloud RT view + sampler.
 pub fn composite_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -63,11 +68,15 @@ impl CloudPipelines {
         let composite_layout = composite_bind_group_layout(device);
 
         // March pipeline.
+        let cloud_uniforms_src =
+            ps_core::shaders::load_shader(CLOUD_UNIFORMS_REL, CLOUD_UNIFORMS_BAKED);
+        let cloud_march_src =
+            ps_core::shaders::load_shader(CLOUD_MARCH_REL, CLOUD_MARCH_BAKED);
         let march_src = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_MATH_WGSL,
-            CLOUD_UNIFORMS_WGSL,
-            CLOUD_MARCH_WGSL,
+            &cloud_uniforms_src,
+            &cloud_march_src,
         ]);
         let march_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("clouds-march-shader"),
@@ -113,9 +122,11 @@ impl CloudPipelines {
         });
 
         // Composite pipeline (premultiplied alpha blend).
+        let cloud_composite_src =
+            ps_core::shaders::load_shader(CLOUD_COMPOSITE_REL, CLOUD_COMPOSITE_BAKED);
         let composite_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("clouds-composite-shader"),
-            source: wgpu::ShaderSource::Wgsl(CLOUD_COMPOSITE_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(cloud_composite_src.into()),
         });
         let composite_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("clouds-composite-pl"),

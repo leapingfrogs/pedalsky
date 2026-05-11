@@ -34,13 +34,21 @@ use tracing::{debug, info};
 /// Stable subsystem name (matches `[render.subsystems].atmosphere`).
 pub const NAME: &str = "atmosphere";
 
-const TRANSMITTANCE_SHADER: &str =
+// Baked shader sources (compile-time `include_str!`) paired with their
+// path under `shaders/` for the hot-reload loader (plan
+// §Cross-Cutting/Shader hot-reload).
+const TRANSMITTANCE_BAKED: &str =
     include_str!("../../../shaders/atmosphere/transmittance.comp.wgsl");
-const MULTISCATTER_SHADER: &str =
+const TRANSMITTANCE_REL: &str = "atmosphere/transmittance.comp.wgsl";
+const MULTISCATTER_BAKED: &str =
     include_str!("../../../shaders/atmosphere/multiscatter.comp.wgsl");
-const SKYVIEW_SHADER: &str = include_str!("../../../shaders/atmosphere/skyview.comp.wgsl");
-const AP_SHADER: &str = include_str!("../../../shaders/atmosphere/aerialperspective.comp.wgsl");
-const SKY_FS_SHADER: &str = include_str!("../../../shaders/atmosphere/sky.wgsl");
+const MULTISCATTER_REL: &str = "atmosphere/multiscatter.comp.wgsl";
+const SKYVIEW_BAKED: &str = include_str!("../../../shaders/atmosphere/skyview.comp.wgsl");
+const SKYVIEW_REL: &str = "atmosphere/skyview.comp.wgsl";
+const AP_BAKED: &str = include_str!("../../../shaders/atmosphere/aerialperspective.comp.wgsl");
+const AP_REL: &str = "atmosphere/aerialperspective.comp.wgsl";
+const SKY_FS_BAKED: &str = include_str!("../../../shaders/atmosphere/sky.wgsl");
+const SKY_FS_REL: &str = "atmosphere/sky.wgsl";
 
 /// Per-LUT storage bind group: just one storage texture at binding 0.
 fn storage_2d_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -142,12 +150,22 @@ impl AtmosphereSubsystem {
         let storage_2d = storage_2d_layout(device);
         let storage_3d = storage_3d_layout(device);
 
-        // Compute pipelines.
+        // Compute pipelines. Load each WGSL via the hot-reload-aware
+        // loader; each returns the disk file when shader hot-reload is
+        // armed and the baked source otherwise.
+        let transmittance_src =
+            ps_core::shaders::load_shader(TRANSMITTANCE_REL, TRANSMITTANCE_BAKED);
+        let multiscatter_src =
+            ps_core::shaders::load_shader(MULTISCATTER_REL, MULTISCATTER_BAKED);
+        let skyview_src = ps_core::shaders::load_shader(SKYVIEW_REL, SKYVIEW_BAKED);
+        let ap_src = ps_core::shaders::load_shader(AP_REL, AP_BAKED);
+        let sky_fs_src = ps_core::shaders::load_shader(SKY_FS_REL, SKY_FS_BAKED);
+
         let transmittance_pipeline = make_compute_pipeline_with_optional(
             device,
             "atmosphere::transmittance",
             &common,
-            TRANSMITTANCE_SHADER,
+            &transmittance_src,
             // bind group 1 (world), 2 (storage). 0 unbound.
             &[None, Some(&world_layout), Some(&storage_2d)],
         );
@@ -155,7 +173,7 @@ impl AtmosphereSubsystem {
             device,
             "atmosphere::multiscatter",
             &common_with_luts,
-            MULTISCATTER_SHADER,
+            &multiscatter_src,
             // bind group 1 (world), 2 (storage), 3 (transmittance only). 0 unbound.
             &[
                 None,
@@ -168,7 +186,7 @@ impl AtmosphereSubsystem {
             device,
             "atmosphere::skyview",
             &common_with_luts,
-            SKYVIEW_SHADER,
+            &skyview_src,
             // bind groups 0 (frame), 1 (world), 2 (storage), 3 (T+MS).
             &[
                 &frame_layout,
@@ -181,7 +199,7 @@ impl AtmosphereSubsystem {
             device,
             "atmosphere::aerialperspective",
             &common_with_luts,
-            AP_SHADER,
+            &ap_src,
             &[
                 &frame_layout,
                 &world_layout,
@@ -194,7 +212,7 @@ impl AtmosphereSubsystem {
         let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("atmosphere::sky.wgsl"),
             source: wgpu::ShaderSource::Wgsl(
-                ps_core::shaders::compose(&[&common_with_luts, SKY_FS_SHADER]).into(),
+                ps_core::shaders::compose(&[&common_with_luts, &sky_fs_src]).into(),
             ),
         });
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

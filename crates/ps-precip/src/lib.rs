@@ -32,9 +32,13 @@ pub use uniforms::{FarRainLayerGpu, PrecipUniformsGpu};
 /// Stable subsystem name (matches `[render.subsystems].precipitation`).
 pub const NAME: &str = "precipitation";
 
-const ADVANCE_SHADER: &str = include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
-const RENDER_SHADER: &str = include_str!("../../../shaders/precip/particle_render.wgsl");
-const FAR_RAIN_SHADER: &str = include_str!("../../../shaders/precip/far_rain.wgsl");
+const ADVANCE_BAKED: &str =
+    include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
+const ADVANCE_REL: &str = "precip/particle_advance.comp.wgsl";
+const RENDER_BAKED: &str = include_str!("../../../shaders/precip/particle_render.wgsl");
+const RENDER_REL: &str = "precip/particle_render.wgsl";
+const FAR_RAIN_BAKED: &str = include_str!("../../../shaders/precip/far_rain.wgsl");
+const FAR_RAIN_REL: &str = "precip/far_rain.wgsl";
 
 const SPAWN_RADIUS_M: f32 = 50.0;
 const SPAWN_TOP_M: f32 = 30.0;
@@ -282,9 +286,10 @@ impl PrecipSubsystem {
         });
 
         // Compute pipeline (one, shared).
+        let advance_src = ps_core::shaders::load_shader(ADVANCE_REL, ADVANCE_BAKED);
         let advance_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("precip::advance"),
-            source: wgpu::ShaderSource::Wgsl(ADVANCE_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(advance_src.into()),
         });
         let advance_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("precip::advance-pl"),
@@ -302,9 +307,10 @@ impl PrecipSubsystem {
             }));
 
         // Particle render pipeline.
+        let render_main = ps_core::shaders::load_shader(RENDER_REL, RENDER_BAKED);
         let render_src = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            RENDER_SHADER,
+            &render_main,
         ]);
         let render_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("precip::render"),
@@ -365,9 +371,10 @@ impl PrecipSubsystem {
             }));
 
         // Far rain pipeline.
+        let far_main = ps_core::shaders::load_shader(FAR_RAIN_REL, FAR_RAIN_BAKED);
         let far_src = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            FAR_RAIN_SHADER,
+            &far_main,
         ]);
         let far_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("precip::far"),

@@ -30,7 +30,13 @@ use ps_core::{
     SubsystemFactory, SurfaceParams,
 };
 
-const SHADER_SRC: &str = include_str!("../../../shaders/ground/pbr.wgsl");
+/// Baked shader source — used as the fallback when no runtime
+/// override is registered (the default for headless tests and
+/// production builds without `[debug] shader_hot_reload`).
+const SHADER_BAKED: &str = include_str!("../../../shaders/ground/pbr.wgsl");
+/// Path of the shader file relative to `shaders/`. The hot-reload
+/// loader uses this to find the live source on disk.
+const SHADER_REL: &str = "ground/pbr.wgsl";
 const QUAD_HALF_EXTENT_M: f32 = 100_000.0;
 
 #[repr(C)]
@@ -73,11 +79,12 @@ impl PbrGround {
     /// Build the pipeline, vertex buffer, and surface uniform buffer +
     /// bind group.
     pub fn new(device: &wgpu::Device) -> Self {
+        let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
         let composed = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_ATMOSPHERE_WGSL,
             ps_core::shaders::COMMON_ATMOSPHERE_LUT_SAMPLING_WGSL,
-            SHADER_SRC,
+            &live_src,
         ]);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ground/pbr.wgsl"),

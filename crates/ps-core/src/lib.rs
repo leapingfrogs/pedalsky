@@ -37,7 +37,9 @@ pub use contexts::{
     FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
 };
 pub use framebuffer::HdrFramebufferImpl;
-pub use hot_reload::{HotReload, WatchEvent, DEFAULT_DEBOUNCE};
+pub use hot_reload::{
+    HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE,
+};
 pub use scene::{
     CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation, Scene,
     SceneError, Surface, Wetness,
