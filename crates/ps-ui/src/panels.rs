@@ -442,7 +442,7 @@ fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= f32_with_reset(ui, &mut atmo.planet_radius_m, defaults.planet_radius_m,
                               "planet_radius_m", 1.0e6..=1.0e8, 1000.0);
         any |= f32_with_reset(ui, &mut atmo.atmosphere_top_m, defaults.atmosphere_top_m,
-                              "atmosphere_top_m", 1.0e4..=2.0e6, 1000.0);
+                              "atmosphere_top_m", 1.0e4..=1.0e8, 1000.0);
         any |= f32_with_reset(ui, &mut atmo.rayleigh_scale_height_m,
                               defaults.rayleigh_scale_height_m,
                               "rayleigh_scale_height_m", 100.0..=20000.0, 100.0);
