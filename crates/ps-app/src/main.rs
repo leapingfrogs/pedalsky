@@ -77,11 +77,23 @@ fn main() -> Result<()> {
         .and_then(|i| argv.get(i + 1))
         .map(PathBuf::from);
 
+    // CLI override: `--seed <u64>` sets the determinism seed
+    // (plan §Cross-Cutting/Determinism). Falls back to
+    // `[debug] seed` from the config when absent.
+    let cli_seed = argv
+        .iter()
+        .position(|a| a == "--seed")
+        .and_then(|i| argv.get(i + 1))
+        .and_then(|s| s.parse::<u64>().ok());
+
     let config_path = workspace_root.join("pedalsky.toml");
     let mut config =
         Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
     if cli_lut_overlay {
         config.debug.atmosphere_lut_overlay = true;
+    }
+    if let Some(seed) = cli_seed {
+        config.debug.seed = seed;
     }
     config
         .validate_with_base(config_path.parent())

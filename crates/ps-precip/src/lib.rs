@@ -117,6 +117,11 @@ pub struct PrecipSubsystem {
 
     /// Live far-rain bind groups (one per layer).
     live_far_bgs: Arc<Mutex<Vec<Arc<wgpu::BindGroup>>>>,
+
+    /// Plan §Cross-Cutting/Determinism — user-supplied seed XOR'd into
+    /// the per-particle respawn jitter. Sourced from
+    /// `config.debug.seed` (truncated to 32 bits).
+    user_seed: u32,
 }
 
 #[derive(Default)]
@@ -502,6 +507,7 @@ impl PrecipSubsystem {
             live_compute_bg: Arc::new(Mutex::new(None)),
             live_render_bg: Arc::new(Mutex::new(None)),
             live_far_bgs: Arc::new(Mutex::new(Vec::new())),
+            user_seed: config.debug.seed as u32,
         }
     }
 }
@@ -673,7 +679,8 @@ impl RenderSubsystem for PrecipSubsystem {
                 spawn_radius_m: SPAWN_RADIUS_M,
                 spawn_top_m: SPAWN_TOP_M,
                 fall_speed_mps: pool.fall_mps,
-                _pad: [0.0; 4],
+                user_seed: self.user_seed,
+                _pad: [0.0; 3],
             };
             ctx.queue.write_buffer(&pool.uniforms_buf, 0, bytes_of(&u));
         }

@@ -30,11 +30,14 @@ pub struct PrecipUniformsGpu {
     pub spawn_top_m: f32,
     /// Terminal fall speed in m/s.
     pub fall_speed_mps: f32,
-    /// _pad to bring the struct to a 16 B multiple (std140 sizes the
-    /// trailing pad to a multiple of the largest member's alignment of
-    /// 16 B; here that means 4 trailing scalars even though only 3 are
-    /// "logical" padding for the last vec4 boundary).
-    pub _pad: [f32; 4],
+    /// User-supplied determinism seed (plan §Cross-Cutting/Determinism).
+    /// XOR'd into the per-particle respawn jitter so a fixed `--seed`
+    /// argument produces bit-identical particle distributions across
+    /// runs. Defaults to 0 (which still gives a deterministic but
+    /// arbitrary distribution).
+    pub user_seed: u32,
+    /// _pad to bring the struct to a 16 B multiple.
+    pub _pad: [f32; 3],
 }
 
 impl Default for PrecipUniformsGpu {
@@ -50,7 +53,8 @@ impl Default for PrecipUniformsGpu {
             spawn_radius_m: 50.0,
             spawn_top_m: 30.0,
             fall_speed_mps: 6.0,
-            _pad: [0.0; 4],
+            user_seed: 0,
+            _pad: [0.0; 3],
         }
     }
 }

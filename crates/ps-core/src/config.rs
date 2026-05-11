@@ -384,6 +384,13 @@ pub struct DebugConfig {
     /// `--lut-overlay` CLI flag.
     #[serde(default)]
     pub atmosphere_lut_overlay: bool,
+    /// Plan §Cross-Cutting/Determinism — user-supplied seed for
+    /// stochastic systems (precipitation particle spawning). The
+    /// `--seed <u64>` CLI flag overrides this. The blue-noise jitter
+    /// in the cloud march is spatial-only (frame-deterministic) and
+    /// does not consume a seed.
+    #[serde(default)]
+    pub seed: u64,
 }
 
 impl Default for DebugConfig {
@@ -394,6 +401,7 @@ impl Default for DebugConfig {
             log_level: "info".into(),
             auto_exposure: false,
             atmosphere_lut_overlay: false,
+            seed: 0,
         }
     }
 }

@@ -36,6 +36,7 @@ struct PrecipUniforms {
     spawn_radius_m: f32,            // emitter cylinder radius
     spawn_top_m: f32,               // top of spawn cylinder above camera
     fall_speed_mps: f32,            // terminal velocity
+    user_seed: u32,                 // plan §Cross-Cutting/Determinism
     _pad_0: f32,
     _pad_1: f32,
     _pad_2: f32,
@@ -111,7 +112,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Cold start / re-seed: zero positions get a fresh slot. Track via
     // a sentinel age (negative ages flag fresh particles).
     if (p.age < 0.0) {
-        p = respawn(i, u32(precip.simulated_seconds * 60.0) ^ 0xa5a5u);
+        let frame_seed = u32(precip.simulated_seconds * 60.0) ^ 0xa5a5u
+                       ^ precip.user_seed;
+        p = respawn(i, frame_seed);
         particles.items[i] = p;
         atomicAdd(&draw_args.instance_count, 1u);
         return;
@@ -139,7 +142,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let too_high = (p.position.y - precip.camera_position.y) > precip.spawn_top_m;
     let below_ground = p.position.y < 0.0;
     if (r2 > max_r2 || below_ground || too_high) {
-        p = respawn(i, u32(precip.simulated_seconds * 60.0) ^ (i * 31u));
+        let frame_seed = u32(precip.simulated_seconds * 60.0) ^ (i * 31u)
+                       ^ precip.user_seed;
+        p = respawn(i, frame_seed);
     }
 
     particles.items[i] = p;
