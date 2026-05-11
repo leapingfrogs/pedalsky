@@ -1,0 +1,40 @@
+# Phase 12.3 diagnostic — high strike-rate scene to verify lightning
+# bolts and cloud-flash illumination. Late-afternoon convective
+# cumulonimbus with low-altitude visibility.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 18000.0
+temperature_c  = 22.0
+dewpoint_c     = 19.0
+pressure_hpa   = 1006.0
+wind_dir_deg   = 220.0
+wind_speed_mps = 8.0
+
+[surface.wetness]
+ground_wetness  = 0.5
+puddle_coverage = 0.2
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulonimbus"
+base_m             = 1200.0
+top_m              = 9000.0
+coverage           = 0.7
+density_scale      = 1.4
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "Rain"
+intensity_mm_per_h = 12.0
+
+[lightning]
+# Aggressive strike rate so any frame's headless render has a
+# meaningful chance of catching a flash. 60 strikes/min/km² over the
+# 32×32 km mask = ~1024 strikes per minute → ~17 per second → ~0.28
+# per frame at 60 Hz. With max_active_strikes = 8 the ring buffer
+# fills quickly.
+strikes_per_min_per_km2 = 60.0

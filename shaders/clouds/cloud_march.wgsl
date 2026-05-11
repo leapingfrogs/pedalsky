@@ -525,8 +525,30 @@ fn fs_main(in: VsOut) -> CloudOut {
                             * params.ambient_strength
                             * ambient_height_gradient(h_norm);
 
+                // Phase 12.3 — lightning in-scatter contribution.
+                // The aggregated emission is in
+                // `frame.lightning_illuminance.rgb`; localise by
+                // horizontal distance from the strongest active
+                // strike's origin (`frame.lightning_origin_world.xyz`)
+                // with a smooth falloff out to the radius packed in
+                // `lightning_illuminance.w`. Lightning illumination
+                // is broadly isotropic (it's volume emission inside
+                // the cloud, not directional like the sun), so we
+                // skip the phase function and feed the term directly
+                // alongside ambient.
+                var lightning = vec3<f32>(0.0);
+                let r = frame.lightning_illuminance.w;
+                if (r > 0.0) {
+                    let d = length(p.xz - frame.lightning_origin_world.xz);
+                    let falloff = clamp(1.0 - d / r, 0.0, 1.0);
+                    // Cubic smoothstep — soft visible edge to the
+                    // illuminated zone.
+                    let weight = falloff * falloff * (3.0 - 2.0 * falloff);
+                    lightning = frame.lightning_illuminance.rgb * weight;
+                }
+
                 let in_scatter = density * params.sigma_s
-                                * (sun_in * energy + ambient);
+                                * (sun_in * energy + ambient + lightning);
 
                 // Energy-conserving step integration. local_sigma is
                 // per-channel after Phase 12.2b; the lower clamp uses
