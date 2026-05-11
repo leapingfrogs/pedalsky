@@ -10,6 +10,7 @@ use glam::Vec4;
 use ps_atmosphere::AtmosphereFactory;
 use ps_aurora::AuroraFactory;
 use ps_backdrop::BackdropFactory;
+use ps_bloom::BloomFactory;
 use ps_godrays::GodraysFactory;
 use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
@@ -148,6 +149,7 @@ impl HeadlessApp {
             .with_factory(Box::new(GodraysFactory))
             .with_factory(Box::new(lightning_factory))
             .with_factory(Box::new(AuroraFactory))
+            .with_factory(Box::new(BloomFactory))
             .with_factory(Box::new(tonemap_factory))
             .build(config, gpu)
             .context("AppBuilder::build")?;

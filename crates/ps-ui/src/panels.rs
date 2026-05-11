@@ -39,6 +39,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
                 ui.separator();
                 godrays_panel(ui, state);
                 ui.separator();
+                bloom_panel(ui, state);
+                ui.separator();
                 lightning_panel(ui, state);
                 ui.separator();
                 aurora_panel(ui, state);
@@ -486,6 +488,7 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= ui.checkbox(&mut s.godrays, "Godrays").changed();
         any |= ui.checkbox(&mut s.lightning, "Lightning").changed();
         any |= ui.checkbox(&mut s.aurora, "Aurora").changed();
+        any |= ui.checkbox(&mut s.bloom, "Bloom").changed();
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
@@ -955,6 +958,41 @@ fn godrays_panel(ui: &mut egui::Ui, state: &mut UiState) {
             "Crepuscular rays appear only when the sun is in front of \
              the camera. Look toward the sun (e.g. yaw 180° at noon \
              at default Dunblane lat) to see the effect.",
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Bloom panel (Phase 13.3) — bright-pass threshold + intensity
+// ---------------------------------------------------------------------------
+
+fn bloom_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Bloom", |ui| {
+        let b = &mut state.live_config.render.bloom;
+        let mut any = false;
+        any |= Slider::new(&mut b.threshold_ev100, -2.0..=8.0)
+            .text("Threshold (EV stops above ev100)")
+            .max_decimals(2)
+            .ui(ui)
+            .changed();
+        any |= Slider::new(&mut b.knee_ev, 0.0..=2.0)
+            .text("Knee width (EV)")
+            .max_decimals(2)
+            .ui(ui)
+            .changed();
+        any |= Slider::new(&mut b.intensity, 0.0..=4.0)
+            .text("Intensity")
+            .max_decimals(3)
+            .ui(ui)
+            .changed();
+        if any {
+            state.pending.config_dirty = true;
+        }
+        ui.label(
+            "Bloom highlights: extracts pixels brighter than \
+             2^(ev100 + threshold), runs a 3-level Gaussian \
+             pyramid, additively blends back into HDR. The sun \
+             disk (~10⁹ cd/m²) is the dominant contributor.",
         );
     });
 }

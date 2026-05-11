@@ -184,6 +184,9 @@ pub struct RenderConfig {
     /// Phase 12.5 aurora tuning.
     #[serde(default)]
     pub aurora: AuroraTuning,
+    /// Phase 13.3 bloom tuning.
+    #[serde(default)]
+    pub bloom: BloomTuning,
     /// Phase 1 demo: BackdropSubsystem tuning.
     pub backdrop: BackdropTuning,
     /// Phase 1 demo: TintSubsystem tuning.
@@ -205,6 +208,7 @@ impl Default for RenderConfig {
             godrays: GodraysTuning::default(),
             lightning: LightningTuning::default(),
             aurora: AuroraTuning::default(),
+            bloom: BloomTuning::default(),
             backdrop: BackdropTuning::default(),
             tint: TintTuning::default(),
         }
@@ -234,6 +238,9 @@ pub struct SubsystemFlags {
     /// Phase 12.5 aurora subsystem.
     #[serde(default = "default_true")]
     pub aurora: bool,
+    /// Phase 13.3 bloom (HDR bright-pass + Gaussian pyramid).
+    #[serde(default = "default_true")]
+    pub bloom: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
@@ -255,6 +262,7 @@ impl Default for SubsystemFlags {
             godrays: true,
             lightning: true,
             aurora: true,
+            bloom: true,
             backdrop: true,
             tint: false,
         }
@@ -440,6 +448,43 @@ pub struct AuroraTuning {
     /// Latitude (absolute degrees) above which intensity decays
     /// back toward zero (polar cap).
     pub fade_latitude_abs_deg: f32,
+}
+
+/// Phase 13.3 bloom tuning. HDR bright-pass threshold + Gaussian
+/// pyramid composite. The bloom subsystem reads the post-tonemap HDR
+/// target, extracts pixels brighter than `threshold_ev100` (in
+/// EV-relative units), downsamples through a 3-level Gaussian
+/// pyramid, and additively composites the upsampled result back into
+/// the HDR target before tonemap. Sun-disk pixels (~10⁹ cd/m²) are
+/// the dominant contributor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BloomTuning {
+    /// Brightness threshold expressed as EV stops above the scene's
+    /// configured ev100. Pixels with luminance below `2^threshold`
+    /// don't contribute. Default 2.0 = 4× the average exposure
+    /// target — keeps the bloom emerging from the sun + brightest
+    /// cloud highlights without bleeding from average scene values.
+    pub threshold_ev100: f32,
+    /// Final additive composite intensity in `[0, 4]`. 1.0 leaves
+    /// the bloom at its physical magnitude; lower for subtler
+    /// sun-glow.
+    pub intensity: f32,
+    /// Soft-knee width below the threshold (EV stops). 0 = hard
+    /// threshold; small positive values let the brightest sub-
+    /// threshold pixels contribute partially, avoiding hard edges
+    /// in the bloom mask. Default 0.5.
+    pub knee_ev: f32,
+}
+
+impl Default for BloomTuning {
+    fn default() -> Self {
+        Self {
+            threshold_ev100: 2.0,
+            intensity: 1.0,
+            knee_ev: 0.5,
+        }
+    }
 }
 
 impl Default for AuroraTuning {

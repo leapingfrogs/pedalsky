@@ -29,6 +29,7 @@ use ps_atmosphere::{
 };
 use ps_backdrop::BackdropFactory;
 use ps_aurora::AuroraFactory;
+use ps_bloom::BloomFactory;
 use ps_godrays::GodraysFactory;
 use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
@@ -1414,6 +1415,9 @@ fn build_app(
         // Phase 12.5 — aurora curtains, also at Translucent. Gated
         // on `[render.subsystems].aurora` and the latitude/kp curve.
         .with_factory(Box::new(AuroraFactory))
+        // Phase 13.3 — HDR bloom at PostProcess (before tone-map).
+        // Gated on `[render.subsystems].bloom`.
+        .with_factory(Box::new(BloomFactory))
         .with_factory(Box::new(tonemap_factory))
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)
