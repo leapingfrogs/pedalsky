@@ -77,18 +77,30 @@ fn rain_changes_image_vs_no_precip() {
     let setup = TestSetup::new(gpu, &config, (256, 256));
     let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
 
-    // No precip baseline.
+    // No precip baseline. Force cloud mask = 1 (overcast) so the
+    // baseline and rain renders share the same overcast diffuse
+    // ground lighting (Phase 12.6); only the precip particles
+    // should differ between the two.
     let dry = SurfaceParams::default();
-    let dry_pixels = app.render_one_frame_with_surface(gpu, forward_camera(), Some(dry));
+    let dry_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(dry),
+        Some(1.0),
+    );
 
-    // Rain at 5 mm/h with cloud mask present (the stub uploads mask=1.0).
+    // Rain at 5 mm/h with cloud mask present.
     let with_rain = SurfaceParams {
         precip_intensity_mm_per_h: 5.0,
         precip_kind: 1.0,
         ..SurfaceParams::default()
     };
-    let rain_pixels =
-        app.render_one_frame_with_surface(gpu, forward_camera(), Some(with_rain));
+    let rain_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(with_rain),
+        Some(1.0),
+    );
 
     let mut diff: u64 = 0;
     for (a, b) in dry_pixels.chunks_exact(4).zip(rain_pixels.chunks_exact(4)) {
@@ -305,8 +317,21 @@ fn snow_kind_renders_distinct_pixels() {
         ..SurfaceParams::default()
     };
 
-    let rain_pixels = app.render_one_frame_with_surface(gpu, forward_camera(), Some(rain));
-    let snow_pixels = app.render_one_frame_with_surface(gpu, forward_camera(), Some(snow));
+    // Force cloud mask = 1 so rain/snow particles aren't gated out
+    // by the Phase 8 cloud-occlusion mask (Phase 12.6 changed the
+    // stub default to 0 / "clear sky" — explicit override here).
+    let rain_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(rain),
+        Some(1.0),
+    );
+    let snow_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(snow),
+        Some(1.0),
+    );
 
     // Snow particles use a different sprite (round splat, white tint vs
     // rain's blue-grey streak). The two images should differ.

@@ -9,15 +9,28 @@
 // Ambient comes from the Phase 5 sky-view LUT sampled at the local up
 // vector. Aerial perspective applied in-shader (plan §5.4 / §7.4).
 //
+// Phase 12.6 — cloud-modulated overcast diffuse: under thick stratus
+// the sky-view LUT (which knows about atmosphere only) reports the
+// blue zenith brightness even though physically a viewer on the
+// ground would see a uniform white-grey overcast hemisphere. Sample
+// the synthesised top-down cloud density at the surface point's XZ;
+// where it indicates substantial cloud cover, blend in a white
+// diffuse irradiance proportional to the cloud-attenuated solar
+// illuminance.
+//
 // Bindings (the pipeline layout in ps-ground wires these explicitly):
 //   group 0 binding 0      FrameUniforms (frame)
 //   group 1 binding 0      WorldUniforms (world)
 //   group 2 binding 0      SurfaceParamsGpu (surface)
+//   group 2 binding 1      top_down_density_mask (R8Unorm 2D)
+//   group 2 binding 2      density_mask_sampler (linear-clamp)
 //   group 3 binding {0..4} atmosphere LUTs
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<uniform> world: WorldUniforms;
 @group(2) @binding(0) var<uniform> surface: SurfaceParams;
+@group(2) @binding(1) var top_down_density_mask: texture_2d<f32>;
+@group(2) @binding(2) var density_mask_sampler: sampler;
 
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut:  texture_2d<f32>;
@@ -27,6 +40,13 @@
 
 const GR_PI: f32 = 3.14159265358979;
 const AP_FAR_M: f32 = 32000.0;
+
+/// The top-down cloud density mask covers a 32 km × 32 km square
+/// centred on the world origin, matching the weather-map extent
+/// (synthesis §3.2.5). Beyond this extent the loader's clamp-to-edge
+/// sampler returns the edge value, which is fine for a v1 stationary
+/// camera that doesn't fly off the grid.
+const DENSITY_MASK_EXTENT_M: f32 = 32000.0;
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -291,12 +311,98 @@ fn skyview_uv_local(view_dir: vec3<f32>, sun_dir: vec3<f32>, cam_r: f32) -> vec2
     return vec2<f32>(du, v);
 }
 
-fn sample_sky_at(p_world: vec3<f32>, up: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
+/// Map a world XZ position to a UV in the top-down density mask. The
+/// mask is centred on the world origin with a fixed extent
+/// (`DENSITY_MASK_EXTENT_M`); positions outside the extent clamp to
+/// the edge value (the sampler is clamp-to-edge).
+fn mask_uv_from_world(p_xz: vec2<f32>) -> vec2<f32> {
+    return p_xz / DENSITY_MASK_EXTENT_M + vec2<f32>(0.5);
+}
+
+/// Phase 12.6 — sample the top-down cloud column at a surface
+/// position and produce a [0, 1] "overcast blocking" scalar:
+/// 0 = clear sky overhead, 1 = thick overcast.
+///
+/// The mask is a saturated column-density measure where 1.0 means
+/// "10 km of full-density cloud" (synthesis §3.2.5 — sized for the
+/// Phase 8 precipitation cloud-occlusion gate, which needs to
+/// distinguish "any cloud" from "thunderstorm tower"). For the
+/// overcast-diffuse modulation we want sensitivity at *much* lower
+/// mask values: a typical low stratus deck reads ~0.03 in mask
+/// units but should produce near-full overcast blocking
+/// (T_through ≈ 0.05). The exponent constant below converts the
+/// precip-friendly mask into an overcast-friendly transmittance:
+///
+///   Stratus 600 m   coverage 1.0 → mask ≈ 0.028 → blocking ≈ 0.67
+///   Stratocumulus   coverage 0.9 → mask ≈ 0.041 → blocking ≈ 0.81
+///   Cumulus 800 m   coverage 0.5 → mask ≈ 0.024 → blocking ≈ 0.62
+///   Thunderstorm Cb coverage 0.9 → mask ≈ 0.444 → blocking ≈ 1.000
+fn overcast_blocking(p_xz: vec2<f32>) -> f32 {
+    let uv = mask_uv_from_world(p_xz);
+    let mask = textureSampleLevel(
+        top_down_density_mask, density_mask_sampler, uv, 0.0,
+    ).r;
+    let transmittance = exp(-40.0 * mask);
+    return 1.0 - transmittance;
+}
+
+/// White diffuse irradiance produced by an overcast hemisphere.
+/// Real-world references:
+///   midday overcast, sun ~60° altitude:   8,000–15,000 cd/m² zenith
+///   medium overcast, sun ~30° altitude:   3,000–6,000 cd/m²
+///   thin overcast, sun ~15° altitude:     1,000–2,000 cd/m²
+///   dim overcast at sunset, sun ~5°:      300–500 cd/m²
+///
+/// Model: a fraction of the TOA solar illuminance is forward-
+/// scattered through the cloud layer and emerges as a roughly
+/// hemispheric diffuse glow. The fraction depends on cloud optical
+/// thickness (low fraction for thick storm cells, higher for thin
+/// stratus); we use a single empirically-tuned constant.
+///
+/// The sun elevation curve uses sqrt(max(sun.y, 0.05)) rather than
+/// linear sun.y because real overcast attenuates *less* steeply with
+/// sun angle than a clear-sky cosine — even at low sun the cloud
+/// layer catches some forward-scattered light from below the horizon
+/// and redistributes it isotropically. The 0.05 floor keeps a small
+/// glow at twilight when the sun is barely below the horizon.
+///
+/// Spectrum is white (per-channel equal) — overcast scattering
+/// flattens the spectrum, unlike the blue-shifted clear sky.
+fn overcast_diffuse_irradiance(sun_dir: vec3<f32>) -> vec3<f32> {
+    let sun_alt_factor = sqrt(clamp(sun_dir.y, 0.05, 1.0));
+    // 25 % forward-scattered fraction. Tuned so winter noon overcast
+    // (toa=131000 lx, sun_dir.y≈0.21) gives ~15,000 lx ground
+    // illuminance, matching photographic references for snowy
+    // overcast scenes; OVC summer noon (toa=128000 lx, sun_dir.y≈0.85)
+    // gives ~30,000 lx — still reading as overcast (vs ~120,000 lx
+    // direct sun), distinct from clear-sky cases.
+    let overcast_scatter_fraction = 0.25;
+    let toa = frame.sun_illuminance.w;  // lux at TOA, per FrameUniforms
+    let irradiance = toa * sun_alt_factor * overcast_scatter_fraction;
+    return vec3<f32>(irradiance);
+}
+
+/// Cloud-modulated sky irradiance for ambient lighting on a surface
+/// at `p_world` looking in direction `up`. `cloud_blocking` is the
+/// pre-computed (1 − T_overcast) at this fragment, supplied by the
+/// caller so we don't double-sample the density mask.
+fn sample_sky_at(
+    p_world: vec3<f32>,
+    up: vec3<f32>,
+    sun_dir: vec3<f32>,
+    cloud_blocking: f32,
+) -> vec3<f32> {
     let centre = vec3<f32>(0.0, -world.planet_radius_m, 0.0);
     let cam_r = length(p_world - centre);
     let uv = skyview_uv_local(up, sun_dir, cam_r);
-    return textureSampleLevel(skyview_lut, lut_sampler, uv, 0.0).rgb
-         * frame.sun_illuminance.rgb;
+    let clear_sky = textureSampleLevel(skyview_lut, lut_sampler, uv, 0.0).rgb
+                  * frame.sun_illuminance.rgb;
+    // Phase 12.6 — under overcast, replace the clear-sky LUT (which
+    // doesn't know about clouds) with a white diffuse irradiance
+    // term representing hemispheric cloud scattering. Smooth blend
+    // by `cloud_blocking` so partial cloud transitions cleanly.
+    let overcast = overcast_diffuse_irradiance(sun_dir);
+    return mix(clear_sky, overcast, cloud_blocking);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,17 +440,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let wetness = clamp(surface.ground_wetness, 0.0, 1.0);
     let wm = wet_material(base_albedo, base_roughness, wetness);
 
+    // Phase 12.6 — top-down cloud cover at this surface position.
+    // Used to (a) attenuate the direct-sun path (the cloud column
+    // blocks the sun) and (b) replace the clear-sky LUT ambient
+    // with a white overcast-diffuse term inside `sample_sky_at`.
+    let cloud_blocking = overcast_blocking(p.xz);
+    let cloud_through = 1.0 - cloud_blocking;
+
     // Compute the dry/wet diffuse-and-specular ground (before puddles + snow).
     let n_dot_l = max(dot(n, sun_dir), 0.0);
     let sun_t = sun_visibility(p, sun_dir);
-    let direct_E = frame.sun_illuminance.rgb * sun_t * n_dot_l;
+    // Direct sunlight is attenuated by cloud cover. Under thick
+    // overcast the direct path goes to zero and only the white
+    // overcast diffuse (added below as ambient) lights the ground.
+    let direct_E = frame.sun_illuminance.rgb * sun_t * n_dot_l * cloud_through;
     let f_dry = brdf(n, v, sun_dir, wm.albedo, wm.roughness, dielectric_f0);
     let direct_lit = f_dry * direct_E;
 
     // Ambient: sky-view at local up, weighted by Lambertian diffuse only
     // (cheap stand-in for proper diffuse irradiance from the upper
     // hemisphere; Hillaire 2020 §6 quotes this approximation).
-    let sky_irr = sample_sky_at(p, n, sun_dir);
+    let sky_irr = sample_sky_at(p, n, sun_dir, cloud_blocking);
     let ambient_lit = (wm.albedo / GR_PI) * sky_irr;
 
     var lit = direct_lit + ambient_lit;
@@ -380,7 +496,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             // sky-view LUT at the reflected view direction (with the
             // ripple-perturbed normal).
             let r = reflect(-v, n_water);
-            let sky_refl = sample_sky_at(p, r, sun_dir);
+            let sky_refl = sample_sky_at(p, r, sun_dir, cloud_blocking);
             let n_dot_v = max(dot(n_water, v), 1e-4);
             let f_v = fresnel_schlick(n_dot_v, water_f0);
             let water_lit = water_direct + f_v * sky_refl;

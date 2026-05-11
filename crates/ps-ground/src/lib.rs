@@ -48,31 +48,68 @@ struct Vertex {
 /// Stable subsystem name (matches `[render.subsystems].ground`).
 pub const NAME: &str = "ground";
 
-/// Build the bind-group layout for the ground subsystem's group 2: a
-/// single `SurfaceParams` uniform.
+/// Build the bind-group layout for the ground subsystem's group 2:
+///
+///   binding 0: SurfaceParams uniform
+///   binding 1: top-down cloud density mask (Phase 12.6 — overcast
+///              diffuse modulation). The mask is sampled in the
+///              ground shader at the surface point's XZ to determine
+///              how much cloud is overhead.
+///   binding 2: linear-clamp sampler for the mask.
 fn surface_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("ground-surface-bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<SurfaceParams>() as u64),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<SurfaceParams>() as u64,
+                    ),
+                },
+                count: None,
             },
-            count: None,
-        }],
+            // Phase 12.6 — top-down cloud density mask.
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float {
+                        filterable: true,
+                    },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
     })
 }
 
 /// Procedural ground plane. Constructed via [`GroundSubsystem`]; kept
 /// public so tests / host code can build one directly.
+///
+/// The group-2 bind group is rebuilt each frame in `prepare()` rather
+/// than cached, because it references the top-down density mask
+/// texture view from the live WeatherState (which can be replaced
+/// when synthesis re-runs for a hot-reload).
 pub struct PbrGround {
     pipeline: wgpu::RenderPipeline,
     vertex_buf: wgpu::Buffer,
     surface_buf: wgpu::Buffer,
-    surface_bg: wgpu::BindGroup,
+    /// Layout used to rebuild the group-2 bind group each frame.
+    surface_layout: wgpu::BindGroupLayout,
+    /// Cached sampler for the density-mask texture binding.
+    density_mask_sampler: wgpu::Sampler,
 }
 
 impl PbrGround {
@@ -172,20 +209,29 @@ impl PbrGround {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let surface_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ground-surface-bg"),
-            layout: &surface_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: surface_buf.as_entire_binding(),
-            }],
+
+        // Phase 12.6 — sampler for the top-down density mask. Linear
+        // filtering smooths cloud-edge transitions across grid cells;
+        // clamp-to-edge means surface points outside the 32 km mask
+        // extent get the boundary value (a v1 stationary-camera
+        // limitation).
+        let density_mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ground-density-mask-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
         });
 
         Self {
             pipeline,
             vertex_buf,
             surface_buf,
-            surface_bg,
+            surface_layout,
+            density_mask_sampler,
         }
     }
 }
@@ -200,6 +246,11 @@ pub struct GroundSubsystem {
     /// ground shader still runs but `prepare()` zeros out the wetness +
     /// snow inputs so the dry BRDF path is taken.
     wet_surface_enabled: bool,
+    /// Live group-2 bind group, rebuilt each frame in `prepare()`
+    /// against the current top-down density mask view from
+    /// WeatherState (Phase 12.6). Shared with the registered pass
+    /// closure via `Arc<Mutex>`.
+    live_surface_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
 }
 
 impl GroundSubsystem {
@@ -210,6 +261,7 @@ impl GroundSubsystem {
             inner: Arc::new(PbrGround::new(&gpu.device)),
             surface: Mutex::new(SurfaceParams::default()),
             wet_surface_enabled: config.render.subsystems.wet_surface,
+            live_surface_bg: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -231,14 +283,56 @@ impl RenderSubsystem for GroundSubsystem {
         ctx.queue
             .write_buffer(&self.inner.surface_buf, 0, bytes_of(&surface));
         *self.surface.lock().expect("ground: surface lock") = surface;
+
+        // Phase 12.6 — rebuild the group-2 bind group against the
+        // live top-down density mask view from WeatherState. The view
+        // can be replaced when synthesis re-runs (hot-reload), so we
+        // do this every frame rather than caching.
+        let mask_view = &ctx.weather.textures.top_down_density_mask_view;
+        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ground-surface-bg"),
+            layout: &self.inner.surface_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.inner.surface_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(mask_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(
+                        &self.inner.density_mask_sampler,
+                    ),
+                },
+            ],
+        });
+        *self
+            .live_surface_bg
+            .lock()
+            .expect("ground: live surface bg lock") = Some(Arc::new(bg));
     }
 
     fn register_passes(&self) -> Vec<RegisteredPass> {
         let inner = self.inner.clone();
+        let live_surface_bg = self.live_surface_bg.clone();
         vec![RegisteredPass {
             name: "ground-pbr",
             stage: PassStage::Opaque,
             run: Box::new(move |encoder, ctx| {
+                // Phase 12.6 — read the live group-2 bind group built
+                // in `prepare()` against this frame's density mask.
+                let Some(surface_bg) = live_surface_bg
+                    .lock()
+                    .expect("ground: live surface bg lock")
+                    .clone()
+                else {
+                    // prepare() hasn't run yet (first frame in some
+                    // headless test paths); skip cleanly.
+                    return;
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("ground-pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -269,7 +363,7 @@ impl RenderSubsystem for GroundSubsystem {
                 pass.set_pipeline(&inner.pipeline);
                 pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                 pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                pass.set_bind_group(2, &inner.surface_bg, &[]);
+                pass.set_bind_group(2, surface_bg.as_ref(), &[]);
                 pass.set_bind_group(3, luts_bg, &[]);
                 pass.set_vertex_buffer(0, inner.vertex_buf.slice(..));
                 pass.draw(0..6, 0..1);

@@ -308,10 +308,11 @@ impl WeatherState {
         let (wind_field, wind_field_view) = make_3d();
         let (top_down_density_mask, top_down_density_mask_view) =
             make_2d("stub-mask", wgpu::TextureFormat::R8Unorm);
-        // Upload mask = 1.0 so the Phase 8 cloud-occlusion gate doesn't
-        // zero rain in tests (the real synthesis populates this from the
-        // cloud layers; tests stub it as "fully covered" to exercise the
-        // precip pipeline).
+        // Upload mask = 0 ("clear sky") so ground-shading tests that
+        // use this stub see the standard sky-view-LUT ambient, not
+        // the Phase 12.6 cloud-modulated overcast diffuse. Tests that
+        // need the precip cloud-occlusion gate (mask = 1) override
+        // this via test_harness::HeadlessApp's cloud_mask_override.
         gpu.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &top_down_density_mask,
@@ -319,7 +320,7 @@ impl WeatherState {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &[255u8],
+            &[0u8],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(1),
