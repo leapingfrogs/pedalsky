@@ -47,3 +47,4 @@ serde_json.workspace = true
 [dev-dependencies]
 image-compare       = { workspace = true }
 exr                 = { workspace = true }
+naga                = { version = "29", features = ["wgsl-in"] }

@@ -2488,6 +2488,7 @@ dependencies = [
  "half",
  "image",
  "image-compare",
+ "naga",
  "pollster",
  "ps-atmosphere",
  "ps-backdrop",
