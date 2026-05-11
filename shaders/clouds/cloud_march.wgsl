@@ -410,6 +410,10 @@ fn fs_main(in: VsOut) -> CloudOut {
 
     var luminance = vec3<f32>(0.0);
     var transmittance = vec3<f32>(1.0);
+    // Phase 12.2b — per-channel extinction. sigma_t is a vec3 because
+    // sigma_s and sigma_a are themselves per-channel; the cloud's
+    // extinction is now wavelength-dependent (Mie-style), which is
+    // what produces visible warm fringing on cloud edges at sunset.
     let sigma_t = params.sigma_s + params.sigma_a;
     let sun_dir = frame.sun_direction.xyz;
 
@@ -480,10 +484,12 @@ fn fs_main(in: VsOut) -> CloudOut {
                 let in_scatter = density * params.sigma_s
                                 * (sun_in * energy + ambient);
 
-                // Energy-conserving step integration.
-                let local_sigma = max(density * sigma_t, 1e-6);
-                let sample_t = exp(-vec3<f32>(local_sigma) * step);
-                let s_int = (in_scatter - in_scatter * sample_t) / vec3<f32>(local_sigma);
+                // Energy-conserving step integration. local_sigma is
+                // per-channel after Phase 12.2b; the lower clamp uses
+                // vec3 arithmetic.
+                let local_sigma = max(density * sigma_t, vec3<f32>(1e-6));
+                let sample_t = exp(-local_sigma * step);
+                let s_int = (in_scatter - in_scatter * sample_t) / local_sigma;
                 let step_lum = transmittance * s_int;
                 let step_weight = dot(step_lum, vec3<f32>(0.2126, 0.7152, 0.0722));
                 luminance = luminance + step_lum;
