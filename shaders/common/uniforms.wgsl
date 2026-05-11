@@ -14,6 +14,7 @@ struct FrameUniforms {
     view_proj: mat4x4<f32>,
     inv_view_proj: mat4x4<f32>,
     camera_position_world: vec4<f32>,
+    camera_velocity_world: vec4<f32>,// xyz=m/s, w unused (Phase 8.2)
     sun_direction: vec4<f32>,        // xyz=dir, w=angular_radius_rad
     sun_illuminance: vec4<f32>,      // rgb=cd/m²·sr, w=lux at TOA
     viewport_size: vec4<f32>,        // w, h, 1/w, 1/h

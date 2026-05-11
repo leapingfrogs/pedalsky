@@ -41,8 +41,36 @@ struct PrecipUniforms {
     _pad_2: f32,
 };
 
+struct DrawIndirectArgs {
+    vertex_count: u32,
+    instance_count: atomic<u32>,
+    first_vertex: u32,
+    first_instance: u32,
+};
+
 @group(0) @binding(0) var<storage, read_write> particles: Particles;
 @group(0) @binding(1) var<uniform> precip: PrecipUniforms;
+@group(0) @binding(2) var wind_field: texture_3d<f32>;
+@group(0) @binding(3) var wind_sampler: sampler;
+@group(0) @binding(4) var<storage, read_write> draw_args: DrawIndirectArgs;
+
+const WIND_EXTENT_M: f32 = 32000.0;
+const WIND_TOP_M: f32 = 12000.0;
+
+/// Trilinear lookup of the synthesised 3D wind field at world position p.
+/// Returns the wind velocity in world space (m/s).
+///
+/// Channel mapping (matches `ps_synthesis::wind_field`):
+///   R = u (east, +X)    G = v_horizontal (south, +Z)
+///   B = w (vertical, +Y)   A = turbulence (unused here)
+fn wind_at(p: vec3<f32>) -> vec3<f32> {
+    let half = WIND_EXTENT_M * 0.5;
+    let u = clamp((p.x + half) / WIND_EXTENT_M, 0.0, 1.0);
+    let v = clamp(p.y / WIND_TOP_M, 0.0, 1.0);
+    let w = clamp((p.z + half) / WIND_EXTENT_M, 0.0, 1.0);
+    let s = textureSampleLevel(wind_field, wind_sampler, vec3<f32>(u, v, w), 0.0);
+    return vec3<f32>(s.r, s.b, s.g);
+}
 
 // PCG-ish hash for deterministic respawn jitter.
 fn hash3(seed: u32) -> vec3<f32> {
@@ -85,11 +113,22 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (p.age < 0.0) {
         p = respawn(i, u32(precip.simulated_seconds * 60.0) ^ 0xa5a5u);
         particles.items[i] = p;
+        atomicAdd(&draw_args.instance_count, 1u);
         return;
     }
 
-    // Advance.
-    let v_total = p.velocity + precip.wind_velocity.xyz;
+    // Advance. Snow has a much higher wind coupling than rain (drag-to-
+    // mass ratio ~1000×) — flakes drift with the air almost 1:1, drops
+    // mostly fall straight. Per plan §8.4 "stronger wind influence".
+    var wind_gain: f32 = 0.3;
+    if (p.kind == 1u) {
+        wind_gain = 1.5;
+    }
+    // Sample the 3D wind field at the particle's own position so wind
+    // varies along the particle's path (Ekman veer aloft, thermal
+    // updrafts under cumulus, etc.) — plan §8.1 wind_at(p).
+    let wind = wind_at(p.position);
+    let v_total = p.velocity + wind * wind_gain;
     p.position = p.position + v_total * precip.dt_seconds;
     p.age = p.age + precip.dt_seconds;
 
@@ -104,4 +143,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     particles.items[i] = p;
+    // Atomic-increment the indirect-draw instance count. Plan §8.1: the
+    // render pass uses draw_indirect to read the live count from this
+    // counter. The counter is reset to 0 by the host each frame. Every
+    // particle that survives `respawn`/`advance` is "live" and gets
+    // counted.
+    atomicAdd(&draw_args.instance_count, 1u);
 }

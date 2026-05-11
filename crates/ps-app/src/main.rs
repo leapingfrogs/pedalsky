@@ -157,6 +157,11 @@ struct RunState {
     weather: ps_core::WeatherState,
     start: Instant,
     last_frame: Instant,
+    /// World-space camera position at the start of the previous frame.
+    /// Used to derive `camera_velocity_world` for Phase 8 far-rain
+    /// scrolling. `None` until the first frame finishes (so the very
+    /// first frame reports zero velocity rather than a garbage delta).
+    last_camera_position: Option<glam::Vec3>,
     frame_index: u32,
     fps_accum_dt: f32,
     fps_accum_frames: u32,
@@ -335,6 +340,7 @@ impl RunState {
             lut_overlay,
             start: now,
             last_frame: now,
+            last_camera_position: None,
             frame_index: 0,
             fps_accum_dt: 0.0,
             fps_accum_frames: 0,
@@ -553,11 +559,24 @@ impl RunState {
         let aspect = w as f32 / h as f32;
         let view = self.camera.view_matrix();
         let proj = self.camera.projection_matrix(aspect);
+        // Camera velocity (m/s) for Phase 8 far-rain scrolling. Derived
+        // from frame-to-frame position delta divided by wall-clock dt.
+        let cam_velocity = match self.last_camera_position {
+            Some(prev) if dt > 1e-4 => (self.camera.position - prev) / dt,
+            _ => glam::Vec3::ZERO,
+        };
+        self.last_camera_position = Some(self.camera.position);
         let mut frame_uniforms = FrameUniforms {
             camera_position_world: Vec4::new(
                 self.camera.position.x,
                 self.camera.position.y,
                 self.camera.position.z,
+                0.0,
+            ),
+            camera_velocity_world: Vec4::new(
+                cam_velocity.x,
+                cam_velocity.y,
+                cam_velocity.z,
                 0.0,
             ),
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),

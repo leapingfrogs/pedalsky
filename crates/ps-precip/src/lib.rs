@@ -51,13 +51,19 @@ struct Particle {
 }
 
 /// One particle pool (rain or snow). Owns the storage buffer + the
-/// compute bind group. The render bind group is rebuilt every frame in
-/// `prepare()` because it includes the live density-mask view from
+/// uniform buffer + the draw-indirect args buffer (whose `instance_count`
+/// the compute shader atomically increments per live particle). Both
+/// compute and render bind groups are rebuilt every frame in `prepare()`
+/// because they include the live wind_field / density-mask views from
 /// WeatherState.
 struct ParticlePool {
     particle_buf: wgpu::Buffer,
     uniforms_buf: wgpu::Buffer,
-    compute_bg: wgpu::BindGroup,
+    /// 16 B buffer holding `(vertex_count=6, instance_count=atomic,
+    /// first_vertex=0, first_instance=0)`. INDIRECT|STORAGE|COPY_DST.
+    /// Reset to `[6, 0, 0, 0]` by the host each frame before the
+    /// compute pass; render uses draw_indirect at offset 0.
+    draw_args_buf: wgpu::Buffer,
     count: u32,
     kind: u32,
     fall_mps: f32,
@@ -97,6 +103,10 @@ pub struct PrecipSubsystem {
     /// Layouts + sampler used to rebuild bind groups in `prepare()`.
     bg_builder: Arc<BindGroupBuilder>,
 
+    /// Live compute bind group for the active pool (rebuilt each frame
+    /// against the current wind_field view).
+    live_compute_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
+
     /// Live render bind group (rebuilt each frame against the current
     /// density mask view).
     live_render_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
@@ -119,7 +129,9 @@ impl PrecipSubsystem {
 
         let count = config.render.precip.near_particle_count.max(64);
 
-        // Compute bind layout: storage particle buffer + uniform.
+        // Compute bind layout: storage particle buffer + uniform +
+        // wind_field 3D texture + sampler. The 3D texture is rebound
+        // each frame because its view is owned by WeatherState.
         let compute_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("precip-compute-bgl"),
             entries: &[
@@ -138,6 +150,32 @@ impl PrecipSubsystem {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -446,24 +484,19 @@ impl PrecipSubsystem {
                 mapped_at_creation: false,
             });
 
-            let compute_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("precip-compute-bg"),
-                layout: &compute_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: particle_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: uniforms_buf.as_entire_binding(),
-                    },
-                ],
+            let draw_args_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("precip-draw-args"),
+                size: 16,
+                usage: wgpu::BufferUsages::INDIRECT
+                    | wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
             });
+
             Arc::new(ParticlePool {
                 particle_buf,
                 uniforms_buf,
-                compute_bg,
+                draw_args_buf,
                 count,
                 kind,
                 fall_mps,
@@ -502,12 +535,27 @@ impl PrecipSubsystem {
         }
         let _ = placeholder_view;
 
-        // Stash the layouts + sampler on the subsystem so prepare() can
-        // rebuild bind groups against the live density mask view.
+        // Wind sampler (linear, clamp-to-edge) for the compute shader.
+        let wind_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("precip-wind-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Stash the layouts + samplers on the subsystem so prepare() can
+        // rebuild bind groups against the live density mask + wind field
+        // views from WeatherState.
         let bg_builder = BindGroupBuilder {
+            compute_layout,
             render_layout,
             far_layout,
             sampler,
+            wind_sampler,
         };
 
         Self {
@@ -520,6 +568,7 @@ impl PrecipSubsystem {
             far_pipeline,
             state: Arc::new(Mutex::new(PrecipState::default())),
             bg_builder: Arc::new(bg_builder),
+            live_compute_bg: Arc::new(Mutex::new(None)),
             live_render_bg: Arc::new(Mutex::new(None)),
             live_far_bgs: Arc::new(Mutex::new(Vec::new())),
         }
@@ -527,9 +576,13 @@ impl PrecipSubsystem {
 }
 
 struct BindGroupBuilder {
+    compute_layout: wgpu::BindGroupLayout,
     render_layout: wgpu::BindGroupLayout,
     far_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Sampler used by the compute shader's wind_field lookup. Linear
+    /// filtering so wind varies smoothly across the texture.
+    wind_sampler: wgpu::Sampler,
 }
 
 impl PrecipSubsystem {
@@ -559,6 +612,41 @@ impl PrecipSubsystem {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&builder.sampler),
+                },
+            ],
+        })
+    }
+
+    /// Build the compute bind group for `pool` with `wind_view` plumbed in.
+    fn build_compute_bg(
+        device: &wgpu::Device,
+        builder: &BindGroupBuilder,
+        pool: &ParticlePool,
+        wind_view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("precip-compute-bg-live"),
+            layout: &builder.compute_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pool.particle_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: pool.uniforms_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(wind_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&builder.wind_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: pool.draw_args_buf.as_entire_binding(),
                 },
             ],
         })
@@ -657,12 +745,32 @@ impl RenderSubsystem for PrecipSubsystem {
             ctx.queue.write_buffer(&pool.uniforms_buf, 0, bytes_of(&u));
         }
 
-        // Rebuild bind groups against the live density mask view.
+        // Rebuild bind groups against the live texture views from
+        // WeatherState (density mask for render + far, wind_field for
+        // compute). Both views may have been replaced by hot-reload.
         let mask_view = &ctx.weather.textures.top_down_density_mask_view;
+        let wind_view = &ctx.weather.textures.wind_field_view;
         let active_pool = match kind {
             2 => &self.snow_pool,
             _ => &self.rain_pool,
         };
+        // Reset the draw-indirect args for the active pool. Vertex count
+        // is fixed at 6 (the quad); instance_count starts at 0 and the
+        // compute shader atomically increments it per live particle.
+        // first_vertex and first_instance are 0.
+        let reset_args: [u32; 4] = [6, 0, 0, 0];
+        ctx.queue.write_buffer(
+            &active_pool.draw_args_buf,
+            0,
+            bytemuck::cast_slice(&reset_args),
+        );
+        let compute_bg =
+            Self::build_compute_bg(ctx.device, &self.bg_builder, active_pool, wind_view);
+        *self
+            .live_compute_bg
+            .lock()
+            .expect("precip: live compute bg lock") = Some(Arc::new(compute_bg));
+
         let render_bg =
             Self::build_render_bg(ctx.device, &self.bg_builder, active_pool, mask_view);
         *self.live_render_bg.lock().expect("precip: live bg lock") = Some(Arc::new(render_bg));
@@ -683,12 +791,12 @@ impl RenderSubsystem for PrecipSubsystem {
         let snow_pool = self.snow_pool.clone();
         let far_layers = self.far_layers.clone();
         let state = self.state.clone();
+        let live_compute_bg = self.live_compute_bg.clone();
         let live_render_bg = self.live_render_bg.clone();
         let live_far_bgs = self.live_far_bgs.clone();
 
         vec![
-            // 1. Advance both pools (cheap when intensity = 0; the GPU
-            //    work is just respawn churn).
+            // 1. Advance the active pool (cheap when intensity = 0).
             RegisteredPass {
                 name: "precip::advance",
                 stage: PassStage::Compute,
@@ -697,11 +805,16 @@ impl RenderSubsystem for PrecipSubsystem {
                     let rain = rain_pool.clone();
                     let snow = snow_pool.clone();
                     let state = state.clone();
+                    let live_bg = live_compute_bg.clone();
                     move |encoder, _ctx| {
                         let st = state.lock().expect("precip: state lock");
                         if st.intensity_mm_per_h <= 0.0 {
                             return;
                         }
+                        let bg_guard = live_bg.lock().expect("precip: compute bg lock");
+                        let Some(bg) = bg_guard.as_ref() else {
+                            return;
+                        };
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("precip::advance"),
                             timestamp_writes: None,
@@ -711,7 +824,7 @@ impl RenderSubsystem for PrecipSubsystem {
                             2 => &snow,
                             _ => &rain,
                         };
-                        pass.set_bind_group(0, &active.compute_bg, &[]);
+                        pass.set_bind_group(0, bg.as_ref(), &[]);
                         let groups = active.count.div_ceil(64);
                         pass.dispatch_workgroups(groups, 1, 1);
                     }
@@ -768,7 +881,11 @@ impl RenderSubsystem for PrecipSubsystem {
                             2 => &snow,
                             _ => &rain,
                         };
-                        pass.draw(0..6, 0..active.count);
+                        // draw_indirect reads (vertex_count,
+                        // instance_count, first_vertex, first_instance)
+                        // from the args buffer the compute shader just
+                        // populated atomically (plan §8.1).
+                        pass.draw_indirect(&active.draw_args_buf, 0);
                     }
                 }),
             },

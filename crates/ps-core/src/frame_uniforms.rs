@@ -24,6 +24,10 @@ pub struct FrameUniforms {
     pub inv_view_proj: Mat4,
     /// World-space camera position (`w` unused).
     pub camera_position_world: Vec4,
+    /// World-space camera velocity in m/s (`w` unused). Used by Phase 8.2
+    /// far-rain streaks to scroll by `wind − camera_velocity`. The host
+    /// computes this as `(position_now − position_prev) / dt`.
+    pub camera_velocity_world: Vec4,
     /// `(xyz)` = world-space sun direction (unit vector).
     /// `w` = sun angular radius in radians (Earth ≈ 0.27° = 4.71e-3 rad).
     pub sun_direction: Vec4,
@@ -90,6 +94,8 @@ pub struct FrameUniformsGpu {
     pub inv_view_proj: [[f32; 4]; 4],
     /// World-space camera position; `w` unused.
     pub camera_position_world: [f32; 4],
+    /// World-space camera velocity in m/s; `w` unused.
+    pub camera_velocity_world: [f32; 4],
     /// `xyz` = sun direction; `w` = sun angular radius (radians).
     pub sun_direction: [f32; 4],
     /// `rgb` = sun illuminance proxy; `w` = TOA lux.
@@ -115,6 +121,7 @@ impl FrameUniformsGpu {
             view_proj: u.view_proj.to_cols_array_2d(),
             inv_view_proj: u.inv_view_proj.to_cols_array_2d(),
             camera_position_world: u.camera_position_world.to_array(),
+            camera_velocity_world: u.camera_velocity_world.to_array(),
             sun_direction: u.sun_direction.to_array(),
             sun_illuminance: u.sun_illuminance.to_array(),
             viewport_size: u.viewport_size.to_array(),
@@ -134,8 +141,8 @@ mod tests {
     /// declaration in `shaders/common/uniforms.wgsl`.
     #[test]
     fn frame_uniforms_size_pinned() {
-        // 4 mat4 (4×64=256) + 4 vec4 (4×16=64) + 4 scalars (16) = 336 bytes.
-        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 336);
+        // 4 mat4 (4×64=256) + 5 vec4 (5×16=80) + 4 scalars (16) = 352 bytes.
+        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 352);
         assert_eq!(std::mem::size_of::<FrameUniformsGpu>() % 16, 0);
     }
 

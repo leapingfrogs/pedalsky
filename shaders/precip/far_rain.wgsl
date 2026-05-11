@@ -88,19 +88,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Procedural streak field in screen space, scrolled by wind drift.
-    // Wind drift in NDC: project wind_velocity (m/s) into screen space at
-    // the layer's depth using the projection's vertical scale.
-    // Approximate: drift_y_ndc/sec ≈ wind.y * (proj[1][1] / depth_m).
+    // Procedural streak field in screen space, scrolled by
+    // (wind − camera_velocity) projected into screen space at the
+    // layer's depth (plan §8.2). Move-through-the-rain at speed v thus
+    // shifts streaks toward the back of the camera at v / depth ndc/sec.
     let proj_y = frame.proj[1][1];
-    let wind_y_screen = precip.wind_velocity.y * proj_y / layer.depth_m;
-    let wind_x_screen = precip.wind_velocity.x * proj_y / layer.depth_m;
+    let rel_wind = precip.wind_velocity.xyz - frame.camera_velocity_world.xyz;
     let scroll = vec2<f32>(
-        wind_x_screen * precip.simulated_seconds,
-        // Rain falls down -> scroll downward; -wind_y has fall component
-        // baked in via the wind buffer aliasing.
-        (precip.fall_speed_mps + abs(precip.wind_velocity.y))
-            * proj_y / layer.depth_m * precip.simulated_seconds,
+        rel_wind.x * proj_y / layer.depth_m * precip.simulated_seconds,
+        // Vertical scroll: own gravity (fall_speed) plus relative
+        // vertical wind. Rain falls down → scroll downward in screen.
+        (precip.fall_speed_mps - rel_wind.y) * proj_y / layer.depth_m
+            * precip.simulated_seconds,
     );
 
     let viewport = frame.viewport_size.xy;

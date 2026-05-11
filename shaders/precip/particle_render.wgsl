@@ -40,12 +40,35 @@ struct PrecipUniforms {
 const MASK_EXTENT_M: f32 = 32000.0;
 // Streaks scaled up from physical reality so individual rain drops are
 // visible without thousands of pixels per particle. Real droplets are
-// ~1 mm radius and motion-blur to a few cm; the values here over-quote
-// both so that a few thousand particles fill the camera frame
-// believably. UI sliders later expose these as tunables.
+// ~1 mm radius and motion-blur to a few cm; the per-particle radius is
+// instead derived from the Marshall-Palmer mean drop diameter and
+// scaled to a renderable size below.
 const EXPOSURE_TIME_S: f32 = 1.0 / 30.0;
-const RAIN_RADIUS_M: f32 = 0.02;
+// Multiplier from Marshall-Palmer mean drop diameter (mm) to our
+// rendered streak radius (m). Picked so 5 mm/h gives ~2 cm radius
+// streaks (enough to be visible at a few metres without dominating).
+const MP_RADIUS_GAIN: f32 = 0.05;
+// Pool particle density (particles per m^3) the renderer assumes when
+// converting MP volumetric density to per-particle alpha. Matches the
+// 8000 particles / pi*50^2*30 m^3 cylinder used by the compute pass.
+const POOL_DENSITY_PER_M3: f32 = 0.034;
 const SNOW_RADIUS_M: f32 = 0.04;
+const PI_R: f32 = 3.14159265358979;
+
+/// Marshall-Palmer (1948): N(D) = N0 * exp(-Lambda * D).
+/// N0 = 8000 m^-3 mm^-1, Lambda = 4.1 * I^-0.21 mm^-1.
+/// Returns:
+///   .x = total drops per m^3 (integrated over D from 0..inf)
+///   .y = mean drop diameter (mm)
+fn marshall_palmer(intensity_mm_per_h: f32) -> vec2<f32> {
+    let i = max(intensity_mm_per_h, 1e-3);
+    let lambda = 4.1 * pow(i, -0.21);
+    let n0 = 8000.0; // m^-3 mm^-1
+    // Integral of N0 * exp(-Lambda * D) dD from 0..inf = N0 / Lambda.
+    let n_total = n0 / max(lambda, 1e-3);
+    let d_mean = 1.0 / max(lambda, 1e-3);
+    return vec2<f32>(n_total, d_mean);
+}
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -85,10 +108,12 @@ fn vs_main(
     var width_axis: vec3<f32>;
     var radius: f32;
     var length_m: f32;
+    let mp = marshall_palmer(precip.intensity_mm_per_h);
     if (p.kind == 0u) {
         // Rain: streak length = speed * exposure_time, with a small floor
-        // so stationary droplets are still visible.
-        radius = RAIN_RADIUS_M;
+        // so stationary droplets are still visible. Streak radius scales
+        // with the MP mean drop diameter so heavy rain visibly thicker.
+        radius = mp.y * MP_RADIUS_GAIN;
         length_m = max(speed * EXPOSURE_TIME_S, 0.01);
         // Streak axis = projection of world velocity onto the screen
         // plane (perpendicular to view direction at the particle).
@@ -125,21 +150,23 @@ fn vs_main(
     let mask_uv = world_to_mask_uv(p.position.xz);
     let cloud_mask = textureSampleLevel(top_down_density_mask, density_sampler, mask_uv, 0.0).r;
 
-    // Marshall-Palmer-derived intensity scaling. Square-rooted so 5 mm/h
-    // produces ~33% of the max visible density (light-rain regime); a
-    // linear scale would render 5 mm/h almost invisibly.
-    let intensity = sqrt(clamp(precip.intensity_mm_per_h / 25.0, 0.0, 1.0));
-    let alpha = cloud_mask * intensity;
+    // Marshall-Palmer drop count per m^3 vs our pool density gives the
+    // per-particle alpha: higher real-world density -> each particle
+    // "represents" more drops -> brighter splat. Clamped to [0, 1] so
+    // very heavy rain doesn't oversaturate the integrator.
+    let drops_per_m3 = mp.x;
+    let alpha_density = clamp(drops_per_m3 / max(POOL_DENSITY_PER_M3, 1e-3) / 65000.0, 0.0, 1.0);
+    let alpha = cloud_mask * alpha_density;
 
     if (p.kind == 0u) {
-        // Rain: cool grey-blue, full base alpha (the long thin streak
-        // already attenuates per-pixel coverage).
+        // Rain: cool grey-blue.
         out.tint = vec3<f32>(0.5, 0.55, 0.7);
         out.alpha = alpha;
     } else {
-        // Snow: bright, white, larger splat.
+        // Snow: bright, white. Snow flakes are larger and brighter than
+        // rain droplets at the same intensity; bias the alpha up.
         out.tint = vec3<f32>(0.95, 0.97, 1.0);
-        out.alpha = alpha;
+        out.alpha = clamp(alpha * 1.5, 0.0, 1.0);
     }
     out.kind = f32(p.kind);
     _ = view_pos;

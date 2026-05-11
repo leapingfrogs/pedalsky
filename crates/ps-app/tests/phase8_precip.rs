@@ -229,6 +229,65 @@ fn rain_ripples_change_wet_ground_appearance() {
 }
 
 #[test]
+fn marshall_palmer_intensity_scales_visibility() {
+    // Heavy rain (50 mm/h) should produce a more visible image than
+    // light rain (1 mm/h). Marshall-Palmer drop density ∝ I^0.21, so
+    // the per-particle alpha rises monotonically with intensity.
+    let Some(gpu) = gpu() else { return };
+    let config = baseline_config();
+    let setup = TestSetup::new(gpu, &config, (256, 256));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+
+    let dry = SurfaceParams::default();
+    let light_rain = SurfaceParams {
+        precip_intensity_mm_per_h: 1.0,
+        precip_kind: 1.0,
+        ..SurfaceParams::default()
+    };
+    let heavy_rain = SurfaceParams {
+        precip_intensity_mm_per_h: 50.0,
+        precip_kind: 1.0,
+        ..SurfaceParams::default()
+    };
+
+    let dry_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(dry),
+        Some(1.0),
+    );
+    let light_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(light_rain),
+        Some(1.0),
+    );
+    let heavy_pixels = app.render_one_frame_with_surface_and_mask(
+        gpu,
+        forward_camera(),
+        Some(heavy_rain),
+        Some(1.0),
+    );
+
+    let l1 = |a: &[u8], b: &[u8]| -> f64 {
+        let mut d: u64 = 0;
+        for (x, y) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
+            for c in 0..3 {
+                d += (x[c] as i32 - y[c] as i32).unsigned_abs() as u64;
+            }
+        }
+        d as f64 / (a.len() / 4) as f64
+    };
+    let light_delta = l1(&dry_pixels, &light_pixels);
+    let heavy_delta = l1(&dry_pixels, &heavy_pixels);
+    eprintln!("light (1mm/h) L1 = {light_delta:.2}, heavy (50mm/h) L1 = {heavy_delta:.2}");
+    assert!(
+        heavy_delta > light_delta,
+        "heavier rain should perturb the image more (light={light_delta:.2}, heavy={heavy_delta:.2})"
+    );
+}
+
+#[test]
 fn snow_kind_renders_distinct_pixels() {
     let Some(gpu) = gpu() else { return };
     let config = baseline_config();
