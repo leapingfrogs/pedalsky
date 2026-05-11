@@ -83,6 +83,35 @@ fn storage_3d_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     })
 }
 
+/// Bind group 2 for the sky pass: top-down cloud density mask + a
+/// linear-clamp sampler. Layout matches the binding declarations in
+/// `shaders/atmosphere/sky.wgsl` (Phase 12.6b / followup #74).
+fn sky_density_mask_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("atmosphere::sky-density-mask-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float {
+                        filterable: true,
+                    },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 /// Phase 5 atmosphere subsystem.
 pub struct AtmosphereSubsystem {
     enabled: bool,
@@ -94,6 +123,12 @@ pub struct AtmosphereSubsystem {
     skyview_pipeline: wgpu::ComputePipeline,
     ap_pipeline: wgpu::ComputePipeline,
     sky_pipeline: wgpu::RenderPipeline,
+
+    /// Layout used to rebuild the sky pass's group-2 bind group each
+    /// frame against the live density-mask view.
+    sky_density_mask_layout: wgpu::BindGroupLayout,
+    /// Cached sampler shared by every per-frame group-2 bind group.
+    density_mask_sampler: wgpu::Sampler,
 
     /// Storage-target bind groups (group 2 of each compute pipeline).
     transmittance_storage: wgpu::BindGroup,
@@ -215,12 +250,13 @@ impl AtmosphereSubsystem {
                 ps_core::shaders::compose(&[&common_with_luts, &sky_fs_src]).into(),
             ),
         });
+        let sky_density_mask_layout = sky_density_mask_layout(device);
         let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("atmosphere::sky-pl"),
             bind_group_layouts: &[
                 Some(&frame_layout),
                 Some(&world_layout),
-                Some(&dummy_layout(device)),
+                Some(&sky_density_mask_layout),
                 Some(&lut_sample_layout),
             ],
             immediate_size: 0,
@@ -262,6 +298,21 @@ impl AtmosphereSubsystem {
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
+        });
+
+        // Phase 12.6b — sampler shared by every per-frame sky-pass
+        // density-mask bind group. Linear so cloud-edge transitions
+        // smooth across mask cells; clamp-to-edge so views beyond the
+        // 32 km mask extent get the boundary value.
+        let density_mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("atmosphere::sky-density-mask-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
         });
 
         // Sampling bind groups for the bake passes.
@@ -321,6 +372,8 @@ impl AtmosphereSubsystem {
             skyview_pipeline,
             ap_pipeline,
             sky_pipeline,
+            sky_density_mask_layout,
+            density_mask_sampler,
             transmittance_storage,
             multiscatter_storage,
             skyview_storage,
@@ -339,17 +392,6 @@ impl AtmosphereSubsystem {
     pub fn luts(&self) -> &Arc<AtmosphereLuts> {
         &self.luts
     }
-}
-
-/// Empty bind-group layout used when a pipeline doesn't bind the
-/// canonical group at that index. wgpu requires every layout slot to be
-/// non-null, so we feed a 0-entry layout when the shader references no
-/// resource at that group.
-fn dummy_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("atmosphere::dummy-bgl"),
-        entries: &[],
-    })
 }
 
 fn make_compute_pipeline_with_optional(
@@ -575,7 +617,35 @@ impl RenderSubsystem for AtmosphereSubsystem {
                 stage: PassStage::SkyBackdrop,
                 run: Box::new({
                     let lut_bg = lut_bg.clone();
+                    let mask_layout = self.sky_density_mask_layout.clone();
+                    let mask_sampler = self.density_mask_sampler.clone();
                     move |encoder, ctx| {
+                        // Phase 12.6b — rebuild group 2 against the
+                        // live density mask each frame (synthesis can
+                        // be re-run from a hot-reload, replacing the
+                        // texture view).
+                        let mask_view =
+                            &ctx.weather.textures.top_down_density_mask_view;
+                        let density_bg =
+                            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("atmosphere::sky-density-mask-bg"),
+                                layout: &mask_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            mask_view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(
+                                            &mask_sampler,
+                                        ),
+                                    },
+                                ],
+                            });
+
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("atmosphere::sky"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -604,6 +674,7 @@ impl RenderSubsystem for AtmosphereSubsystem {
                         pass.set_pipeline(&sky_pipeline);
                         pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                         pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                        pass.set_bind_group(2, &density_bg, &[]);
                         pass.set_bind_group(3, &lut_bg, &[]);
                         pass.draw(0..3, 0..1);
                     }
