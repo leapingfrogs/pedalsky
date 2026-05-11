@@ -37,6 +37,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
                 ui.separator();
                 precipitation_panel(ui, state);
                 ui.separator();
+                godrays_panel(ui, state);
+                ui.separator();
                 debug_panel(ui, state);
             });
         });
@@ -879,6 +881,51 @@ fn precipitation_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.latest_scene = Some(new_scene.clone());
             state.pending.live_scene = Some(new_scene);
         }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Godrays panel — Phase 12.4 screen-space crepuscular rays.
+// ---------------------------------------------------------------------------
+
+fn godrays_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Godrays", |ui| {
+        // The on/off lives in the Subsystems panel
+        // (`[render.subsystems].godrays`); this panel only tunes
+        // the four parameters once enabled.
+        let g = &mut state.live_config.render.godrays;
+        let mut changed = false;
+
+        changed |= Slider::new(&mut g.samples, 8..=256)
+            .text("Samples (per pixel)")
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut g.decay, 0.80..=0.999)
+            .text("Decay (per sample)")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut g.intensity, 0.0..=2.0)
+            .text("Intensity")
+            .max_decimals(3)
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut g.bright_threshold, 0.0..=20_000.0)
+            .text("Bright threshold (cd/m²)")
+            .max_decimals(0)
+            .logarithmic(true)
+            .ui(ui)
+            .changed();
+
+        if changed {
+            state.pending.config_dirty = true;
+        }
+
+        ui.label(
+            "Crepuscular rays appear only when the sun is in front of \
+             the camera. Look toward the sun (e.g. yaw 180° at noon \
+             at default Dunblane lat) to see the effect.",
+        );
     });
 }
 
