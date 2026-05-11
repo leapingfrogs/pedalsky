@@ -40,6 +40,15 @@ struct CloudParams {
     cloud_steps: u32,             // 192
     multi_scatter_octaves: u32,   // 4
     cloud_layer_count: u32,
+
+    // Phase 13.9 — optional per-frame temporal rotation of the
+    // spatial blue-noise lookup (16-frame cycle). 0 = off, 1 = on.
+    // The next three slots are std140 padding so the struct keeps
+    // its 16-byte tail alignment.
+    temporal_jitter: u32,
+    _pad_temporal_jitter_0: u32,
+    _pad_temporal_jitter_1: u32,
+    _pad_temporal_jitter_2: u32,
 };
 
 struct CloudLayerGpu {

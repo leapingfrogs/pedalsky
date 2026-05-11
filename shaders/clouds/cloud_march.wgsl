@@ -398,9 +398,24 @@ fn fs_main(in: VsOut) -> CloudOut {
     let ray = compute_view_ray(in.pos.xy);
     let cos_theta = dot(ray.dir, frame.sun_direction.xyz);
 
-    // Spatial blue-noise jitter (frame-deterministic — no time component).
+    // Spatial blue-noise jitter (frame-deterministic — no time
+    // component). Phase 13.9 adds an optional 16-frame rotation
+    // (`params.temporal_jitter`) by XORing the lookup coords with a
+    // frame-index-derived offset. The shifts pick deterministic
+    // 6-bit offsets that don't preserve the spatial dither structure
+    // across the cycle — exactly what a TAA accumulator wants.
     let jitter_xy = vec2<i32>(i32(in.pos.x), i32(in.pos.y));
-    let jitter = textureLoad(blue_noise, jitter_xy & vec2<i32>(63), 0).r;
+    var sample_xy = jitter_xy & vec2<i32>(63);
+    if (params.temporal_jitter != 0u) {
+        let phase = frame.frame_index & 15u;
+        let off_x = i32(((phase * 11u + 7u) >> 0u) & 63u);
+        let off_y = i32(((phase * 23u + 13u) >> 0u) & 63u);
+        sample_xy = vec2<i32>(
+            (sample_xy.x ^ off_x) & 63,
+            (sample_xy.y ^ off_y) & 63,
+        );
+    }
+    let jitter = textureLoad(blue_noise, sample_xy, 0).r;
 
     // Phase 9.1 depth-aware termination: read the HDR depth at this
     // pixel and convert to a world-space distance along the view ray.

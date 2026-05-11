@@ -132,6 +132,7 @@ fn cloud_params_layout_matches_wgsl() {
             ("cloud_steps", std::mem::offset_of!(CloudParamsGpu, cloud_steps) as u32),
             ("multi_scatter_octaves", std::mem::offset_of!(CloudParamsGpu, multi_scatter_octaves) as u32),
             ("cloud_layer_count", std::mem::offset_of!(CloudParamsGpu, cloud_layer_count) as u32),
+            ("temporal_jitter", std::mem::offset_of!(CloudParamsGpu, temporal_jitter) as u32),
         ],
     );
 }

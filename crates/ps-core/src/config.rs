@@ -316,6 +316,16 @@ pub struct CloudsTuning {
     pub reprojection: String,
     /// Pause `simulated_seconds` advancing for screenshot framing.
     pub freeze_time: bool,
+    /// Phase 13.9 — optional per-frame temporal rotation of the cloud
+    /// march's spatial blue-noise jitter. Off by default; default v1
+    /// behaviour is spatial-only blue noise (which does not shimmer
+    /// when paused). When on, the lookup XORs with a frame-index-
+    /// derived offset producing a 16-frame rotation cycle, providing
+    /// the input distribution a downstream TAA pass needs to converge.
+    /// Auto-disabled when `freeze_time = true` so paused screenshots
+    /// remain deterministic regardless of this toggle.
+    #[serde(default)]
+    pub temporal_jitter: bool,
 }
 
 impl Default for CloudsTuning {
@@ -328,6 +338,7 @@ impl Default for CloudsTuning {
             powder_strength: 1.0,
             reprojection: "off".into(),
             freeze_time: false,
+            temporal_jitter: false,
         }
     }
 }

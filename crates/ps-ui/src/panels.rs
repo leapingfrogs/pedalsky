@@ -715,6 +715,22 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .ui(ui)
             .changed();
         tuning_changed |= ui.checkbox(&mut c.freeze_time, "Freeze time").changed();
+        // Phase 13.9 — optional temporal rotation of the spatial blue
+        // noise. Auto-gated by `freeze_time` engine-side, but show the
+        // disabled state here so the user understands why the toggle
+        // isn't taking effect while paused.
+        ui.add_enabled_ui(!c.freeze_time, |ui| {
+            tuning_changed |= ui
+                .checkbox(&mut c.temporal_jitter, "Temporal jitter (TAA prep)")
+                .on_hover_text(
+                    "Rotate the cloud-march blue-noise lookup with a \
+                     16-frame cycle. Off by default — without a TAA \
+                     pass downstream this looks like obvious per-frame \
+                     noise. Automatically disabled while paused so \
+                     screenshots stay deterministic.",
+                )
+                .changed();
+        });
         if tuning_changed {
             state.pending.config_dirty = true;
         }

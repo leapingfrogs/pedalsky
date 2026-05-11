@@ -10,7 +10,7 @@ pub const MAX_CLOUD_LAYERS: u32 = 8;
 
 /// CPU-side mirror of the WGSL `CloudParams` struct.
 ///
-/// 96 bytes (6 × vec4 blocks); std140 boundary respected. WGSL's
+/// 112 bytes (7 × vec4 blocks); std140 boundary respected. WGSL's
 /// `vec3<f32>` has *alignment* 16 but *size* 12, which means a
 /// following scalar packs into the trailing 4 bytes of the same
 /// 16-byte chunk. The Rust layout below mirrors that packing
@@ -27,6 +27,7 @@ pub const MAX_CLOUD_LAYERS: u32 = 8;
 ///   3  powder_strength, multi_scatter_a, multi_scatter_b, multi_scatter_c
 ///   4  ambient_strength, base_scale_m, detail_scale_m, weather_scale_m
 ///   5  light_steps, cloud_steps, multi_scatter_octaves, cloud_layer_count
+///   6  temporal_jitter + 3 std140 pad scalars  (Phase 13.9)
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable, PartialEq)]
 pub struct CloudParamsGpu {
@@ -82,6 +83,18 @@ pub struct CloudParamsGpu {
     pub multi_scatter_octaves: u32,
     /// Number of valid entries in the layer array.
     pub cloud_layer_count: u32,
+
+    /// Phase 13.9 — when `1`, the cloud march XORs the blue-noise
+    /// sample coords with a frame-index-derived offset (16-frame
+    /// rotation). Default `0`. Off when `freeze_time` so paused
+    /// screenshots stay deterministic.
+    pub temporal_jitter: u32,
+    /// std140 pad — keeps the struct's tail on a vec4 boundary.
+    pub _pad_temporal_jitter_0: u32,
+    /// std140 pad — second of three trailing scalars.
+    pub _pad_temporal_jitter_1: u32,
+    /// std140 pad — third of three trailing scalars.
+    pub _pad_temporal_jitter_2: u32,
 }
 
 impl Default for CloudParamsGpu {
@@ -134,6 +147,11 @@ impl Default for CloudParamsGpu {
             cloud_steps: 192,
             multi_scatter_octaves: 4,
             cloud_layer_count: 0,
+
+            temporal_jitter: 0,
+            _pad_temporal_jitter_0: 0,
+            _pad_temporal_jitter_1: 0,
+            _pad_temporal_jitter_2: 0,
         }
     }
 }
@@ -146,7 +164,9 @@ mod tests {
     #[test]
     fn cloud_params_size_is_16_byte_aligned() {
         assert_eq!(std::mem::size_of::<CloudParamsGpu>() % 16, 0);
-        assert_eq!(std::mem::size_of::<CloudParamsGpu>(), 96);
+        // 96 in v1; bumped to 112 by Phase 13.9 temporal_jitter +
+        // 3 std140 pads.
+        assert_eq!(std::mem::size_of::<CloudParamsGpu>(), 112);
     }
 
     #[test]
