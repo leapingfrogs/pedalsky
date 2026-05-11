@@ -48,6 +48,14 @@ crossbeam-channel = "0.5"
 # File watching
 notify    = "8"
 
+# egui (Phase 10 UI overlay)
+egui            = "0.34"
+egui-wgpu       = "0.34"
+egui-winit      = "0.34"
+
+# HDR EXR screenshot encoder (Phase 10 §10.4)
+exr             = "1"
+
 # Errors
 anyhow    = "1"
 thiserror = "2"

@@ -11,4 +11,6 @@ pub mod spa;
 pub mod tables;
 
 pub use moon::moon_position;
-pub use spa::{sun_position, SunPosition};
+pub use spa::{
+    julian_day_utc, sun_position, sun_position_precise, SunPosition, SunPositionPrecise,
+};

@@ -51,7 +51,9 @@ pub struct GpuContext {
 fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
     let wanted = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::TEXTURE_BINDING_ARRAY
-        | wgpu::Features::FLOAT32_FILTERABLE;
+        | wgpu::Features::FLOAT32_FILTERABLE
+        | wgpu::Features::TIMESTAMP_QUERY
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
     let granted = wanted & adapter_features;
     let missing = wanted - granted;
     if !missing.is_empty() {

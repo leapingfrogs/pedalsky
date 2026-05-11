@@ -1,0 +1,129 @@
+//! Shared UI state — the bridge between panel logic (which writes
+//! edits) and the host frame loop (which reads pending requests and
+//! drives `App::reconfigure`, screenshots, preset I/O).
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Utc};
+use ps_core::Config;
+
+/// Side-channel state populated by panel logic and drained by the host.
+#[derive(Default)]
+pub struct UiPending {
+    /// Set when any slider edit changed `live_config`. Host calls
+    /// `App::reconfigure(&live_config, &gpu)` and clears the flag.
+    pub config_dirty: bool,
+
+    /// Pending world-clock edit: jump to this UTC.
+    pub set_world_utc: Option<DateTime<Utc>>,
+    /// Pending time-scale change (× wall-clock seconds → simulated).
+    pub set_time_scale: Option<f64>,
+    /// Pending pause state.
+    pub set_paused: Option<bool>,
+    /// Pending observer (latitude, longitude) override in degrees.
+    pub set_lat_lon: Option<(f64, f64)>,
+
+    /// User clicked Screenshot tonemapped (PNG). Host writes the
+    /// post-tonemap swapchain to `paths.screenshot_dir`.
+    pub screenshot_png: bool,
+    /// User clicked Screenshot HDR (EXR). Host writes the linear HDR
+    /// target to `paths.screenshot_dir`.
+    pub screenshot_exr: bool,
+
+    /// Load scene from file. Host re-parses and re-synthesises.
+    pub load_scene: Option<PathBuf>,
+    /// Save current state to file. Host writes both pedalsky.toml and
+    /// the scene TOML.
+    pub save_scene: Option<PathBuf>,
+}
+
+/// Read-only frame stats the host pushes into the UI for the Debug panel.
+#[derive(Default, Clone, Debug)]
+pub struct UiFrameStats {
+    /// Wall-clock ms last frame.
+    pub frame_ms: f32,
+    /// Frames per second over the last accumulator window.
+    pub fps: f32,
+    /// Per-pass GPU timestamps in milliseconds: `(pass_name, ms)`.
+    /// Empty when timestamp queries are unsupported or unavailable
+    /// for the most recent frame.
+    pub gpu_passes: Vec<(String, f32)>,
+}
+
+/// World read-out the host pushes each frame for the World panel.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct UiWorldReadout {
+    /// Sun altitude above the local horizon, degrees.
+    pub sun_alt_deg: f64,
+    /// Sun azimuth (from north, clockwise), degrees.
+    pub sun_az_deg: f64,
+    /// Moon altitude above the local horizon, degrees.
+    pub moon_alt_deg: f64,
+    /// Moon azimuth (from north, clockwise), degrees.
+    pub moon_az_deg: f64,
+    /// Julian day for the current simulated UTC.
+    pub julian_day: f64,
+}
+
+/// The full shared state cell.
+pub struct UiState {
+    /// Live mutable copy of the engine config. Panel logic edits this;
+    /// the host reads it on `config_dirty`.
+    pub live_config: Config,
+    /// Pending one-shot requests + flags.
+    pub pending: UiPending,
+    /// Latest frame stats (host writes per frame).
+    pub frame_stats: UiFrameStats,
+    /// Latest world read-out (host writes per frame).
+    pub world_readout: UiWorldReadout,
+    /// Cached debug-panel selections (LUT viewer modes etc.).
+    pub debug: UiDebugSelection,
+}
+
+/// Debug-panel toggles that don't belong in `Config`.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct UiDebugSelection {
+    /// Which LUT viewer to show full-screen, 0 = none.
+    pub lut_viewer_mode: u32,
+    /// AP LUT depth slice 0..1.
+    pub ap_depth_slice: f32,
+    /// Pixel coordinate for the probe-point read-out.
+    pub probe_pixel: (u32, u32),
+    /// Latest probe transmittance (RGB) from the previous frame, written
+    /// by the host for display in the panel.
+    pub probe_transmittance: [f32; 3],
+}
+
+impl UiState {
+    /// Construct from an initial config.
+    pub fn new(config: Config) -> Self {
+        Self {
+            live_config: config,
+            pending: UiPending::default(),
+            frame_stats: UiFrameStats::default(),
+            world_readout: UiWorldReadout::default(),
+            debug: UiDebugSelection::default(),
+        }
+    }
+}
+
+/// Shared handle threaded between the UI subsystem and the host. Cheap
+/// to clone (internal Arc).
+#[derive(Clone)]
+pub struct UiHandle {
+    inner: Arc<Mutex<UiState>>,
+}
+
+impl UiHandle {
+    /// Construct.
+    pub fn new(initial_config: Config) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(UiState::new(initial_config))),
+        }
+    }
+    /// Lock the shared state. Panic on poisoning.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, UiState> {
+        self.inner.lock().expect("UiState lock poisoned")
+    }
+}

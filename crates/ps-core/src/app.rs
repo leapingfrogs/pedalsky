@@ -155,13 +155,59 @@ impl AppBuilder {
         subsystem_min_stage.sort_by_key(|(_, stage)| *stage);
         let prepare_order: Vec<usize> = subsystem_min_stage.into_iter().map(|(i, _)| i).collect();
 
+        // Phase 10 GPU-timestamp infrastructure. Allocate up to a small
+        // ceiling (>= current pass count, with headroom for runtime
+        // reconfigure adding passes). Skip silently when the GPU lacks
+        // the required feature.
+        let timings = build_timings(gpu, passes.len());
+
         Ok(App {
             subsystems,
             passes,
             prepare_order,
             factories: self.factories,
+            timings,
         })
     }
+}
+
+const TIMING_CAP_PADDING: u32 = 8;
+
+fn build_timings(gpu: &GpuContext, pass_count: usize) -> Option<TimingsState> {
+    let features = gpu.device.features();
+    if !features.contains(wgpu::Features::TIMESTAMP_QUERY)
+        || !features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
+    {
+        return None;
+    }
+    let capacity_passes = (pass_count as u32 + TIMING_CAP_PADDING).max(8);
+    let capacity = capacity_passes * 2;
+    let query_set = gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+        label: Some("ps-core::frame-timings"),
+        ty: wgpu::QueryType::Timestamp,
+        count: capacity,
+    });
+    let buf_size = (capacity as u64) * std::mem::size_of::<u64>() as u64;
+    let resolve_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ps-core::frame-timings-resolve"),
+        size: buf_size,
+        usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ps-core::frame-timings-staging"),
+        size: buf_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    Some(TimingsState {
+        query_set,
+        resolve_buf,
+        staging_buf,
+        last_durations_s: std::sync::Mutex::new(Vec::new()),
+        period_ns: gpu.queue.get_timestamp_period(),
+        capacity,
+    })
 }
 
 /// The assembled application. Holds the subsystem list (used for
@@ -173,6 +219,28 @@ pub struct App {
     passes: Vec<RegisteredPass>,
     prepare_order: Vec<usize>,
     factories: Vec<Box<dyn SubsystemFactory>>,
+    /// Phase 10: GPU timestamp infrastructure for per-pass profiling.
+    /// `None` when the device doesn't expose
+    /// `Features::TIMESTAMP_QUERY_INSIDE_ENCODERS`.
+    timings: Option<TimingsState>,
+}
+
+struct TimingsState {
+    query_set: wgpu::QuerySet,
+    /// Tightly packed `u64` resolved timestamps. Capacity = 2 * passes.
+    resolve_buf: wgpu::Buffer,
+    /// MAP_READ staging buffer copied from `resolve_buf` each frame.
+    staging_buf: wgpu::Buffer,
+    /// Last drained frame's per-pass durations in seconds, paired with
+    /// pass names. The host reads via `App::gpu_timings` and pushes
+    /// into the UI.
+    last_durations_s: std::sync::Mutex<Vec<(String, f32)>>,
+    /// Nanoseconds-per-tick conversion (queue.get_timestamp_period() returns f32 ns).
+    period_ns: f32,
+    /// Number of slots reserved in the query set (= 2 × passes registered
+    /// at App-build time). The pass list can change on `reconfigure`; the
+    /// extra slots stay unused on shrink and we cap at construction time.
+    capacity: u32,
 }
 
 impl App {
@@ -190,10 +258,111 @@ impl App {
         for &i in &self.prepare_order {
             self.subsystems[i].prepare(prepare_ctx);
         }
-        for pass in &self.passes {
+
+        // Phase 10: per-pass GPU timestamp writes.
+        let timings_active = self
+            .timings
+            .as_ref()
+            .map(|t| (self.passes.len() as u32 * 2) <= t.capacity)
+            .unwrap_or(false);
+
+        let mut pass_names: Vec<&'static str> = Vec::with_capacity(self.passes.len());
+
+        for (idx, pass) in self.passes.iter().enumerate() {
             tracing::trace!(target: "ps_core::app", pass = pass.name, stage = ?pass.stage, "running pass");
+            if timings_active {
+                if let Some(t) = &self.timings {
+                    encoder.write_timestamp(&t.query_set, (idx as u32) * 2);
+                }
+            }
             (pass.run)(encoder, render_ctx);
+            if timings_active {
+                if let Some(t) = &self.timings {
+                    encoder.write_timestamp(&t.query_set, (idx as u32) * 2 + 1);
+                }
+            }
+            pass_names.push(pass.name);
         }
+
+        // Resolve the query set into the resolve buffer and stage for
+        // the host's next-frame read-back.
+        if timings_active {
+            if let Some(t) = &self.timings {
+                let n = self.passes.len() as u32 * 2;
+                encoder.resolve_query_set(&t.query_set, 0..n, &t.resolve_buf, 0);
+                encoder.copy_buffer_to_buffer(
+                    &t.resolve_buf,
+                    0,
+                    &t.staging_buf,
+                    0,
+                    n as u64 * std::mem::size_of::<u64>() as u64,
+                );
+                // Stash the names for the upcoming read-back; the host
+                // calls `drain_gpu_timings` after queue.submit.
+                t.last_durations_s
+                    .lock()
+                    .expect("timings names lock")
+                    .clear();
+                for name in &pass_names {
+                    t.last_durations_s
+                        .lock()
+                        .expect("timings names lock")
+                        .push((name.to_string(), 0.0));
+                }
+            }
+        }
+    }
+
+    /// Phase 10 — read back the previous frame's GPU timestamps. Call
+    /// after `queue.submit(...)` (blocks on `device.poll`). Returns the
+    /// per-pass durations in milliseconds, or an empty Vec when
+    /// timestamps are unsupported / haven't run yet.
+    pub fn drain_gpu_timings(&self, gpu: &GpuContext) -> Vec<(String, f32)> {
+        let Some(t) = &self.timings else { return Vec::new() };
+        let names = t
+            .last_durations_s
+            .lock()
+            .expect("timings names lock")
+            .clone();
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let n_passes = names.len();
+        let bytes_needed = (n_passes * 2 * std::mem::size_of::<u64>()) as u64;
+        let slice = t.staging_buf.slice(..bytes_needed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        if gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .is_err()
+        {
+            return Vec::new();
+        }
+        if rx.recv().ok().and_then(|r| r.ok()).is_none() {
+            return Vec::new();
+        }
+        let bytes = slice.get_mapped_range().to_vec();
+        t.staging_buf.unmap();
+        let mut out = Vec::with_capacity(n_passes);
+        for i in 0..n_passes {
+            let begin = u64::from_le_bytes(
+                bytes[i * 16..i * 16 + 8]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
+            let end = u64::from_le_bytes(
+                bytes[i * 16 + 8..i * 16 + 16]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
+            let ticks = end.saturating_sub(begin) as f32;
+            let ms = ticks * t.period_ns / 1_000_000.0;
+            out.push((names[i].0.clone(), ms));
+        }
+        out
     }
 
     /// Apply a new `Config` to every live subsystem.

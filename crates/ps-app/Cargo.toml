@@ -21,6 +21,8 @@ ps-precip.workspace      = true
 ps-synthesis.workspace   = true
 ps-backdrop.workspace    = true
 ps-tint.workspace        = true
+ps-ui.workspace          = true
+toml.workspace           = true
 
 wgpu.workspace      = true
 winit.workspace     = true

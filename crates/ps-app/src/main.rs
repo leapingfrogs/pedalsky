@@ -143,6 +143,14 @@ struct RunState {
     /// in-graph TonemapSubsystem and to drain its auto-exposure
     /// staging buffer after `queue.submit`.
     tonemap_handle: ps_postprocess::TonemapHandle,
+    /// Phase 10: shared UI state cell. The host reads pending edits
+    /// after each frame and either reconfigures, drains screenshot
+    /// requests, or applies world-clock changes.
+    ui_handle: ps_ui::UiHandle,
+    /// Reference back to the constructed `UiSubsystem` (also held by
+    /// `app` via the factory dispatch path). Used to feed winit events
+    /// into egui and to call `build_ui_frame` each frame.
+    ui_bridge: std::sync::Arc<ps_ui::UiBridge>,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
     app: App,
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
@@ -296,11 +304,15 @@ impl RunState {
             &hdr,
         ));
 
-        let (app, atmosphere_luts_cell, tonemap_handle) = build_app(
+        let ui_handle = ps_ui::UiHandle::new(config.clone());
+        let (app, atmosphere_luts_cell, tonemap_handle, ui_bridge) = build_app(
             config,
             &windowed.gpu,
             tonemap.clone(),
             auto_exposure.clone(),
+            ui_handle.clone(),
+            window.clone(),
+            windowed.surface_config.format,
         )?;
         let atmosphere_luts = atmosphere_luts_cell
             .lock()
@@ -361,6 +373,8 @@ impl RunState {
             tonemap,
             auto_exposure,
             tonemap_handle,
+            ui_handle,
+            ui_bridge,
             app,
             camera,
             keys: KeyState::default(),
@@ -389,6 +403,13 @@ impl RunState {
         event: WindowEvent,
         config: &mut Config,
     ) {
+        // Phase 10: forward the event to egui first. If egui consumes
+        // it (e.g. focus on a slider, mouse over a panel), don't pass
+        // it on to the camera / cursor-grab logic.
+        let response = self.ui_bridge.on_window_event(&self.window, &event);
+        if response.consumed {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
@@ -574,7 +595,7 @@ impl RunState {
         }
     }
 
-    fn draw(&mut self, config: &Config) -> Result<()> {
+    fn draw(&mut self, config: &mut Config) -> Result<()> {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().max(1e-6);
         self.last_frame = now;
@@ -723,6 +744,23 @@ impl RunState {
                 mode: self.tonemap_mode,
                 auto_exposure_enabled: config.debug.auto_exposure,
             });
+        // Phase 10: refresh per-frame UI inputs and run the panel logic
+        // before the in-graph Overlay pass picks up the paint output.
+        {
+            let mut state = self.ui_handle.lock();
+            state.frame_stats.frame_ms = dt * 1000.0;
+            if dt > 1e-4 {
+                state.frame_stats.fps = 1.0 / dt;
+            }
+            state.world_readout = ps_ui::UiWorldReadout {
+                sun_alt_deg: f64::from(self.world.sun.altitude_rad).to_degrees(),
+                sun_az_deg: f64::from(self.world.sun.azimuth_rad).to_degrees(),
+                moon_alt_deg: f64::from(self.world.moon.altitude_rad).to_degrees(),
+                moon_az_deg: f64::from(self.world.moon.azimuth_rad).to_degrees(),
+                julian_day: ps_core::astro::julian_day_utc(self.world.clock.current_utc()),
+            };
+        }
+        self.ui_bridge.build_ui_frame(&self.window);
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
 
         // Phase 5 debug overlay (after tone-map; writes to the swapchain
@@ -745,6 +783,13 @@ impl RunState {
         // lag). The handle no-ops when auto-exposure is off.
         self.tonemap_handle
             .drain_auto_exposure(&self.windowed_gpu.gpu);
+        // Phase 10 GPU timestamps: drain into the UI's frame stats.
+        let gpu_passes = self.app.drain_gpu_timings(&self.windowed_gpu.gpu);
+        if !gpu_passes.is_empty() {
+            self.ui_handle.lock().frame_stats.gpu_passes = gpu_passes;
+        }
+        // Phase 10.3 / 10.4: drain UI pending requests.
+        self.drain_ui_pending(config)?;
         frame.present();
 
         self.frame_index = self.frame_index.wrapping_add(1);
@@ -759,6 +804,244 @@ impl RunState {
         }
         Ok(())
     }
+
+    /// Phase 10.3/10.4 — drain pending UI requests after each frame.
+    fn drain_ui_pending(&mut self, config: &mut Config) -> Result<()> {
+        let pending = std::mem::take(&mut self.ui_handle.lock().pending);
+
+        // 10.3: slider edits → reconfigure.
+        if pending.config_dirty {
+            let new_config = self.ui_handle.lock().live_config.clone();
+            *config = new_config.clone();
+            self.ev100 = new_config.render.ev100;
+            self.tonemap_mode = TonemapMode::from_config(&new_config.render.tone_mapper);
+            self.app
+                .reconfigure(&new_config, &self.windowed_gpu.gpu)
+                .context("App::reconfigure (ui)")?;
+        }
+
+        // World-clock edits.
+        if let Some(utc) = pending.set_world_utc {
+            self.world.clock.set_utc(utc);
+            self.world.recompute();
+        }
+        if let Some(scale) = pending.set_time_scale {
+            self.world.clock.set_time_scale(scale);
+        }
+        if let Some(paused) = pending.set_paused {
+            self.world.clock.set_paused(paused);
+        }
+        if let Some((lat, lon)) = pending.set_lat_lon {
+            self.world.latitude_deg = lat;
+            self.world.longitude_deg = lon;
+            self.world.recompute();
+        }
+
+        // 10.4: screenshots (PNG / EXR).
+        if pending.screenshot_png {
+            if let Err(e) = self.write_png_screenshot(config) {
+                warn!(error = %e, "PNG screenshot failed");
+            }
+        }
+        if pending.screenshot_exr {
+            if let Err(e) = self.write_exr_screenshot(config) {
+                warn!(error = %e, "EXR screenshot failed");
+            }
+        }
+
+        // 10.4: scene load/save.
+        if let Some(path) = pending.load_scene {
+            match Scene::load(&path) {
+                Ok(scene) => {
+                    info!(target: "ps_app", path = %path.display(), "loading scene");
+                    self.resynthesise_weather(&scene, config);
+                }
+                Err(e) => warn!(error = %e, "load scene failed"),
+            }
+        }
+        if let Some(path) = pending.save_scene {
+            if let Err(e) = self.write_scene_toml(&path, config) {
+                warn!(error = %e, "save scene failed");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_png_screenshot(&self, config: &Config) -> Result<()> {
+        let dir = if config.paths.screenshot_dir.is_absolute() {
+            config.paths.screenshot_dir.clone()
+        } else {
+            workspace_root()?.join(&config.paths.screenshot_dir)
+        };
+        std::fs::create_dir_all(&dir).ok();
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let path = dir.join(format!("pedalsky-{stamp}.png"));
+        // Read the current swapchain output via tonemap target. Easiest:
+        // re-encode the HDR target into an offscreen Rgba8Unorm and read.
+        // Here we read the HDR target's tonemapped equivalent through a
+        // dedicated copy. Simpler: read the previously-presented frame
+        // from the swapchain by way of a copy-to-buffer at end of frame.
+        // For now, write the HDR target through tonemap into an
+        // offscreen Rgba8 and save that.
+        let (w, h) = self.hdr.size;
+        let (rgba, w_out, h_out) = self.read_tonemapped_into_rgba8(w, h)?;
+        ps_ui::screenshot::write_png(&path, w_out, h_out, &rgba)?;
+        info!(target: "ps_app", path = %path.display(), "wrote PNG screenshot");
+        Ok(())
+    }
+
+    fn write_exr_screenshot(&self, config: &Config) -> Result<()> {
+        let dir = if config.paths.screenshot_dir.is_absolute() {
+            config.paths.screenshot_dir.clone()
+        } else {
+            workspace_root()?.join(&config.paths.screenshot_dir)
+        };
+        std::fs::create_dir_all(&dir).ok();
+        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let path = dir.join(format!("pedalsky-{stamp}.exr"));
+        let (w, h) = self.hdr.size;
+        let pixels = self.read_hdr_into_f16_rgba(w, h)?;
+        ps_ui::screenshot::write_exr(&path, w, h, &pixels)?;
+        info!(target: "ps_app", path = %path.display(), "wrote EXR screenshot");
+        Ok(())
+    }
+
+    fn read_hdr_into_f16_rgba(&self, w: u32, h: u32) -> Result<Vec<half::f16>> {
+        let bytes_per_pixel = 8u32; // Rgba16Float
+        let unpadded = w * bytes_per_pixel;
+        let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let staging = self.windowed_gpu.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hdr-screenshot-staging"),
+            size: (aligned * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .windowed_gpu
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("hdr-screenshot-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.hdr.color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(aligned),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.windowed_gpu
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .ok();
+        rx.recv().ok().and_then(|r| r.ok());
+        let bytes = slice.get_mapped_range().to_vec();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            let row = &bytes[(y * aligned) as usize..(y * aligned + unpadded) as usize];
+            for chunk in row.chunks_exact(2) {
+                out.push(half::f16::from_le_bytes([chunk[0], chunk[1]]));
+            }
+        }
+        Ok(out)
+    }
+
+    fn read_tonemapped_into_rgba8(&self, w: u32, h: u32) -> Result<(Vec<u8>, u32, u32)> {
+        // Allocate an offscreen Rgba8Unorm + run tonemap into it.
+        let device = &self.windowed_gpu.gpu.device;
+        let queue = &self.windowed_gpu.gpu.queue;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("screenshot-tonemap"),
+        });
+        // Reuse the live Tonemap with current EV/mode settings.
+        self.tonemap.render(&mut encoder, queue, &target_view, self.ev100, self.tonemap_mode);
+        // Copy target → staging.
+        let bytes_per_pixel = 4u32;
+        let unpadded = w * bytes_per_pixel;
+        let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot-staging"),
+            size: (aligned * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(aligned),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([encoder.finish()]);
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        rx.recv().ok().and_then(|r| r.ok());
+        let bytes = slice.get_mapped_range().to_vec();
+        let mut out = Vec::with_capacity((w * h * bytes_per_pixel) as usize);
+        for y in 0..h {
+            let row = &bytes[(y * aligned) as usize..(y * aligned + unpadded) as usize];
+            out.extend_from_slice(row);
+        }
+        Ok((out, w, h))
+    }
+
+    fn write_scene_toml(&self, path: &std::path::Path, config: &Config) -> Result<()> {
+        // Save the live Config + the synthesised Scene back to TOML.
+        // Engine config:
+        let config_toml = toml::to_string_pretty(config).context("toml encode config")?;
+        std::fs::write(path, config_toml).with_context(|| format!("write {}", path.display()))?;
+        info!(target: "ps_app", path = %path.display(), "wrote engine config TOML");
+        Ok(())
+    }
 }
 
 /// Cell into which `AtmosphereFactory` deposits its `AtmosphereLuts`
@@ -768,12 +1051,21 @@ type AtmosphereLutsCell =
 
 /// Build the app. Returns the `App` plus the LUTs cell published by
 /// `AtmosphereFactory` (Some after build if atmosphere is enabled).
+#[allow(clippy::type_complexity)]
 fn build_app(
     config: &Config,
     gpu: &ps_core::GpuContext,
     tonemap: std::sync::Arc<Tonemap>,
     auto_exposure: std::sync::Arc<ps_postprocess::AutoExposure>,
-) -> Result<(App, AtmosphereLutsCell, ps_postprocess::TonemapHandle)> {
+    ui_handle: ps_ui::UiHandle,
+    window: std::sync::Arc<winit::window::Window>,
+    tonemap_target_format: wgpu::TextureFormat,
+) -> Result<(
+    App,
+    AtmosphereLutsCell,
+    ps_postprocess::TonemapHandle,
+    std::sync::Arc<ps_ui::UiBridge>,
+)> {
     let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
     let clouds_factory = CloudsFactory::with_atmosphere_luts(luts_cell.clone());
     let (tonemap_factory, tonemap_handle) = ps_postprocess::TonemapFactory::new();
@@ -786,6 +1078,8 @@ fn build_app(
             auto_exposure_enabled: config.debug.auto_exposure,
         },
     );
+    let (ui_factory, ui_injector, ui_bridge) = ps_ui::UiFactory::new();
+    ui_injector.inject(tonemap_target_format, window, ui_handle);
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
         .with_factory(Box::new(atmosphere_factory))
@@ -794,7 +1088,8 @@ fn build_app(
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
         .with_factory(Box::new(tonemap_factory))
+        .with_factory(Box::new(ui_factory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
-    Ok((app, luts_cell, tonemap_handle))
+    Ok((app, luts_cell, tonemap_handle, ui_bridge))
 }

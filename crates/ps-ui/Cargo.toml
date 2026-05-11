@@ -8,4 +8,19 @@ publish.workspace = true
 description = "PedalSky UI overlay (Phase 10: egui)"
 
 [dependencies]
-ps-core.workspace = true
+ps-core.workspace      = true
+wgpu.workspace         = true
+winit.workspace        = true
+glam.workspace         = true
+chrono.workspace       = true
+anyhow.workspace       = true
+tracing.workspace      = true
+bytemuck.workspace     = true
+half.workspace         = true
+serde.workspace        = true
+toml.workspace         = true
+image.workspace        = true
+egui.workspace         = true
+egui-wgpu.workspace    = true
+egui-winit.workspace   = true
+exr.workspace          = true
