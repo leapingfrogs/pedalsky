@@ -484,14 +484,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // (plan §5.2.4 — 32 km linear); samples beyond that clamp.
     let t_cloud = t_weight / max(t_weight_norm, 1e-6);
     if (cloud_alpha > 1e-4) {
+        // The AP LUT is baked with gid.y=0 at screen top (the bake
+        // negates ndc.y when reconstructing view_dir from inv_view_proj).
+        // Sample with raw screen-fractional UV — frag.y/h is 0 at top —
+        // so v=0 reads the row whose stored ray matches this fragment.
         let viewport = frame.viewport_size.xy;
-        let ndc_xy = vec2<f32>(
-            (in.pos.x / viewport.x) * 2.0 - 1.0,
-            1.0 - (in.pos.y / viewport.y) * 2.0,
-        );
         let ap_uvw = vec3<f32>(
-            ndc_xy.x * 0.5 + 0.5,
-            ndc_xy.y * 0.5 + 0.5,
+            in.pos.x / viewport.x,
+            in.pos.y / viewport.y,
             clamp(t_cloud / 32000.0, 0.0, 1.0),
         );
         let ap = textureSampleLevel(aerial_perspective_lut, lut_sampler, ap_uvw, 0.0);
