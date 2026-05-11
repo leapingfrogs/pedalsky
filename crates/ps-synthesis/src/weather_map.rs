@@ -186,7 +186,7 @@ fn hash2(x: i32, y: i32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ps_core::{Clouds, Lightning, Precipitation, Scene, Surface};
+    use ps_core::{Aurora, Clouds, Lightning, Precipitation, Scene, Surface};
 
     fn empty_scene() -> Scene {
         Scene {
@@ -195,6 +195,7 @@ mod tests {
             clouds: Clouds::default(),
             precipitation: Precipitation::default(),
             lightning: Lightning::default(),
+            aurora: Aurora::default(),
         }
     }
 

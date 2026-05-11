@@ -96,6 +96,11 @@ pub struct Scene {
     pub precipitation: Precipitation,
     /// Lightning block (placeholder; Phase 8+ uses it).
     pub lightning: Lightning,
+    /// Phase 12.5 aurora block. Defaults to `kp_index = 0`, which
+    /// gates the subsystem off — pre-12.5 scenes that omit the
+    /// `[aurora]` section render unchanged.
+    #[serde(default)]
+    pub aurora: Aurora,
 }
 
 impl Default for Scene {
@@ -106,6 +111,7 @@ impl Default for Scene {
             clouds: Clouds::default(),
             precipitation: Precipitation::default(),
             lightning: Lightning::default(),
+            aurora: Aurora::default(),
         }
     }
 }
@@ -290,6 +296,52 @@ impl Default for Lightning {
         Self {
             strikes_per_min_per_km2: 0.0,
         }
+    }
+}
+
+/// Phase 12.5 — `[aurora]` block. Solar-activity inputs that drive
+/// the aurora subsystem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Aurora {
+    /// Planetary K-index (0..9). Higher = stronger geomagnetic
+    /// activity → brighter, broader curtains. The default scene
+    /// `Aurora::default()` has `kp_index = 0` so the subsystem
+    /// renders nothing visible unless a scene overrides it.
+    pub kp_index: f32,
+    /// Optional override for the curtain emission scalar in `[0, 1]`.
+    /// `None` (encoded as a negative sentinel) means "derive from
+    /// kp_index". Use this to dial in a specific intensity that
+    /// doesn't follow the kp curve — useful for screenshots.
+    pub intensity_override: f32,
+    /// Predominant emission colour. Real auroras are line-spectrum
+    /// emission so the engine internally mixes three line colours;
+    /// this string biases the mix.
+    /// Accepted: "green", "red", "purple", "mixed".
+    pub predominant_colour: String,
+}
+
+impl Default for Aurora {
+    fn default() -> Self {
+        Self {
+            kp_index: 0.0,
+            intensity_override: -1.0, // sentinel "no override"
+            predominant_colour: "green".into(),
+        }
+    }
+}
+
+/// Map a `predominant_colour` string to a normalised RGB bias used
+/// inside the aurora shader to weight the three emission lines.
+/// Returns the green-weighted default when the string is unrecognised.
+pub fn aurora_colour_bias(name: &str) -> [f32; 3] {
+    match name {
+        "red" => [0.30, 0.20, 0.50],
+        "purple" => [0.20, 0.30, 0.55],
+        "mixed" => [0.55, 0.20, 0.25],
+        // "green" or anything else falls back to the canonical
+        // 557.7 nm O₂ green-dominant aurora.
+        _ => [0.10, 0.85, 0.05],
     }
 }
 

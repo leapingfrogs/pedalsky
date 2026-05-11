@@ -226,6 +226,7 @@ mod tests {
             clouds: ps_core::Clouds::default(),
             precipitation: ps_core::Precipitation::default(),
             lightning: ps_core::Lightning::default(),
+            aurora: ps_core::Aurora::default(),
         }
     }
 

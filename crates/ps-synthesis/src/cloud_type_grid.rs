@@ -139,7 +139,7 @@ impl CloudTypeGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ps_core::{Clouds, Lightning, Precipitation, Surface};
+    use ps_core::{Aurora, Clouds, Lightning, Precipitation, Surface};
 
     fn empty_scene() -> Scene {
         Scene {
@@ -148,6 +148,7 @@ mod tests {
             clouds: Clouds::default(),
             precipitation: Precipitation::default(),
             lightning: Lightning::default(),
+            aurora: Aurora::default(),
         }
     }
 

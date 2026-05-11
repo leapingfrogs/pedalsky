@@ -181,6 +181,9 @@ pub struct RenderConfig {
     /// Phase 12.3 lightning tuning.
     #[serde(default)]
     pub lightning: LightningTuning,
+    /// Phase 12.5 aurora tuning.
+    #[serde(default)]
+    pub aurora: AuroraTuning,
     /// Phase 1 demo: BackdropSubsystem tuning.
     pub backdrop: BackdropTuning,
     /// Phase 1 demo: TintSubsystem tuning.
@@ -201,6 +204,7 @@ impl Default for RenderConfig {
             precip: PrecipTuning::default(),
             godrays: GodraysTuning::default(),
             lightning: LightningTuning::default(),
+            aurora: AuroraTuning::default(),
             backdrop: BackdropTuning::default(),
             tint: TintTuning::default(),
         }
@@ -227,6 +231,9 @@ pub struct SubsystemFlags {
     /// Phase 12.3 lightning subsystem (bolts + cloud illumination).
     #[serde(default = "default_true")]
     pub lightning: bool,
+    /// Phase 12.5 aurora subsystem.
+    #[serde(default = "default_true")]
+    pub aurora: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
@@ -247,6 +254,7 @@ impl Default for SubsystemFlags {
             wet_surface: false,
             godrays: true,
             lightning: true,
+            aurora: true,
             backdrop: true,
             tint: false,
         }
@@ -400,6 +408,49 @@ impl Default for LightningTuning {
             max_active_strikes: 8,
             bolt_peak_emission: 5.0e8,
             illumination_radius_m: 8000.0,
+        }
+    }
+}
+
+/// Phase 12.5 aurora tuning. The trigger inputs (kp_index,
+/// predominant_colour) come from the scene's `[aurora]` block; this
+/// block carries engine-side render parameters.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AuroraTuning {
+    /// Number of march steps along each view ray through the
+    /// curtain field. Auroras are optically thin so 4..16 is
+    /// plenty; the default trades a tiny amount of banding for
+    /// cheap shading.
+    pub march_steps: u32,
+    /// Peak emission scalar at the brightest point of the curtain
+    /// volume, in cd/m²·sr proxy units. Real auroras peak around
+    /// 10..1000 R (rayleighs); we parameterise here as a luminance
+    /// directly in the engine's HDR space.
+    pub peak_emission: f32,
+    /// Speed (Hz) of the slow noise rotation that drives curtain
+    /// shimmer. 0 = static. Defaults to a slow drift.
+    pub motion_hz: f32,
+    /// Lower latitude bound (absolute degrees) below which the
+    /// subsystem is gated off entirely.
+    pub min_latitude_abs_deg: f32,
+    /// Latitude (absolute degrees) at which the gate ramps to full
+    /// intensity. Real auroral oval peaks at 60–75°.
+    pub peak_latitude_abs_deg: f32,
+    /// Latitude (absolute degrees) above which intensity decays
+    /// back toward zero (polar cap).
+    pub fade_latitude_abs_deg: f32,
+}
+
+impl Default for AuroraTuning {
+    fn default() -> Self {
+        Self {
+            march_steps: 8,
+            peak_emission: 1500.0,
+            motion_hz: 0.05,
+            min_latitude_abs_deg: 50.0,
+            peak_latitude_abs_deg: 65.0,
+            fade_latitude_abs_deg: 80.0,
         }
     }
 }

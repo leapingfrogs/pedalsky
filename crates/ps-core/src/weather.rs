@@ -236,6 +236,16 @@ pub struct WeatherState {
     /// Lives here so `LightningSubsystem::prepare` can read it via
     /// `ctx.weather` without needing a separate scene reference.
     pub scene_strikes_per_min_per_km2: f32,
+    /// Phase 12.5 — aurora inputs from the scene, plumbed here so
+    /// `AuroraSubsystem::prepare` can read them via `ctx.weather`.
+    pub scene_aurora_kp: f32,
+    /// `intensity_override` field from `Scene.aurora`. Negative ↔
+    /// "no override; derive from kp_index".
+    pub scene_aurora_intensity_override: f32,
+    /// `predominant_colour` mapped to a normalised RGB bias by
+    /// `aurora_colour_bias`. Stored as 4 floats so it lives next to
+    /// the other scene-aurora scalars without an extra binding.
+    pub scene_aurora_colour_bias: [f32; 4],
 }
 
 impl WeatherState {
@@ -395,6 +405,9 @@ impl WeatherState {
             cloud_layers_buffer,
             cloud_layer_count: 0,
             scene_strikes_per_min_per_km2: 0.0,
+            scene_aurora_kp: 0.0,
+            scene_aurora_intensity_override: -1.0,
+            scene_aurora_colour_bias: [0.10, 0.85, 0.05, 0.0],
         }
     }
 }

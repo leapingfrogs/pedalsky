@@ -149,5 +149,11 @@ pub fn synthesise(
         cloud_layers_buffer,
         cloud_layer_count,
         scene_strikes_per_min_per_km2: scene.lightning.strikes_per_min_per_km2,
+        scene_aurora_kp: scene.aurora.kp_index,
+        scene_aurora_intensity_override: scene.aurora.intensity_override,
+        scene_aurora_colour_bias: {
+            let bias = ps_core::aurora_colour_bias(&scene.aurora.predominant_colour);
+            [bias[0], bias[1], bias[2], 0.0]
+        },
     })
 }
