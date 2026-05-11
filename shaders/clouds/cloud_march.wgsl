@@ -363,6 +363,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sigma_t = params.sigma_s + params.sigma_a;
     let sun_dir = frame.sun_direction.xyz;
 
+    // Track the luminance-weighted distance along the ray. Used after the
+    // march to sample the aerial-perspective LUT at the cloud's perceived
+    // depth (plan §6.7). Falls back to the segment midpoint when the
+    // weighted sum is degenerate.
+    var t_weight: f32 = 0.0;
+    var t_weight_norm: f32 = 0.0;
+
     for (var i = 0u; i < layer_count; i = i + 1u) {
         let lh = hits[i];
         if (lh.hit == 0u) { continue; }
@@ -427,7 +434,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 let local_sigma = max(density * sigma_t, 1e-6);
                 let sample_t = exp(-vec3<f32>(local_sigma) * step);
                 let s_int = (in_scatter - in_scatter * sample_t) / vec3<f32>(local_sigma);
-                luminance = luminance + transmittance * s_int;
+                let step_lum = transmittance * s_int;
+                let step_weight = dot(step_lum, vec3<f32>(0.2126, 0.7152, 0.0722));
+                luminance = luminance + step_lum;
+                t_weight = t_weight + step_weight * t;
+                t_weight_norm = t_weight_norm + step_weight;
                 transmittance = transmittance * sample_t;
             }
 
@@ -438,5 +449,32 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Composition target: premultiplied luminance + scalar opacity.
     let t_lum = dot(transmittance, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return vec4<f32>(luminance, 1.0 - t_lum);
+    let cloud_alpha = 1.0 - t_lum;
+
+    // Aerial perspective on the cloud luminance (plan §6.7). Sample the
+    // AP LUT at the luminance-weighted depth so the haze is applied where
+    // the cloud's light actually came from. AP_FAR_M matches the bake
+    // (plan §5.2.4 — 32 km linear); samples beyond that clamp.
+    let t_cloud = t_weight / max(t_weight_norm, 1e-6);
+    if (cloud_alpha > 1e-4) {
+        let viewport = frame.viewport_size.xy;
+        let ndc_xy = vec2<f32>(
+            (in.pos.x / viewport.x) * 2.0 - 1.0,
+            1.0 - (in.pos.y / viewport.y) * 2.0,
+        );
+        let ap_uvw = vec3<f32>(
+            ndc_xy.x * 0.5 + 0.5,
+            ndc_xy.y * 0.5 + 0.5,
+            clamp(t_cloud / 32000.0, 0.0, 1.0),
+        );
+        let ap = textureSampleLevel(aerial_perspective_lut, lut_sampler, ap_uvw, 0.0);
+        // Premultiplied form: cloud_lum is already pre-multiplied by
+        // cloud_alpha along the ray. Attenuate by AP transmittance, then
+        // add AP inscatter scaled by cloud_alpha so the haze only affects
+        // the opaque parts of the cloud (the transparent parts let the
+        // sky through, and the sky pass already has its own atmospheric
+        // contribution baked in).
+        return vec4<f32>(luminance * ap.a + ap.rgb * cloud_alpha, cloud_alpha);
+    }
+    return vec4<f32>(luminance, cloud_alpha);
 }
