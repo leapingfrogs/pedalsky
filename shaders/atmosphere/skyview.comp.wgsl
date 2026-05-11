@@ -76,8 +76,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let below_range = PI - zenith_horizon_angle;
         vza = zenith_horizon_angle + coord * coord * below_range;
     }
-    // U → azimuth offset from the sun.
-    let azimuth = uv.x * 2.0 * PI;
+    // U is the azimuth offset *from the sun* (Hillaire 2020). The
+    // stored view_dir's absolute azimuth is therefore the sun's
+    // azimuth plus uv.x*2π, so the sky shader's `(view_az - sun_az)`
+    // lookup recovers the same value.
+    let sun_dir = frame.sun_direction.xyz;
+    let sun_az = atan2(sun_dir.x, sun_dir.z);
+    let azimuth = sun_az + uv.x * 2.0 * PI;
 
     // Build the view direction in atmosphere-local frame.  vza is the
     // angle from local zenith (+Y), azimuth is around the up axis.
@@ -86,10 +91,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cos_v = cos(vza);
     let sin_v = sin(vza);
     let view_dir = vec3<f32>(sin_v * sin(azimuth), cos_v, sin_v * cos(azimuth));
-
-    // Sun direction in atmosphere-local frame is the same as world-space
-    // since translation doesn't change directions.
-    let sun_dir = frame.sun_direction.xyz;
     let cos_theta = dot(view_dir, sun_dir);
     let phase_r = phase_rayleigh(cos_theta);
     let phase_m = phase_mie(cos_theta, world.mie_g);
