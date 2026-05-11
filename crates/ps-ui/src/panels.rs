@@ -795,8 +795,31 @@ fn wet_surface_panel(ui: &mut egui::Ui, state: &mut UiState) {
             return;
         };
         let mut new_scene = scene.clone();
-        let w = &mut new_scene.surface.wetness;
         let mut any = false;
+
+        // Phase 13.4 — surface material picker. Lives in this
+        // panel because the dry / wet PBR paths and the puddle
+        // appearance all depend on the chosen palette/roughness/F0.
+        ui.horizontal(|ui| {
+            ui.label("Material");
+            for (label, value) in [
+                ("Grass", ps_core::SurfaceMaterial::Grass),
+                ("BareSoil", ps_core::SurfaceMaterial::BareSoil),
+                ("Tarmac", ps_core::SurfaceMaterial::Tarmac),
+                ("Sand", ps_core::SurfaceMaterial::Sand),
+                ("WaterEdge", ps_core::SurfaceMaterial::WaterEdge),
+            ] {
+                let selected = new_scene.surface.material == value;
+                if ui.selectable_label(selected, label).clicked()
+                    && new_scene.surface.material != value
+                {
+                    new_scene.surface.material = value;
+                    any = true;
+                }
+            }
+        });
+
+        let w = &mut new_scene.surface.wetness;
         any |= Slider::new(&mut w.ground_wetness, 0.0..=1.0)
             .text("ground_wetness")
             .max_decimals(4)

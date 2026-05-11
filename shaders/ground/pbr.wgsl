@@ -103,14 +103,63 @@ fn voronoi(p: vec2<f32>, cell_size_m: f32) -> vec2<u32> {
     return vec2<u32>(hash21(best), u32(min_d2 * 65535.0));
 }
 
-fn voronoi_palette(cell_id: u32) -> vec3<f32> {
+/// Phase 13.4 — material indices (must match
+/// `ps_core::SurfaceMaterial::as_u32`).
+const MAT_GRASS:      u32 = 0u;
+const MAT_BARE_SOIL:  u32 = 1u;
+const MAT_TARMAC:     u32 = 2u;
+const MAT_SAND:       u32 = 3u;
+const MAT_WATER_EDGE: u32 = 4u;
+
+/// Per-material 3-entry Voronoi palette. Picked to give each
+/// material a recognisable hue + slight per-cell variation so the
+/// ground breaks up across distance instead of reading as a flat
+/// colour.
+fn voronoi_palette(cell_id: u32, material: u32) -> vec3<f32> {
     let bucket = cell_id % 3u;
-    if (bucket == 0u) {
-        return vec3<f32>(0.18, 0.18, 0.18);
-    } else if (bucket == 1u) {
-        return vec3<f32>(0.22, 0.20, 0.16);
+    if (material == MAT_BARE_SOIL) {
+        if (bucket == 0u) { return vec3<f32>(0.30, 0.22, 0.14); }
+        if (bucket == 1u) { return vec3<f32>(0.36, 0.27, 0.18); }
+        return vec3<f32>(0.24, 0.18, 0.11);
+    } else if (material == MAT_TARMAC) {
+        if (bucket == 0u) { return vec3<f32>(0.05, 0.05, 0.06); }
+        if (bucket == 1u) { return vec3<f32>(0.07, 0.07, 0.08); }
+        return vec3<f32>(0.04, 0.04, 0.05);
+    } else if (material == MAT_SAND) {
+        if (bucket == 0u) { return vec3<f32>(0.55, 0.48, 0.36); }
+        if (bucket == 1u) { return vec3<f32>(0.62, 0.55, 0.41); }
+        return vec3<f32>(0.50, 0.43, 0.32);
+    } else if (material == MAT_WATER_EDGE) {
+        // Placeholder pending the Phase 13.5 water plane —
+        // reads as a darker blue band; same Voronoi shape but
+        // colour-shifted toward the deep-water sample.
+        if (bucket == 0u) { return vec3<f32>(0.08, 0.18, 0.28); }
+        if (bucket == 1u) { return vec3<f32>(0.06, 0.15, 0.24); }
+        return vec3<f32>(0.10, 0.20, 0.30);
     }
-    return vec3<f32>(0.14, 0.16, 0.18);
+    // MAT_GRASS — the v1 palette, retuned to read as actual grass
+    // (the original palette was a generic grey-tan-cool ground).
+    if (bucket == 0u) { return vec3<f32>(0.10, 0.20, 0.06); }
+    if (bucket == 1u) { return vec3<f32>(0.12, 0.24, 0.08); }
+    return vec3<f32>(0.08, 0.16, 0.05);
+}
+
+/// Per-material base roughness for the dry GGX specular path.
+fn material_roughness(material: u32) -> f32 {
+    if (material == MAT_TARMAC) { return 0.92; }
+    if (material == MAT_SAND) { return 0.78; }
+    if (material == MAT_WATER_EDGE) { return 0.30; }
+    if (material == MAT_BARE_SOIL) { return 0.88; }
+    return 0.85; // grass — the v1 default
+}
+
+/// Per-material dielectric F0 (Fresnel reflectance at normal
+/// incidence). Sand and water-edge are slightly more specular
+/// than the typical 0.04 dielectric.
+fn material_f0(material: u32) -> vec3<f32> {
+    if (material == MAT_SAND) { return vec3<f32>(0.05); }
+    if (material == MAT_WATER_EDGE) { return vec3<f32>(0.08); }
+    return vec3<f32>(0.04);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,16 +474,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sun_dir = frame.sun_direction.xyz;
 
     // Voronoi base albedo, modulated by world ground_albedo so the global
-    // tint slider still applies.
+    // tint slider still applies. Phase 13.4 — palette/roughness/F0
+    // now switch on `surface.material` so each scene's ground reads
+    // distinctly (grass / soil / tarmac / sand / water-edge).
+    let material = u32(surface.material);
     let cell = voronoi(p.xz, 5.0);
-    let palette = voronoi_palette(cell.x);
-    // The palette entries average ~0.18 (a generic ground albedo).
-    // world.ground_albedo acts as a tint: with the default (0.18,0.18,0.18)
-    // it leaves the palette unchanged; brighter values scale up uniformly,
-    // and per-channel values let the user push the ground warmer or cooler.
+    let palette = voronoi_palette(cell.x, material);
+    // The palette entries' luminances vary per-material. The
+    // world.ground_albedo tint is applied as a multiplicative scale
+    // around the v1 reference value (0.18) so the existing global
+    // tint slider keeps working without overriding material colour.
     let base_albedo = palette * (world.ground_albedo.rgb / 0.18);
-    let base_roughness = 0.85;
-    let dielectric_f0 = vec3<f32>(0.04);
+    let base_roughness = material_roughness(material);
+    let dielectric_f0 = material_f0(material);
 
     let wetness = clamp(surface.ground_wetness, 0.0, 1.0);
     let wm = wet_material(base_albedo, base_roughness, wetness);

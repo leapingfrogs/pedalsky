@@ -159,6 +159,18 @@ pub struct SurfaceParams {
     /// (matches `ps_core::PrecipKind` ordering). Stored as `f32` so it
     /// lives inside the same uniform without alignment surprises.
     pub precip_kind: f32,
+    /// Phase 13.4 — surface material index (mirrors
+    /// `SurfaceMaterial::as_u32`). Stored as `f32` to keep the
+    /// uniform a flat block of scalars.
+    pub material: f32,
+    /// std140 padding scalar (1 of 3). std140 aligns the struct to
+    /// a vec4 boundary, so 13 scalars need 3 trailing pads to reach
+    /// the next 16-byte multiple.
+    pub _pad0: f32,
+    /// std140 padding scalar (2 of 3).
+    pub _pad1: f32,
+    /// std140 padding scalar (3 of 3).
+    pub _pad2: f32,
 }
 
 impl Default for SurfaceParams {
@@ -176,6 +188,10 @@ impl Default for SurfaceParams {
             puddle_start: 0.6,
             precip_intensity_mm_per_h: 0.0,
             precip_kind: 0.0,
+            material: 0.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
         }
     }
 }
@@ -429,6 +445,8 @@ mod tests {
         // accidental layout changes are visible in code review.
         assert_eq!(std::mem::size_of::<AtmosphereParams>(), 144);
         assert_eq!(std::mem::size_of::<CloudLayerGpu>(), 32);
-        assert_eq!(std::mem::size_of::<SurfaceParams>(), 48);
+        // Phase 13.4 bumped from 48 → 64 (added `material` +
+        // 3 std140 pad scalars).
+        assert_eq!(std::mem::size_of::<SurfaceParams>(), 64);
     }
 }

@@ -43,7 +43,7 @@ pub use hot_reload::{
 };
 pub use scene::{
     aurora_colour_bias, Aurora, CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind,
-    Precipitation, Scene, SceneError, Surface, Wetness,
+    Precipitation, Scene, SceneError, Surface, SurfaceMaterial, Wetness,
 };
 pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
 pub use weather::{

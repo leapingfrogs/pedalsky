@@ -84,6 +84,10 @@ pub fn synthesise(
             ps_core::PrecipKind::Snow => 2.0,
             ps_core::PrecipKind::Sleet => 3.0,
         },
+        material: scene.surface.material.as_u32() as f32,
+        _pad0: 0.0,
+        _pad1: 0.0,
+        _pad2: 0.0,
     };
 
     // Phase 12.1 — load the gridded coverage once. None when the

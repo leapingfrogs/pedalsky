@@ -134,6 +134,11 @@ pub struct Surface {
     pub wind_speed_mps: f32,
     /// Wetness sub-block (defaulted if absent).
     pub wetness: Wetness,
+    /// Phase 13.4 — surface material. Drives the Voronoi palette,
+    /// base roughness, and Fresnel F0 in the ground PBR shader.
+    /// Defaults to `Grass` so pre-13.4 scenes render unchanged.
+    #[serde(default)]
+    pub material: SurfaceMaterial,
 }
 
 impl Default for Surface {
@@ -146,6 +151,41 @@ impl Default for Surface {
             wind_dir_deg: 240.0,
             wind_speed_mps: 5.0,
             wetness: Wetness::default(),
+            material: SurfaceMaterial::default(),
+        }
+    }
+}
+
+/// Phase 13.4 — discrete surface materials. Each variant maps to a
+/// distinct palette/roughness/F0 in the ground PBR shader. Stored
+/// in `SurfaceParams.material` as a small integer (encoded as `f32`
+/// to share the existing uniform layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SurfaceMaterial {
+    /// Generic green grass — the v1 default.
+    #[default]
+    Grass,
+    /// Dry bare soil / plough.
+    BareSoil,
+    /// Asphalt / road surface — darker, rougher than grass.
+    Tarmac,
+    /// Light beach sand — lighter, slightly more specular.
+    Sand,
+    /// Thin blue stripe along the visible horizon — placeholder for
+    /// shoreline scenes pending the Phase 13.5 water plane.
+    WaterEdge,
+}
+
+impl SurfaceMaterial {
+    /// Numeric encoding stored in `SurfaceParams.material` (mirrors
+    /// the WGSL constants in `pbr.wgsl`). Stable across versions.
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Grass => 0,
+            Self::BareSoil => 1,
+            Self::Tarmac => 2,
+            Self::Sand => 3,
+            Self::WaterEdge => 4,
         }
     }
 }
