@@ -34,6 +34,13 @@ pub struct RenderArgs {
     pub width: u32,
     /// Render height in pixels (default 720).
     pub height: u32,
+    /// Camera yaw override in degrees (rotation around Y from due north).
+    /// Default 0 (camera looks north). Useful for headless tests of
+    /// effects like godrays where the sun must be in view.
+    pub yaw_deg: f32,
+    /// Camera pitch override in degrees (rotation about X). Default 5°
+    /// (matches the existing reference scene rendering).
+    pub pitch_deg: f32,
 }
 
 /// Detect `render <args...>` after the binary name. Returns `None`
@@ -48,6 +55,8 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
     let mut time_str: Option<String> = None;
     let mut width: u32 = 1280;
     let mut height: u32 = 720;
+    let mut yaw_deg: f32 = 0.0;
+    let mut pitch_deg: f32 = 5.0;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--scene" => scene = iter.next().map(PathBuf::from),
@@ -58,6 +67,12 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
             }
             "--height" => {
                 height = iter.next().and_then(|s| s.parse().ok()).unwrap_or(720)
+            }
+            "--yaw-deg" => {
+                yaw_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0.0)
+            }
+            "--pitch-deg" => {
+                pitch_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(5.0)
             }
             _ => {
                 eprintln!("unknown render flag: {arg}");
@@ -83,6 +98,8 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
         time,
         width,
         height,
+        yaw_deg,
+        pitch_deg,
     })
 }
 
@@ -127,7 +144,8 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     // could plumb a per-scene camera override.
     let camera = FlyCamera {
         position: glam::Vec3::new(0.0, 1.7, 0.0),
-        pitch: 5_f32.to_radians(),
+        pitch: args.pitch_deg.to_radians(),
+        yaw: args.yaw_deg.to_radians(),
         ..FlyCamera::default()
     };
 

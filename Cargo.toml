@@ -11,6 +11,7 @@ members = [
     "crates/ps-ui",
     "crates/ps-backdrop",
     "crates/ps-tint",
+    "crates/ps-godrays",
     "crates/ps-app",
 ]
 
@@ -78,6 +79,7 @@ ps-postprocess = { path = "crates/ps-postprocess" }
 ps-ui          = { path = "crates/ps-ui" }
 ps-backdrop    = { path = "crates/ps-backdrop" }
 ps-tint        = { path = "crates/ps-tint" }
+ps-godrays     = { path = "crates/ps-godrays" }
 
 [profile.dev]
 opt-level = 1            # debug builds with shader compilation are slow at -O0

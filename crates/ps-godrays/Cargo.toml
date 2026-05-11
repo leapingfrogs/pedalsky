@@ -1,0 +1,16 @@
+[package]
+name = "ps-godrays"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky Phase 12.4: screen-space crepuscular rays / godrays"
+
+[dependencies]
+ps-core.workspace   = true
+wgpu.workspace      = true
+glam.workspace      = true
+bytemuck.workspace  = true
+anyhow.workspace    = true
+tracing.workspace   = true

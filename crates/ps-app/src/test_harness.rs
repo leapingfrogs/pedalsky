@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use glam::Vec4;
 use ps_atmosphere::AtmosphereFactory;
 use ps_backdrop::BackdropFactory;
+use ps_godrays::GodraysFactory;
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, GpuContext, HdrFramebufferImpl, PrepareContext,
@@ -137,6 +138,7 @@ impl HeadlessApp {
             .with_factory(Box::new(clouds_factory))
             .with_factory(Box::new(PrecipFactory))
             .with_factory(Box::new(TintFactory))
+            .with_factory(Box::new(GodraysFactory))
             .with_factory(Box::new(tonemap_factory))
             .build(config, gpu)
             .context("AppBuilder::build")?;

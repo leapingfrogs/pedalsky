@@ -1,0 +1,36 @@
+# Phase 12.4 diagnostic — sun positioned to be in the camera's
+# default view (south-facing, 5° pitch up). Winter solstice noon at
+# Dunblane (56N): sun is at solar noon, due south, low altitude
+# (~10°) — perfect for godrays.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 5.0
+dewpoint_c     = -2.0
+pressure_hpa   = 1015.0
+wind_dir_deg   = 240.0
+wind_speed_mps = 5.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2300.0
+coverage           = 0.5
+density_scale      = 1.0
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

@@ -28,6 +28,7 @@ use ps_atmosphere::{
     AtmosphereFactory,
 };
 use ps_backdrop::BackdropFactory;
+use ps_godrays::GodraysFactory;
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, HdrFramebufferImpl, HotReload, PrepareContext,
@@ -1364,6 +1365,11 @@ fn build_app(
         .with_factory(Box::new(clouds_factory))
         .with_factory(Box::new(PrecipFactory))
         .with_factory(Box::new(TintFactory))
+        // Phase 12.4 — godrays sit at PostProcess (before
+        // tone-map). Built unconditionally; the GodraysFactory
+        // gates on `[render.subsystems].godrays` itself, and the
+        // pass closure no-ops when the sun is off-screen.
+        .with_factory(Box::new(GodraysFactory))
         .with_factory(Box::new(tonemap_factory))
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)

@@ -175,6 +175,9 @@ pub struct RenderConfig {
     pub clouds: CloudsTuning,
     /// Per-subsystem tuning.
     pub precip: PrecipTuning,
+    /// Phase 12.4 godrays tuning.
+    #[serde(default)]
+    pub godrays: GodraysTuning,
     /// Phase 1 demo: BackdropSubsystem tuning.
     pub backdrop: BackdropTuning,
     /// Phase 1 demo: TintSubsystem tuning.
@@ -193,6 +196,7 @@ impl Default for RenderConfig {
             atmosphere: AtmosphereTuning::default(),
             clouds: CloudsTuning::default(),
             precip: PrecipTuning::default(),
+            godrays: GodraysTuning::default(),
             backdrop: BackdropTuning::default(),
             tint: TintTuning::default(),
         }
@@ -213,10 +217,17 @@ pub struct SubsystemFlags {
     pub precipitation: bool,
     /// Phase 7 wet surface.
     pub wet_surface: bool,
+    /// Phase 12.4 screen-space crepuscular rays / godrays.
+    #[serde(default = "default_true")]
+    pub godrays: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
     pub tint: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SubsystemFlags {
@@ -227,6 +238,7 @@ impl Default for SubsystemFlags {
             clouds: true,
             precipitation: false,
             wet_surface: false,
+            godrays: true,
             backdrop: true,
             tint: false,
         }
@@ -307,6 +319,38 @@ impl Default for PrecipTuning {
         Self {
             near_particle_count: 8000,
             far_layers: 3,
+        }
+    }
+}
+
+/// Phase 12.4 godrays tuning. Screen-space crepuscular rays
+/// (Tatarchuk 2007 style): radial blur of the HDR target toward
+/// the sun's screen position, additively blended back into the HDR
+/// target before tone-mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GodraysTuning {
+    /// Number of radial samples per pixel. More samples = smoother
+    /// rays, more GPU cost. 16..256.
+    pub samples: u32,
+    /// Per-sample brightness decay (exponential). 0.9..0.999.
+    /// Lower = shorter rays; higher = longer rays.
+    pub decay: f32,
+    /// Final additive intensity scalar. 0..2.
+    pub intensity: f32,
+    /// Brightness threshold (in pre-tonemap luminance) below which
+    /// pixels don't contribute to the radial accumulation. Keeps
+    /// the rays from emerging out of dim sky pixels.
+    pub bright_threshold: f32,
+}
+
+impl Default for GodraysTuning {
+    fn default() -> Self {
+        Self {
+            samples: 64,
+            decay: 0.96,
+            intensity: 0.6,
+            bright_threshold: 5000.0,
         }
     }
 }

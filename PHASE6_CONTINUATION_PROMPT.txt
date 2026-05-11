@@ -1,0 +1,319 @@
+================================================================================
+PedalSky — Phase 6 (Volumetric Clouds) continuation prompt
+================================================================================
+
+Paste this whole file as your first message in a new Claude Code session.
+
+--------------------------------------------------------------------------------
+WHAT YOU ARE BUILDING
+--------------------------------------------------------------------------------
+
+PedalSky is a wgpu/WGSL weather renderer test harness. The authoritative
+plan lives at `F:\pedalsky\Pedalsky corrected implementation plan.md` — re-read
+the relevant phase section before implementing. Top-level principles (HDR
+internal, photometric units, linear space, reverse-Z, right-handed Y-up,
+composable subsystems via the `RenderSubsystem` trait, every tunable exposed
+as a UI slider, deterministic for given inputs) are listed at the top of that
+file and apply universally.
+
+Workspace is at F:\pedalsky.  Rust workspace, wgpu 29.0.3, winit 0.30,
+glam 0.32, half 2 (bytemuck feature), notify 8.  PowerShell 7 shell on
+Windows 11.  Bash is available via the Bash tool for POSIX scripts.
+
+--------------------------------------------------------------------------------
+WHAT IS ALREADY DONE  (commits in master)
+--------------------------------------------------------------------------------
+
+Phase 0  — Workspace, wgpu GPU init, HDR (Rgba16Float) framebuffer, fly camera,
+           ACES tone-mapper, checker ground, RenderSubsystem trait,
+           AppBuilder + factories, hot-reload, demo Backdrop / Tint subsystems.
+
+Phase 1  — Deferred Phase-1 deliverables wrapped; required_features wiring
+           added; horizontal mouse-look inversion fixed.
+
+Phase 2  — WorldClock; NREL Solar Position Algorithm (full SPA, all tables
+           hand-transcribed) and Meeus chapter 47 moon; real WorldState.
+
+Phase 3  — Weather synthesis pipeline (Koschmieder haze, cloud-layer
+           synthesis, weather map, wind field, top-down density mask).
+           `--headless-dump` CLI for offline data dumps.  v2 grid loader.
+
+Phase 4  — Widened FrameUniforms (336 B), WorldUniformsGpu, FrameWorldBindings,
+           shaders/common/, naga std140 cross-check.
+
+Phase 5  — Hillaire 2020 atmosphere with all four LUTs (transmittance 256×64,
+           multi-scatter 32×32, sky-view 192×108, AP 32×32×32) + sky raymarch.
+           Working: daytime sky qualitatively matches Hillaire's screenshots
+           (midday upward-tilted camera produces avg RGB ≈
+           [0.027, 0.156, 0.574]; blue-dominant; B > R asserted in test).
+           --lut-overlay CLI flag tiles all four LUTs in a 2×2 grid on the
+           swapchain for debugging.  LUT diagnostic test
+           `crates/ps-app/tests/phase5_lut_diag.rs` reads back single texels
+           from each LUT for calibration.
+
+Last commit on master: `Phase 5: get Hillaire atmosphere producing a blue
+daytime sky`.
+
+--------------------------------------------------------------------------------
+WHAT TO BUILD NEXT — Phase 6: Volumetric Clouds (Schneider + Hillaire)
+--------------------------------------------------------------------------------
+
+Read `Pedalsky corrected implementation plan.md` §6 (line 797 onward) for the
+full spec before you write any code.  Headline:
+
+  6.1 Noise volumes — base shape (128³ RGBA8 Perlin–Worley + Worley FBM 2/8/14),
+      detail (32³ RGBA8 Worley FBM 2/8/16), curl (128² RG8 Perlin curl),
+      blue noise (64×64 R8 void-and-cluster).  Generated via wgpu compute
+      shaders at first launch and cached to `assets/noise/*.bin` keyed by
+      content hash.  Do NOT ship pre-baked binaries — making the bake
+      reproducible is part of the harness.
+
+  6.2 Atmosphere geometry — each cloud layer is a spherical shell.  March
+      iterates layers in ray-entry order per pixel (NOT altitude order) so
+      downward views from above the layer composite correctly.
+
+  6.3 Cloud march params — full struct in the plan; every field a UI slider.
+
+  6.4 Density-height gradient (NDF) — 8 cloud types from cumulus to
+      cumulonimbus.  Full WGSL switch is in the plan body — paste verbatim.
+
+  6.5 Density + light-march helpers — `compute_altitude_m`, `sample_density`,
+      `march_to_light`, `integrate_step`, `ray_layer_intersect`.  All in plan
+      body; copy carefully.
+
+  6.6 Cloud march fragment shader — per-pixel ray, per-layer hit interval,
+      insertion sort by t0, jittered cloud_steps march with Beer-Powder
+      energy term and Hillaire 2016 multi-octave multiple scattering
+      (multi_scatter_octaves loop, a/b/c attenuation; cos_theta is geometric,
+      ONLY g is scaled).  sample_sky_ambient(p) reads the Phase 5 sky-view
+      LUT at the local-up vector through p.
+
+  6.7 Cloud composition — separate `Translucent`-stage pass blits the cloud
+      target over HDR with `One, OneMinusSrcAlpha` premultiplied-alpha
+      blending.  Cloud pass also samples AP LUT along cloud median t and
+      applies aerial perspective to cloud luminance before blending.
+
+  6.8 No checkerboard reprojection in v1.
+
+  6.9 UI exposure — every CloudParams field as slider w/ numeric box.
+      Per-layer overrides.  "Freeze time" toggle.
+
+Acceptance criteria from the plan:
+- Single cumulus layer with coverage 0.4 produces visibly cumulus-shaped
+  clouds that cast convincing self-shadows when the sun is low.
+- "Silver lining" appears with the sun behind a cloud (dual-lobe HG
+  verified).
+- Cumulonimbus produces a clear anvil top.
+
+Existing scaffolding:
+- `crates/ps-clouds/src/lib.rs` has a no-op `CloudsSubsystem` + `CloudsFactory`
+  already registered by AppBuilder.  Build on this — keep the trait
+  implementations.
+- `ps-core::WeatherState` already carries the synthesised cloud-layer
+  parameters (Phase 3).  Read it through PrepareContext.
+
+================================================================================
+HARD-WON GUIDANCE — DO NOT REPEAT THESE MISTAKES
+================================================================================
+
+These came up in earlier phases and will absolutely re-emerge for clouds.
+
+────────────────────────────────────────────────────────────────────────────────
+1. PLANET-SCALE FP32 CANCELLATION  (single biggest gotcha)
+────────────────────────────────────────────────────────────────────────────────
+
+The expression `length(p) - planet_radius_m` is BROKEN for any march sample
+point `p` near the planet surface.  `|p|² ≈ R² ≈ 4e13` dominates the
+small height offset; squaring loses ~8 decimal digits of fp32 precision,
+the small h disappears, and the bake silently returns the **initial**
+altitude for every step of the march.  This bug produced ~10× over-bright
+multi-scatter values and NaN-filled aerial-perspective froxels in Phase 5
+before being diagnosed.
+
+Use the algebraic identity instead.  For a ray `pi = p0 + view_dir·t`:
+
+    |pi|² = r0² + 2·t·r0·cos_view + t²
+    |pi| − r0 = (2·t·r0·cos_view + t²) / (r0 + |pi|)
+
+In WGSL:
+
+    let r0 = length(p0);                           // do this ONCE outside the loop
+    let cos_view = dot(p0 / max(r0, 1.0), view_dir);
+    let h0 = r0 - world.planet_radius_m;
+    // inside the loop:
+    let pi = p0 + view_dir * t;
+    let r_delta_num = 2.0 * t * r0 * cos_view + t * t;
+    let r_delta = r_delta_num / (max(r0, 1.0) + length(pi));
+    let h = h0 + r_delta;
+
+NB: the `r_delta_num` must include the `* r0` factor.  An earlier attempt
+omitted it (used `2t·cos_view + t²/r0` instead of `2t·r0·cos_view + t²`),
+which produced r_delta ~6 million times too small — h stuck at the
+initial value and every step's extinction was wrong by a constant factor.
+
+The Phase 5 cloud march helpers `compute_altitude_m(p_world)` in the plan
+text use `length(p - planet_center) - planet_radius_m` directly.  At
+typical cloud altitudes (1.5–18 km) the cancellation is less brutal than
+at sea level, but you should STILL switch to the stable form whenever
+you're doing a per-step march.  Either:
+  (a) compute h once per ray entry (h0 at t0) and accumulate r_delta along
+      the march, or
+  (b) work in km internally (r0 ≈ 6360 instead of 6_360_000) so squaring
+      doesn't lose precision.
+
+────────────────────────────────────────────────────────────────────────────────
+2. VIEW DIRECTION FROM INFINITE-FAR REVERSE-Z PROJECTION
+────────────────────────────────────────────────────────────────────────────────
+
+`normalize(far_p - near_p)` reconstructed from inv_view_proj is WRONG for
+an infinite-far perspective.  At NDC z=0 (far plane) w → 0; the perspective
+divide produces NaN or infinity, and `normalize` returns garbage like
+(0, ±1, 0).  This produced a uniformly black sky in Phase 5 until traced.
+
+Use the near plane only, subtract camera position:
+
+    let near_h = frame.inv_view_proj * vec4<f32>(ndc.x, ndc.y, 1.0, 1.0);
+    let near_p = near_h.xyz / near_h.w;
+    let view_dir = normalize(near_p - frame.camera_position_world.xyz);
+
+(Mind the NDC.y sign convention — in PedalSky the vertex shader emits
+`p = vec2(x*2-1, 1 - y*2)`, so +Y in NDC is up.  In the AP bake we use
+`-ndc.y` because gid.y=0 is the *top* of the framebuffer.)
+
+────────────────────────────────────────────────────────────────────────────────
+3. STORAGE-WRITE vs SAMPLEABLE BIND-GROUP CONFLICT
+────────────────────────────────────────────────────────────────────────────────
+
+wgpu won't let a texture be bound as `storage<write>` in one binding *and*
+sampled via `texture_2d<f32>` in another binding in the same pass.  For
+multi-pass bakes that both write LUT N and sample LUT N−1, define
+separate bind-group layouts (e.g. `atmosphere_transmittance_only_bind_group_layout`,
+`atmosphere_static_only_bind_group_layout`) so each bake sees only the
+LUTs it needs to sample.  See `crates/ps-atmosphere/src/lib.rs` for the
+pattern.
+
+For the noise volumes in Phase 6 this is more relaxed (each volume is
+written once at startup, then sampled forever), but if you do a chained
+"base noise → detail-modulated thing" bake, watch for it.
+
+────────────────────────────────────────────────────────────────────────────────
+4. F16 RANGE / PRE-MULTIPLIED ILLUMINANCE IN LUTS
+────────────────────────────────────────────────────────────────────────────────
+
+f16 max is 65504.  Pre-multiplying a per-unit-illuminance LUT by
+`sun_illuminance` (~130 000 lux at noon) immediately saturates and the
+LUT loses spectral character — the sky goes grey because RGB channels
+all clip at the same max.
+
+Default: bake LUTs in *per-unit-illuminance* and multiply at sample
+time in the consuming shader.  Phase 5 sky-view LUT does this.  The AP
+LUT currently bakes in sun_illuminance — that's a separate convention
+(luminance values fit in f16 for typical 32 km froxel paths) and works,
+but document the convention near the textureStore.
+
+────────────────────────────────────────────────────────────────────────────────
+5. WGSL RESERVED KEYWORDS
+────────────────────────────────────────────────────────────────────────────────
+
+`layout` is a reserved WGSL keyword.  Don't use it as a struct field
+or local-variable name; rename to `tile_layout` or similar.  The naga
+parser was tolerant in some versions and strict in others.
+
+────────────────────────────────────────────────────────────────────────────────
+6. STD140 LAYOUT DRIFT
+────────────────────────────────────────────────────────────────────────────────
+
+WGSL uniform structs follow std140-ish layout.  vec3 has 4-element
+alignment; trailing scalars often need explicit padding.  Phase 4 has
+a naga cross-check that catches mismatches between the Rust `#[repr(C)]`
+and the WGSL struct — keep using it.  If you add a CloudParams uniform
+buffer for Phase 6, cross-check on first compile.
+
+────────────────────────────────────────────────────────────────────────────────
+7. TEST CAMERA AT WORLD Y=0
+────────────────────────────────────────────────────────────────────────────────
+
+Placing the camera at world `(0, 0, 0)` puts it exactly on the planet
+surface in atmosphere-local coordinates and produces degenerate rays
+(many bakes return early because `t_max <= 0`).  Default test camera
+must sit at +1.7 m (eye level).  HeadlessApp::render_one_frame_with(camera)
+exists for tests that need a specific pose (e.g. pitch=60° to look at the
+upper hemisphere for blue-sky validation).
+
+────────────────────────────────────────────────────────────────────────────────
+8. EXPOSURE / EV100 AND THE "ZERO" TRAP
+────────────────────────────────────────────────────────────────────────────────
+
+ACES tone-map at EV100=15 maps ~10 000 cd/m² to mid-grey.  If a test
+shows avg RGB = [0, 0, 0], that does NOT necessarily mean the pass
+isn't running — it can mean the scene is below the exposure threshold.
+Confirm pass execution by writing a known bright constant (e.g.
+`vec4(100000, 0, 0, 1)`) before assuming the shader didn't run.
+
+────────────────────────────────────────────────────────────────────────────────
+9. BLUE-NOISE JITTER MUST BE SPATIAL-ONLY
+────────────────────────────────────────────────────────────────────────────────
+
+For the cloud march start jitter: read the blue-noise texture by
+`vec2<i32>(frag_coord.xy) % 64` ONLY — do NOT add a time-varying
+component.  Phase determinism requires that pausing the simulation
+produces a frozen image (no shimmer).  This is in the top-level
+principles (#9) and the plan §6.
+
+────────────────────────────────────────────────────────────────────────────────
+10. WORK CONDITIONS / WORKFLOW
+────────────────────────────────────────────────────────────────────────────────
+
+- Re-read the relevant plan section before each milestone.  The plan is
+  the spec; this prompt is a summary.
+- Commit at each meaningful milestone (noise bakes done; per-layer
+  intersection working; single-cumulus sun-overhead render passes).
+  Don't accumulate 1000+ lines uncommitted.
+- Use TaskCreate / TaskUpdate to track sub-tasks within a phase.
+- Run `cargo test --workspace` and `cargo clippy --workspace --all-targets`
+  before each commit.  The acceptance test for clouds should be
+  comparable to phase5_sky.rs — a HeadlessApp render with specific
+  camera/sun, asserting non-trivial output with the right colour
+  direction.
+- Don't add comments that explain *what* code does.  Only comment when
+  the WHY is non-obvious (hidden constraint, subtle invariant,
+  workaround).  No file-level decision logs.
+- No emojis in code or commits.
+
+--------------------------------------------------------------------------------
+WHERE TO LOOK FIRST
+--------------------------------------------------------------------------------
+
+- Plan: `F:\pedalsky\Pedalsky corrected implementation plan.md` §6 (line 797).
+- Stub crate to extend: `F:\pedalsky\crates\ps-clouds\src\lib.rs`.
+- Working reference for the bake-LUT-then-sample-in-shader pattern:
+  `F:\pedalsky\crates\ps-atmosphere\src\lib.rs` (Phase 5).
+- Sky-view LUT sampling helper to call from clouds' `sample_sky_ambient`:
+  `F:\pedalsky\shaders\common\atmosphere_lut_sampling.wgsl`.
+- Stable-height pattern in WGSL:
+  `F:\pedalsky\shaders\atmosphere\skyview.comp.wgsl` (inside the march
+  loop).
+- Acceptance test pattern to copy:
+  `F:\pedalsky\crates\ps-app\tests\phase5_sky.rs`.
+- LUT readback diagnostic pattern (useful for inspecting noise volumes
+  during bring-up): `F:\pedalsky\crates\ps-app\tests\phase5_lut_diag.rs`.
+
+--------------------------------------------------------------------------------
+SUGGESTED STARTING ACTIONS  (do not just plough into rendering)
+--------------------------------------------------------------------------------
+
+1. Read plan §6 end-to-end.  Note the exact UV/UVW conventions for
+   noise sampling (`p_world.xyz / params.base_scale_m`, no clamp — it's
+   meant to tile).
+2. Implement §6.1 noise bakes first.  Add a `phase6_noise_diag.rs`
+   integration test that reads back a few texels from each noise volume
+   and asserts non-zero, in-range, non-trivially-varied values.
+3. Bring up the cloud march in isolation with a SINGLE hard-coded
+   cumulus layer (coverage 0.4, base/top hard-coded) before wiring it
+   to the synthesised WeatherState.  Easier to debug.
+4. Validate self-shadows + silver lining + cumulonimbus anvil in
+   separate eyeball/screenshot tests; gate them behind --nocapture
+   eprintln of average RGB.
+5. Only then wire to WeatherState and per-layer UI sliders.
+
+Good luck.

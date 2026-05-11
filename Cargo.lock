@@ -2823,6 +2823,7 @@ dependencies = [
  "ps-backdrop",
  "ps-clouds",
  "ps-core",
+ "ps-godrays",
  "ps-ground",
  "ps-postprocess",
  "ps-precip",
@@ -2891,6 +2892,18 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "ps-godrays"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
+ "ps-core",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
