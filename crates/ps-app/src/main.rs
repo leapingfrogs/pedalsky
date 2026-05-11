@@ -28,6 +28,7 @@ use ps_atmosphere::{
     AtmosphereFactory,
 };
 use ps_backdrop::BackdropFactory;
+use ps_aurora::AuroraFactory;
 use ps_godrays::GodraysFactory;
 use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
@@ -1405,6 +1406,9 @@ fn build_app(
         // Built unconditionally; LightningFactory gates on
         // `[render.subsystems].lightning` itself.
         .with_factory(Box::new(lightning_factory))
+        // Phase 12.5 — aurora curtains, also at Translucent. Gated
+        // on `[render.subsystems].aurora` and the latitude/kp curve.
+        .with_factory(Box::new(AuroraFactory))
         .with_factory(Box::new(tonemap_factory))
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)

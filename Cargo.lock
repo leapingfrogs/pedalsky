@@ -2820,6 +2820,7 @@ dependencies = [
  "naga",
  "pollster 0.3.0",
  "ps-atmosphere",
+ "ps-aurora",
  "ps-backdrop",
  "ps-clouds",
  "ps-core",
@@ -2846,6 +2847,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "ps-core",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "ps-aurora"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam",
  "ps-core",
  "tracing",
  "wgpu",
