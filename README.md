@@ -29,9 +29,12 @@ complete; a per-phase audit lives at the bottom of this file.
 | 10 | egui panel system: world / render / atmosphere / clouds / wet / precip / debug | Done |
 | 11 | 8 reference scenes, headless `render` subcommand, golden-image regression | Done |
 
-Cross-cutting items still outstanding (each maps to a future task):
-`--seed`, `--gpu-trace`, shader hot-reload, GPU timestamp queries,
-side-by-side comparison mode, naga std140 build-time linter.
+All plan-mandated cross-cutting items are wired (commits b on master):
+`--seed` and `--gpu-trace` CLI flags, WGSL shader hot-reload,
+GPU timestamp queries surfacing in the Debug panel, naga std140
+build-time linter, and camera fov/near/speed UI sliders. The plan's
+explicitly-stretch side-by-side comparison mode (§10.5) is the only
+remaining gap and is tracked as a "stretch" goal in the plan itself.
 
 ## Install and build
 
@@ -44,7 +47,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-131 tests run across the workspace; all should pass.
+134 tests run across the workspace; all should pass.
 
 ## Running the live app
 
@@ -315,26 +318,39 @@ photometric calculations).
 
 ## Outstanding cross-cutting items
 
-These plan-mandated cross-cutting items are not yet wired. Each is a
-small, well-scoped task captured here for a future implementer:
+Only one plan item remains, and the plan itself marks it as
+"stretch":
 
-- **`--seed <u64>` CLI flag** (plan §Cross-Cutting/Determinism) — needs
-  to thread through blue-noise jitter and precipitation particle
-  spawning to make full-frame outputs bit-deterministic.
-- **`--gpu-trace <dir>` flag** (plan §GPU debugging) — wraps
-  `wgpu::DeviceDescriptor::trace`.
-- **WGSL shader hot-reload** (plan §Cross-Cutting/Shader hot-reload) —
-  `notify` watcher on `shaders/`; on change, the affected pipeline
-  rebuilds and compilation errors surface in the egui overlay.
-- **GPU timestamp queries** (plan §10.2 Debug panel) — every
-  `RenderPassDescriptor::timestamp_writes` is currently `None`; wire
-  through the existing `ps_ui::UiState::gpu_timestamps` channel.
-- **Camera UI sliders** (plan §0.4) — fov / near / speed should be in
-  the World panel.
-- **Side-by-side comparison mode** (plan §10.5, explicitly stretch).
-- **Naga std140 layout linter as a build/test step** (plan §4.1) —
-  layout mismatches surface today only as wgpu validation errors at
-  pipeline-creation time.
+- **Side-by-side comparison mode** (plan §10.5, stretch) — load two
+  scene configs into one window split by a draggable bar.
+
+CLI flags wired today:
+
+  --gpu-trace <dir>   wgpu API call trace dump (requires the trace
+                      feature on wgpu, enabled in the workspace)
+  --seed <u64>        determinism seed for precipitation particle
+                      spawning (the cloud march's blue-noise jitter
+                      is spatial-only and already deterministic)
+  --lut-overlay       force-on the atmosphere LUT 2x2 overlay
+
+Other in-tree mechanisms:
+
+- **WGSL shader hot-reload** is on by default (gated by
+  `[debug] shader_hot_reload = true`). Edit any file under
+  `shaders/`; the next frame loads it and rebuilds affected
+  pipelines. Syntax errors currently propagate through wgpu's
+  validation as a panic — graceful in-egui error display is a
+  followup.
+- **GPU timestamps** appear in the Debug panel's GPU timings
+  section. Requires `TIMESTAMP_QUERY_INSIDE_ENCODERS` (NVIDIA's
+  Vulkan driver supports this; integrated GPUs may not).
+- **Camera UI** (fov, near, speed) sits between the World and
+  Render panels in the egui overlay.
+- **Naga std140 layout linter** runs as part of `cargo test`
+  via `crates/ps-core/tests/uniform_layout.rs` (FrameUniforms,
+  WorldUniforms, SurfaceParams) and `crates/ps-app/tests/wgsl_layout.rs`
+  (CloudParams, CloudLayerGpu, PrecipUniforms). Both check per-field
+  byte offsets, not just total size.
 
 ## Implementation principles
 
