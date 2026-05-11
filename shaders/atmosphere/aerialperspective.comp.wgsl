@@ -1,16 +1,19 @@
 // Phase 5.2.4 — Aerial-perspective LUT bake.
+// Phase 13.1 — depth bumped 32→64 slices, spacing switched from
+//              quadratic (covering 32 km) to exponential (covering
+//              50 m → 100 km) for high-altitude / panoramic scenes.
 //
-// Output: 32 × 32 × 32 Rgba16Float. Camera-relative froxel volume.
+// Output: 32 × 32 × 64 Rgba16Float. Camera-relative froxel volume.
 //
 //   X, Y → screen (NDC) extents
-//   Z   → depth slice, linear in [0, AP_FAR_M]
+//   Z   → depth slice, exponentially spaced in [AP_NEAR_M, AP_FAR_M]
 //
 // Each voxel stores `(r_inscatter, g_inscatter, b_inscatter, transmittance_mono)`
 // for a ray from the camera through the (x,y) NDC at depth z. The ground
 // shader composites with `final = lit * ap.a + ap.rgb`.
 //
-// The far slice covers AP_FAR_M = 32 km along the view ray (plan §5.2.4).
-// Limitation: insufficient for high-altitude views; documented for v2.
+// Sampling formula (consumer side):
+//   z_norm = log(d_world / AP_NEAR_M) / log(AP_FAR_M / AP_NEAR_M)
 //
 // Bindings:
 //   group 0 binding 0 — FrameUniforms (provides view/proj/inv_view_proj/sun)
@@ -27,8 +30,9 @@
 @group(3) @binding(4) var lut_sampler: sampler;
 @group(2) @binding(0) var output: texture_storage_3d<rgba16float, write>;
 
-const SIZE: vec3<u32> = vec3<u32>(32u, 32u, 32u);
-const AP_FAR_M: f32 = 32000.0;
+const SIZE: vec3<u32> = vec3<u32>(32u, 32u, 64u);
+const AP_NEAR_M: f32 = 50.0;
+const AP_FAR_M: f32 = 100000.0;
 // March step count per froxel.  Hillaire's reference uses fewer steps
 // (~10) because the AP volume is shallow; keep a moderate count to
 // reduce banding while remaining cheap relative to the sky-view bake.
@@ -50,12 +54,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let near_p = near_h.xyz / near_h.w;
     let view_dir = normalize(near_p - frame.camera_position_world.xyz);
 
-    // Quadratic Z spacing: t_target = z_norm² · AP_FAR_M places more
-    // froxels near the camera (where AP detail matters most) while
-    // still reaching the far slice at z=1.  Linear spacing oversamples
-    // the far range and gives slice 0 effectively zero march distance.
+    // Exponential Z spacing (Phase 13.1): t = AP_NEAR_M · (AP_FAR_M /
+    // AP_NEAR_M)^z_norm. With AP_NEAR_M = 50 m and AP_FAR_M =
+    // 100 km, the slice nearest the camera ends at ~50 m (vs the
+    // old quadratic spacing's ~31 m at slice 0 / 1 km at slice 1)
+    // and the far slice reaches 100 km — enough to cover horizon
+    // mountain ranges and high-altitude panoramic views.
     let z_norm = (f32(gid.z) + 0.5) / f32(SIZE.z);
-    let t_target = z_norm * z_norm * AP_FAR_M;
+    let t_target = AP_NEAR_M * pow(AP_FAR_M / AP_NEAR_M, z_norm);
 
     // Camera in atmosphere frame.
     let p0 = world_to_atmosphere_pos(frame.camera_position_world.xyz);

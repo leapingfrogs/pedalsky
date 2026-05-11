@@ -29,7 +29,8 @@ pub use app::{App, AppBuilder, AppError, SubsystemFactory};
 pub use atmosphere_luts::{
     atmosphere_lut_bind_group_layout, atmosphere_static_only_bind_group,
     atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
-    atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts,
+    atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts, AP_FAR_M, AP_NEAR_M,
+    AP_SIZE,
 };
 pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
 pub use config::{Config, ConfigError};

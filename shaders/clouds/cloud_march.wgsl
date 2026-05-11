@@ -589,9 +589,9 @@ fn fs_main(in: VsOut) -> CloudOut {
 
     // Aerial perspective on the cloud luminance (plan §6.7). Sample
     // the AP LUT at the luminance-weighted depth so the haze is
-    // applied where the cloud's light actually came from. AP_FAR_M
-    // matches the bake (plan §5.2.4 — 32 km linear); samples beyond
-    // that clamp.
+    // applied where the cloud's light actually came from. Phase 13.1
+    // — depth coordinate uses the exponential mapping
+    // `ap_depth_uv` (50 m → 100 km).
     let t_cloud = t_weight / max(t_weight_norm, 1e-6);
     var luminance_out = luminance;
     if (cloud_opacity > 1e-4) {
@@ -601,10 +601,15 @@ fn fs_main(in: VsOut) -> CloudOut {
         // frag.y/h is 0 at top — so v=0 reads the row whose stored
         // ray matches this fragment.
         let viewport = frame.viewport_size.xy;
+        // Phase 13.1 — exponential AP depth mapping; mirrors the
+        // bake's spacing (50 m → 100 km). Inlined here because
+        // cloud_march doesn't compose in the atmosphere LUT helpers.
+        let d_safe = max(t_cloud, 50.0);
+        let ap_z = clamp(log(d_safe / 50.0) / log(100000.0 / 50.0), 0.0, 1.0);
         let ap_uvw = vec3<f32>(
             in.pos.x / viewport.x,
             in.pos.y / viewport.y,
-            clamp(t_cloud / 32000.0, 0.0, 1.0),
+            ap_z,
         );
         let ap = textureSampleLevel(aerial_perspective_lut, lut_sampler, ap_uvw, 0.0);
         // Cloud's own light is dimmed by AP transmittance; AP

@@ -607,7 +607,9 @@ impl RenderSubsystem for AtmosphereSubsystem {
                         pass.set_bind_group(1, ctx.world_bind_group, &[]);
                         pass.set_bind_group(2, &ap_storage, &[]);
                         pass.set_bind_group(3, &bg, &[]);
-                        pass.dispatch_workgroups(8, 8, 8); // 32/4 each
+                        // 32/4, 32/4, 64/4 — Phase 13.1 doubled
+                        // the Z extent to 64 slices.
+                        pass.dispatch_workgroups(8, 8, 16);
                     }
                 }),
             },

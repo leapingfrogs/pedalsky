@@ -18,8 +18,24 @@ pub const TRANSMITTANCE_SIZE: (u32, u32) = (256, 64);
 pub const MULTISCATTER_SIZE: (u32, u32) = (32, 32);
 /// Sky-view LUT pixel size.
 pub const SKYVIEW_SIZE: (u32, u32) = (192, 108);
-/// Aerial-perspective LUT 3D dimensions (X × Y × Z).
-pub const AP_SIZE: (u32, u32, u32) = (32, 32, 32);
+/// Aerial-perspective LUT 3D dimensions (X × Y × Z). Phase 13.1
+/// bumped Z from 32 to 64 slices to support the new exponential
+/// spacing covering ~50 m to ~100 km — half the depth resolution
+/// per linear-metre near-camera, but the slice nearest the camera
+/// is now ≈50 m instead of (32000/32)=1 km, so visual detail in
+/// the near field actually improves.
+pub const AP_SIZE: (u32, u32, u32) = (32, 32, 64);
+
+/// Aerial-perspective near-distance, in metres along the view ray.
+/// The slice at gid.z=0 carries inscatter integrated over the
+/// segment ending here; samples at world distances below this fall
+/// into the first froxel.
+pub const AP_NEAR_M: f32 = 50.0;
+/// Aerial-perspective far-distance, in metres along the view ray.
+/// Bumped from 32 km (Phase 5.2.4) to 100 km (Phase 13.1) so
+/// high-altitude or panoramic views see correct distance fade
+/// rather than flattening once they cross the old 32 km horizon.
+pub const AP_FAR_M: f32 = 100000.0;
 
 /// LUT colour format used by all four maps.
 pub const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

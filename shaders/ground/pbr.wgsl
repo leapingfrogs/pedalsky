@@ -39,7 +39,6 @@
 @group(3) @binding(4) var lut_sampler:       sampler;
 
 const GR_PI: f32 = 3.14159265358979;
-const AP_FAR_M: f32 = 32000.0;
 
 /// The top-down cloud density mask covers a 32 km × 32 km square
 /// centred on the world origin, matching the weather-map extent
@@ -527,13 +526,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Aerial perspective (plan §5.4): camera-relative AP LUT lookup, then
-    //   final = lit · ap.a + ap.rgb.
+    //   final = lit · ap.a + ap.rgb. Phase 13.1 — depth coord uses
+    //   the new exponential mapping (50 m → 100 km).
     let ndc_xy = (in.clip_pos.xy / frame.viewport_size.xy) * 2.0 - 1.0;
     let d_world = length(p - frame.camera_position_world.xyz);
     let ap_uvw = vec3<f32>(
         ndc_xy.x * 0.5 + 0.5,
         ndc_xy.y * 0.5 + 0.5,
-        clamp(d_world / AP_FAR_M, 0.0, 1.0),
+        ap_depth_uv(d_world),
     );
     let ap = textureSampleLevel(aerial_perspective_lut, lut_sampler, ap_uvw, 0.0);
     let final_color = lit * ap.a + ap.rgb;
