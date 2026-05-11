@@ -131,29 +131,9 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
         ..FlyCamera::default()
     };
 
-    // Render — uses the harness's full path (atmosphere LUTs, clouds,
-    // ground, precip). Surface params from the scene flow through the
-    // synthesis pipeline.
-    let surface = ps_synthesis::synthesise(&scene, &config, &world, &gpu)
-        .context("synthesise WeatherState")?;
-    // Override the harness's stub WeatherState with the real one by
-    // feeding through render_one_frame_full(world_override). The
-    // surface scalars get pushed via the harness's
-    // surface_override path. Cloud layers + atmosphere come from the
-    // synthesised state once we wire them — for v1 of the headless
-    // render path we let HeadlessApp use its stub WeatherState (which
-    // honours surface_override but not cloud layers); a future change
-    // (when test_harness supports a full-WeatherState override) lights
-    // up clouds in headless renders too.
-    let _ = surface;
-
-    let pixels = app.render_one_frame_full(
-        &gpu,
-        camera,
-        Some(scene_to_surface_params(&scene)),
-        Some(1.0),
-        Some(world.clone()),
-    );
+    // Render via the scene-synthesis path so cloud layers, wind field
+    // and density mask actually reach the GPU (matches ps-bless).
+    let pixels = app.render_one_frame_with_scene(&gpu, camera, &scene, world.clone());
 
     // Write the four documentation outputs.
     let png_path = output_with_ext(&args.output, "png");
@@ -205,29 +185,6 @@ fn output_with_ext(base: &Path, ext: &str) -> PathBuf {
         .and_then(|s| s.to_str())
         .unwrap_or("render");
     parent.join(format!("{stem}.{ext}"))
-}
-
-fn scene_to_surface_params(scene: &Scene) -> ps_core::SurfaceParams {
-    let s = &scene.surface;
-    ps_core::SurfaceParams {
-        visibility_m: s.visibility_m,
-        temperature_c: s.temperature_c,
-        dewpoint_c: s.dewpoint_c,
-        pressure_hpa: s.pressure_hpa,
-        wind_dir_deg: s.wind_dir_deg,
-        wind_speed_mps: s.wind_speed_mps,
-        ground_wetness: s.wetness.ground_wetness,
-        puddle_coverage: s.wetness.puddle_coverage,
-        snow_depth_m: s.wetness.snow_depth_m,
-        puddle_start: s.wetness.puddle_start,
-        precip_intensity_mm_per_h: scene.precipitation.intensity_mm_per_h,
-        precip_kind: match scene.precipitation.kind {
-            ps_core::PrecipKind::None => 0.0,
-            ps_core::PrecipKind::Rain => 1.0,
-            ps_core::PrecipKind::Snow => 2.0,
-            ps_core::PrecipKind::Sleet => 3.0,
-        },
-    }
 }
 
 #[derive(serde::Serialize)]
