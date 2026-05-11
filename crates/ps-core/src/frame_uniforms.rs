@@ -34,6 +34,18 @@ pub struct FrameUniforms {
     /// `(rgb)` = sun illuminance in cd/m²·sr proxy units.
     /// `w` = top-of-atmosphere illuminance in lux.
     pub sun_illuminance: Vec4,
+    /// Phase 12.3 — lightning flash illumination uniform.
+    /// `(rgb)` = current aggregated lightning emission in cd/m²·sr
+    /// proxy units, sampled from all active strikes' two-pulse
+    /// envelopes; `w` = a horizontal falloff radius in metres so
+    /// the cloud shader can attenuate by distance from the bolt
+    /// origin packed in `lightning_origin_world`.
+    pub lightning_illuminance: Vec4,
+    /// Phase 12.3 — world-space origin of the strongest currently
+    /// active strike. `(xyz)` = position; `w` = unused. The cloud
+    /// shader uses this to localise the flash so distant cumulus
+    /// don't all light up uniformly when only one strike is firing.
+    pub lightning_origin_world: Vec4,
     /// `(width, height, 1/width, 1/height)`.
     pub viewport_size: Vec4,
     /// Wall-clock seconds since application start.
@@ -100,6 +112,12 @@ pub struct FrameUniformsGpu {
     pub sun_direction: [f32; 4],
     /// `rgb` = sun illuminance proxy; `w` = TOA lux.
     pub sun_illuminance: [f32; 4],
+    /// Phase 12.3 — `rgb` = lightning aggregated emission proxy;
+    /// `w` = horizontal falloff radius (m).
+    pub lightning_illuminance: [f32; 4],
+    /// Phase 12.3 — `xyz` = strongest active strike origin
+    /// (world-space); `w` unused.
+    pub lightning_origin_world: [f32; 4],
     /// `(width, height, 1/width, 1/height)`.
     pub viewport_size: [f32; 4],
     /// Wall-clock seconds since application start.
@@ -124,6 +142,8 @@ impl FrameUniformsGpu {
             camera_velocity_world: u.camera_velocity_world.to_array(),
             sun_direction: u.sun_direction.to_array(),
             sun_illuminance: u.sun_illuminance.to_array(),
+            lightning_illuminance: u.lightning_illuminance.to_array(),
+            lightning_origin_world: u.lightning_origin_world.to_array(),
             viewport_size: u.viewport_size.to_array(),
             time_seconds: u.time_seconds,
             simulated_seconds: u.simulated_seconds,
@@ -141,8 +161,8 @@ mod tests {
     /// declaration in `shaders/common/uniforms.wgsl`.
     #[test]
     fn frame_uniforms_size_pinned() {
-        // 4 mat4 (4×64=256) + 5 vec4 (5×16=80) + 4 scalars (16) = 352 bytes.
-        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 352);
+        // 4 mat4 (4×64=256) + 7 vec4 (7×16=112) + 4 scalars (16) = 384 bytes.
+        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 384);
         assert_eq!(std::mem::size_of::<FrameUniformsGpu>() % 16, 0);
     }
 

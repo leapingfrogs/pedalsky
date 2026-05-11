@@ -17,6 +17,8 @@ struct FrameUniforms {
     camera_velocity_world: vec4<f32>,// xyz=m/s, w unused (Phase 8.2)
     sun_direction: vec4<f32>,        // xyz=dir, w=angular_radius_rad
     sun_illuminance: vec4<f32>,      // rgb=cd/m²·sr, w=lux at TOA
+    lightning_illuminance: vec4<f32>,// rgb=lightning emission, w=falloff radius (m) (Phase 12.3)
+    lightning_origin_world: vec4<f32>,// xyz=strongest active strike origin, w unused (Phase 12.3)
     viewport_size: vec4<f32>,        // w, h, 1/w, 1/h
     time_seconds: f32,
     simulated_seconds: f32,
