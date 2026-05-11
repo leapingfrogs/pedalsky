@@ -27,9 +27,9 @@ snow_depth_m    = 0.10         # 10 cm settled snow
 type               = "Stratocumulus"
 base_m             = 800.0
 top_m              = 1500.0
-coverage           = 0.72   # METAR BKN/OVC ≈ 0.9; pulled into the 0.6-0.75
-                            # visible band (plan §6 Schneider remap; followup #57)
-density_scale      = 1.5    # compensates for the coverage reduction
+coverage           = 0.9    # METAR BKN/OVC
+density_scale      = 1.5    # Stratocumulus NDF peaks at ~0.6 (vs Cumulus
+                            # ~0.78); the density bump compensates (#64)
 shape_octave_bias  = -0.1
 detail_octave_bias = 0.0
 

@@ -24,7 +24,7 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
         out.push(CloudLayerGpu {
             base_m: layer.base_m,
             top_m: layer.top_m,
-            coverage: layer.coverage,
+            coverage: remap_coverage_to_visible_band(layer.coverage),
             density_scale: layer.density_scale,
             cloud_type: layer.cloud_type as u8 as u32,
             shape_bias: layer.shape_octave_bias,
@@ -33,6 +33,32 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
         });
     }
     out
+}
+
+/// Map a scene-side coverage value in [0, 1] onto the Schneider 2015
+/// remap's "visible band" so that METAR-natural values (0.25 SCT, 0.5
+/// BKN, 1.0 OVC) produce the cloud structure a meteorologist would
+/// expect.
+///
+/// The Schneider remap (`cloud = remap(base, 1-coverage, 1, 0, 1) *
+/// coverage`) silently wipes coverage values below ~0.55 (the remap
+/// gives near-zero density) and saturates above ~0.78 (cloud bases
+/// read as dark slabs because the medium is too thick for sun-light
+/// to penetrate). This function pre-biases scene coverage onto the
+/// `[0.60, 0.78]` band that produces visually meaningful clouds.
+///
+/// Coverage values <= 0.02 round to zero (truly clear sky); above
+/// 0.02 the input maps linearly into the visible band. Documented
+/// in followup #57.
+fn remap_coverage_to_visible_band(scene_coverage: f32) -> f32 {
+    const VISIBLE_LOW: f32 = 0.60;
+    const VISIBLE_HIGH: f32 = 0.78;
+    const CLEAR_SKY_GATE: f32 = 0.02;
+    if scene_coverage <= CLEAR_SKY_GATE {
+        return 0.0;
+    }
+    let t = ((scene_coverage - CLEAR_SKY_GATE) / (1.0 - CLEAR_SKY_GATE)).clamp(0.0, 1.0);
+    VISIBLE_LOW + t * (VISIBLE_HIGH - VISIBLE_LOW)
 }
 
 /// Verify the synthesised cloud-layer envelopes don't overlap vertically.

@@ -24,14 +24,14 @@ snow_depth_m    = 0.0
 
 [[clouds.layers]]
 type               = "Stratus"
-base_m             = 400.0
-top_m              = 800.0
-coverage           = 0.72   # METAR OVC ≈ 1.0; pulled into the 0.6-0.75 band
-                            # where the Schneider remap (plan §6) leaves visible
-                            # cloud structure rather than a saturated dark deck
-                            # (followup #57 / #58)
-density_scale      = 1.6    # compensates for the coverage reduction so the
-                            # deck still reads as overcast
+base_m             = 800.0   # METAR has OVC005 ≈ 150m; raised to 800m so
+                             # the deck reads as a near sky-spanning sheet
+                             # given the 5° camera pitch and 1.7m eye height.
+top_m              = 1400.0
+coverage           = 1.0     # METAR OVC
+density_scale      = 2.0     # Stratus NDF profile peaks at ~0.5 (vs Cumulus
+                             # ~0.78); the density bump compensates so the
+                             # deck reads as overcast (followup #64)
 shape_octave_bias  = -0.2     # blockier (less wispy detail)
 detail_octave_bias = 0.0
 

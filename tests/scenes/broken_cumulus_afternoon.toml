@@ -27,8 +27,8 @@ snow_depth_m    = 0.0
 type               = "Cumulus"
 base_m             = 1500.0
 top_m              = 2300.0
-coverage           = 0.65   # METAR BKN ≈ 0.5; bumped to 0.65 to clear the
-                            # Schneider remap dead zone (plan §6 / followup #57)
+coverage           = 0.5    # METAR BKN. Synthesis remaps this onto the
+                            # cloud march's visible Schneider band.
 density_scale      = 1.0
 shape_octave_bias  = 0.0
 detail_octave_bias = 0.0

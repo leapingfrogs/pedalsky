@@ -36,17 +36,15 @@ impl WeatherMap {
     pub fn synthesise(scene: &Scene, surface: &Surface) -> Self {
         let mut pixels = vec![f16::from_f32(0.0); (SIZE * SIZE * 4) as usize];
 
-        // Mean per-layer coverage drives the R channel when no
-        // `coverage_grid` is supplied. Take the maximum across layers so
-        // an overlapping but disjoint stack reads as the most-covered
-        // layer (relevant once Phase 6's per-pass loop sees the layers
-        // in entry order).
-        let base_coverage = scene
-            .clouds
-            .layers
-            .iter()
-            .map(|l| l.coverage)
-            .fold(0.0_f32, f32::max);
+        // The R channel is a *spatial gate* in [0, 1]: 1 means "this
+        // region has clouds", 0 means "clear". For scenes without a
+        // coverage_grid the gate is uniformly 1 wherever any cloud
+        // layer is configured, so the per-layer coverage value (already
+        // remapped onto the visible band by `synthesise_cloud_layers`)
+        // controls density entirely. With a grid the gate carries the
+        // per-pixel spatial pattern.
+        let scene_has_layers = !scene.clouds.layers.is_empty();
+        let base_coverage_gate: f32 = if scene_has_layers { 1.0 } else { 0.0 };
 
         // Precipitation intensity normalised to [0, 1] using a 50 mm/h
         // ceiling (heaviest expected rain in the v1 scene library). The
@@ -67,7 +65,8 @@ impl WeatherMap {
             for x in 0..SIZE {
                 let idx = ((y * SIZE + x) * 4) as usize;
                 let (gx, gy) = pixel_to_world((x, y));
-                let coverage = sample_gridded_coverage(scene, gx, gy).unwrap_or(base_coverage);
+                let coverage = sample_gridded_coverage(scene, gx, gy)
+                    .unwrap_or(base_coverage_gate);
                 let bias = value_noise_2d(x as f32 * 0.05, y as f32 * 0.05) * 2.0 - 1.0;
                 pixels[idx] = f16::from_f32(coverage);
                 pixels[idx + 1] = f16::from_f32(0.0); // reserved
@@ -202,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn coverage_channel_matches_max_layer_coverage() {
+    fn coverage_channel_is_full_when_layers_present() {
         let mut scene = empty_scene();
         scene.clouds.layers.push(ps_core::CloudLayer {
             cloud_type: ps_core::CloudType::Cumulus,
@@ -214,10 +213,23 @@ mod tests {
             detail_octave_bias: 0.0,
         });
         let wm = WeatherMap::synthesise(&scene, &Surface::default());
-        // Sample a few pixels, all should have R = 0.6 to within f16 round-off.
+        // R is now a *spatial gate* (plan §3.2.3 followup #57): with no
+        // coverage_grid configured the gate is uniformly 1.0 wherever
+        // any cloud layer exists. Per-layer coverage controls density
+        // entirely via synthesise_cloud_layers' visible-band remap.
         for &i in &[0_usize, 4 * 64 * 128 + 4 * 64, wm.pixels.len() - 4] {
             let r = wm.pixels[i].to_f32();
-            assert!((r - 0.6).abs() < 1e-3, "R={r} (expected ~0.6)");
+            assert!((r - 1.0).abs() < 1e-3, "R={r} (expected 1.0)");
+        }
+    }
+
+    #[test]
+    fn coverage_channel_is_zero_when_no_layers() {
+        let scene = empty_scene();
+        let wm = WeatherMap::synthesise(&scene, &Surface::default());
+        for &i in &[0_usize, 4 * 64 * 128 + 4 * 64, wm.pixels.len() - 4] {
+            let r = wm.pixels[i].to_f32();
+            assert_eq!(r, 0.0, "R={r} (expected 0)");
         }
     }
 

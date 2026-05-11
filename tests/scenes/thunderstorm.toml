@@ -27,11 +27,8 @@ snow_depth_m    = 0.0
 type               = "Cumulonimbus"
 base_m             = 800.0
 top_m              = 11000.0
-coverage           = 0.75   # CB ≈ 0.8-1.0 in METAR; pulled to 0.75 so the
-                            # storm core has visible cloud structure rather
-                            # than saturating dark (followup #57 / #58)
-density_scale      = 2.0    # very thick, dark cloud (bumped to compensate
-                            # for the coverage reduction)
+coverage           = 0.9    # METAR BKN/OVC for the convective core
+density_scale      = 1.4    # very thick, dark cloud
 shape_octave_bias  = -0.3      # blockier mass (the convective core)
 detail_octave_bias = 0.2       # crisper edges (active convection)
 
