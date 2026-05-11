@@ -41,6 +41,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
                 ui.separator();
                 lightning_panel(ui, state);
                 ui.separator();
+                aurora_panel(ui, state);
+                ui.separator();
                 debug_panel(ui, state);
             });
         });
@@ -483,6 +485,7 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= ui.checkbox(&mut s.wet_surface, "Wet surface").changed();
         any |= ui.checkbox(&mut s.godrays, "Godrays").changed();
         any |= ui.checkbox(&mut s.lightning, "Lightning").changed();
+        any |= ui.checkbox(&mut s.aurora, "Aurora").changed();
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
@@ -991,6 +994,104 @@ fn lightning_panel(ui: &mut egui::Ui, state: &mut UiState) {
             "Bolts trigger from the scene's strikes_per_min_per_km2 \
              via a Poisson process. Set the rate in the scene file \
              (e.g. tests/scenes/diag_lightning.toml).",
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Aurora panel (Phase 12.5) — scene kp/colour + engine tunables
+// ---------------------------------------------------------------------------
+
+fn aurora_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Aurora", |ui| {
+        // Engine-side render tunables come from
+        // `[render.aurora]`; scene inputs (kp_index,
+        // intensity_override, predominant_colour) live on
+        // `Scene.aurora` and feed the synthesis pipeline. The
+        // pattern matches clouds_panel: clone latest_scene, mutate,
+        // publish via pending.live_scene.
+        let mut any_engine = false;
+
+        ui.label("Scene inputs (apply on synthesis):");
+        if let Some(scene_ref) = state.latest_scene.as_ref() {
+            let mut new_scene = scene_ref.clone();
+            let mut scene_changed = false;
+            scene_changed |= Slider::new(&mut new_scene.aurora.kp_index, 0.0..=9.0)
+                .text("kp_index")
+                .max_decimals(1)
+                .ui(ui)
+                .changed();
+            scene_changed |= Slider::new(
+                &mut new_scene.aurora.intensity_override,
+                -1.0..=1.0,
+            )
+            .text("intensity_override (-1 = derive from kp)")
+            .max_decimals(2)
+            .ui(ui)
+            .changed();
+
+            ui.horizontal(|ui| {
+                ui.label("predominant_colour");
+                for option in ["green", "red", "purple", "mixed"] {
+                    let selected = new_scene.aurora.predominant_colour == option;
+                    if ui.selectable_label(selected, option).clicked() {
+                        new_scene.aurora.predominant_colour = option.into();
+                        scene_changed = true;
+                    }
+                }
+            });
+
+            if scene_changed {
+                state.latest_scene = Some(new_scene.clone());
+                state.pending.live_scene = Some(new_scene);
+            }
+        } else {
+            ui.label("(awaiting first frame to mirror Scene)");
+        }
+
+        ui.separator();
+        ui.label("Engine tunables (live):");
+        let a = &mut state.live_config.render.aurora;
+        any_engine |= Slider::new(&mut a.march_steps, 4..=32)
+            .text("March steps")
+            .ui(ui)
+            .changed();
+        any_engine |= Slider::new(&mut a.peak_emission, 100.0..=500_000.0)
+            .text("Peak emission (cd/m²·sr)")
+            .max_decimals(0)
+            .logarithmic(true)
+            .ui(ui)
+            .changed();
+        any_engine |= Slider::new(&mut a.motion_hz, 0.0..=1.0)
+            .text("Motion speed (Hz)")
+            .max_decimals(3)
+            .ui(ui)
+            .changed();
+        any_engine |= Slider::new(&mut a.min_latitude_abs_deg, 0.0..=90.0)
+            .text("Latitude gate min (°)")
+            .max_decimals(1)
+            .ui(ui)
+            .changed();
+        any_engine |= Slider::new(&mut a.peak_latitude_abs_deg, 0.0..=90.0)
+            .text("Latitude gate peak (°)")
+            .max_decimals(1)
+            .ui(ui)
+            .changed();
+        any_engine |= Slider::new(&mut a.fade_latitude_abs_deg, 0.0..=90.0)
+            .text("Latitude gate fade (°)")
+            .max_decimals(1)
+            .ui(ui)
+            .changed();
+
+        if any_engine {
+            state.pending.config_dirty = true;
+        }
+
+        ui.label(
+            "Auroras are gated by absolute latitude and kp_index. \
+             At Dunblane (56°N) the gate is partially open; at lat \
+             65° kp 5 you should see clear green curtains looking \
+             north at midnight.",
         );
     });
 }
