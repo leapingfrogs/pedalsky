@@ -91,8 +91,14 @@ fn dual_lobe_hg_with_g_scale(cos_theta: f32, g_scale: f32) -> f32 {
 // ---------------------------------------------------------------------------
 
 fn ndf(h: f32, t: u32) -> f32 {
+    // All NDF profiles target a peak of ~0.78 so that scene-side
+    // density_scale=1.0 produces comparable optical thickness across
+    // cloud types. Per-type density character (cirrus = thin, cumulus
+    // = puffy) is conveyed through the *shape* of the profile and the
+    // scene's density_scale slider, not via per-type peak attenuation.
+    // Followup #64.
     switch t {
-        case 0u: { // Cumulus: bell, peak ~0.4
+        case 0u: { // Cumulus: bell, peak ~0.78
             return smoothstep(0.0, 0.07, h) * smoothstep(1.0, 0.2, h);
         }
         case 1u: { // Stratus: top-heavy, low and thin
@@ -101,17 +107,17 @@ fn ndf(h: f32, t: u32) -> f32 {
         case 2u: { // Stratocumulus: mid-heavy
             return smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.4, h);
         }
-        case 3u: { // Altocumulus: mid-heavy, thinner overall
-            return smoothstep(0.0, 0.20, h) * smoothstep(1.0, 0.3, h) * 0.8;
+        case 3u: { // Altocumulus: mid-heavy
+            return smoothstep(0.0, 0.20, h) * smoothstep(1.0, 0.3, h);
         }
         case 4u: { // Altostratus: top-heavy sheet
-            return smoothstep(0.0, 0.30, h) * (1.0 - smoothstep(0.7, 1.0, h)) * 0.6;
+            return smoothstep(0.0, 0.30, h) * (1.0 - smoothstep(0.7, 1.0, h));
         }
-        case 5u: { // Cirrus: thin, top-heavy, wispy
-            return smoothstep(0.0, 0.40, h) * (1.0 - smoothstep(0.6, 1.0, h)) * 0.4;
+        case 5u: { // Cirrus: thin top-heavy wisp profile
+            return smoothstep(0.0, 0.40, h) * (1.0 - smoothstep(0.6, 1.0, h));
         }
         case 6u: { // Cirrostratus: very thin sheet, highest
-            return smoothstep(0.0, 0.50, h) * (1.0 - smoothstep(0.8, 1.0, h)) * 0.3;
+            return smoothstep(0.0, 0.50, h) * (1.0 - smoothstep(0.8, 1.0, h));
         }
         case 7u: { // Cumulonimbus: bottom-heavy + anvil top
             let base  = smoothstep(0.0, 0.05, h);

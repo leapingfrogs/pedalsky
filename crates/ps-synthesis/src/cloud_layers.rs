@@ -51,8 +51,19 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
 /// 0.02 the input maps linearly into the visible band. Documented
 /// in followup #57.
 fn remap_coverage_to_visible_band(scene_coverage: f32) -> f32 {
-    const VISIBLE_LOW: f32 = 0.60;
-    const VISIBLE_HIGH: f32 = 0.78;
+    // The cloud march in cloud_march.wgsl combines weather_map.r (now
+    // a {0,1} spatial gate) with layer.coverage as a Schneider remap
+    // threshold + multiplier. Empirically the *effective* coverage the
+    // shader needs to fall inside [≈0.4, ≈0.6] for visible structure:
+    // below ≈0.4 the remap silently kills density; above ≈0.6 the
+    // medium becomes too thick for sun-light to penetrate and cloud
+    // bases read as dark slabs.
+    //
+    // Map scene-side METAR-ish input [0.02, 1] linearly onto that
+    // band so a BKN scene (input ~0.5) lands mid-band and an OVC
+    // scene (input ~1.0) lands near the top edge.
+    const VISIBLE_LOW: f32 = 0.40;
+    const VISIBLE_HIGH: f32 = 0.60;
     const CLEAR_SKY_GATE: f32 = 0.02;
     if scene_coverage <= CLEAR_SKY_GATE {
         return 0.0;
