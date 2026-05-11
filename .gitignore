@@ -4,3 +4,6 @@
 *.exr
 *.tmp
 .DS_Store
+/out_test
+/tests/golden-diffs
+output.log

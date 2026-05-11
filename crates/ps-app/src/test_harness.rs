@@ -177,6 +177,68 @@ impl HeadlessApp {
         &self.setup.bindings.world_bind_group
     }
 
+    /// Test/CLI helper: read back the live HDR target as `f16` RGBA.
+    /// Returns the pixels in row-major top-left origin order, length =
+    /// `w * h * 4`.
+    pub fn read_hdr_for_test(&self, gpu: &GpuContext) -> Vec<half::f16> {
+        let (w, h) = self.setup.size;
+        let bytes_per_pixel = 8u32;
+        let unpadded = w * bytes_per_pixel;
+        let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("read-hdr-staging"),
+            size: (aligned * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("read-hdr-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.setup.hdr.color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(aligned),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll");
+        rx.recv().expect("recv").expect("map");
+        let bytes = slice.get_mapped_range().to_vec();
+        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            let row = &bytes[(y * aligned) as usize..(y * aligned + unpadded) as usize];
+            for chunk in row.chunks_exact(2) {
+                out.push(half::f16::from_le_bytes([chunk[0], chunk[1]]));
+            }
+        }
+        out
+    }
+
     /// Apply a new config in place (mirrors the hot-reload path).
     pub fn reconfigure(&mut self, gpu: &GpuContext, config: &Config) -> Result<()> {
         self.app
@@ -186,6 +248,11 @@ impl HeadlessApp {
         self.tonemap_mode = TonemapMode::from_config(&config.render.tone_mapper);
         self.last_config = config.clone();
         Ok(())
+    }
+
+    /// Test-only: override the EV100 used by the next render.
+    pub fn set_ev100(&mut self, ev100: f32) {
+        self.ev100 = ev100;
     }
 
     /// Render one frame using the supplied `GpuContext`. Returns raw
@@ -234,6 +301,147 @@ impl HeadlessApp {
             cloud_mask_override,
             None,
         )
+    }
+
+    /// Phase 11.3 — render one frame using a real synthesised
+    /// `WeatherState` from a `Scene`. This is the path the headless
+    /// `ps-app render` subcommand and the golden-image regression
+    /// harness use, because they need the scene's cloud layers + wind
+    /// field + density mask to actually reach the GPU (the simpler
+    /// stub-based renderers bypass synthesis entirely).
+    pub fn render_one_frame_with_scene(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+        scene: &ps_core::Scene,
+        world: ps_core::WorldState,
+    ) -> Vec<u8> {
+        let (w, h) = self.setup.size;
+        let aspect = w as f32 / h as f32;
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(aspect);
+        // Build the live WeatherState from the scene + world.
+        let mut weather = ps_synthesis::synthesise(scene, &self.last_config, &world, gpu)
+            .expect("synthesise WeatherState");
+        weather.sun_direction = world.sun_direction_world;
+        weather.sun_illuminance = glam::Vec3::splat(world.toa_illuminance_lux);
+
+        let mut frame_uniforms = FrameUniforms {
+            camera_position_world: Vec4::new(
+                camera.position.x,
+                camera.position.y.max(0.1),
+                camera.position.z,
+                0.0,
+            ),
+            viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
+            time_seconds: 0.0,
+            simulated_seconds: 0.0,
+            frame_index: 0,
+            ev100: self.ev100,
+            ..FrameUniforms::default()
+        };
+        frame_uniforms.set_matrices(view, proj);
+        frame_uniforms.set_sun(
+            world.sun_direction_world,
+            self.last_config
+                .render
+                .atmosphere
+                .sun_angular_radius_deg
+                .to_radians(),
+            glam::Vec3::splat(world.toa_illuminance_lux),
+            world.toa_illuminance_lux,
+        );
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("test-frame"),
+            });
+        crate::main_helpers::encode_frame_clear(
+            &mut encoder,
+            &self.setup.hdr,
+            !self.last_config.render.subsystems.backdrop,
+            self.last_config.render.clear_color,
+        );
+        self.setup
+            .bindings
+            .write(&gpu.queue, &frame_uniforms, &weather.atmosphere);
+        let luts_ref = self.atmosphere_luts.as_deref();
+        let luts_bind_group = luts_ref.map(|l| &l.bind_group);
+        // Tonemap state per current ev100/mode.
+        self.tonemap_handle
+            .set_state(ps_postprocess::TonemapState {
+                ev100: self.ev100,
+                mode: self.tonemap_mode,
+                auto_exposure_enabled: false,
+            });
+        let mut prepare_ctx = PrepareContext {
+            device: &gpu.device,
+            queue: &gpu.queue,
+            world: &world,
+            weather: &weather,
+            frame_uniforms: &frame_uniforms,
+            atmosphere_luts: luts_ref,
+            dt_seconds: 1.0 / 60.0,
+        };
+        let render_ctx = RenderContext {
+            device: &gpu.device,
+            queue: &gpu.queue,
+            framebuffer: &self.setup.hdr,
+            frame_bind_group: &self.setup.bindings.frame_bind_group,
+            world_bind_group: &self.setup.bindings.world_bind_group,
+            luts_bind_group,
+            frame_uniforms: &frame_uniforms,
+            weather: &weather,
+            tonemap_target: Some(&self.setup.output_view),
+            tonemap_target_format: wgpu::TextureFormat::Rgba8Unorm,
+        };
+        self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
+
+        // Copy output → staging (same as render_one_frame_full).
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.setup.output,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.setup.staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.setup.padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+
+        let slice = self.setup.staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).ok();
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll");
+        rx.recv().expect("recv").expect("map");
+        let data = slice.get_mapped_range();
+        let bytes_per_row = w * 4;
+        let mut out = Vec::with_capacity((bytes_per_row * h) as usize);
+        for row in 0..h {
+            let start = (row * self.setup.padded_bytes_per_row) as usize;
+            let end = start + bytes_per_row as usize;
+            out.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        self.setup.staging.unmap();
+        out
     }
 
     /// Full-fat variant for tests that need to override the world state

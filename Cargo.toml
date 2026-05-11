@@ -56,6 +56,9 @@ egui-winit      = "0.34"
 # HDR EXR screenshot encoder (Phase 10 §10.4)
 exr             = "1"
 
+# Golden-image regression (Phase 11.3)
+image-compare   = "0.4"
+
 # Errors
 anyhow    = "1"
 thiserror = "2"

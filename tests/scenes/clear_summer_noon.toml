@@ -1,0 +1,33 @@
+# tests/scenes/clear_summer_noon.toml
+#
+# Plan §11.1 fixture #1 — Dunblane, 2026-06-21 12:00 BST, no clouds,
+# 30 km visibility. Validates pure atmosphere (Rayleigh + Mie haze + sun
+# disk) with no cloud or precipitation contribution.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 211100Z 27008KT CAVOK 22/12 Q1024 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 22.0
+dewpoint_c     = 12.0
+pressure_hpa   = 1024.0
+wind_dir_deg   = 270.0
+wind_speed_mps = 4.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+# No cloud layers — `clouds.layers` omitted.
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

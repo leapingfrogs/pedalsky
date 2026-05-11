@@ -1,0 +1,41 @@
+# tests/scenes/high_cirrus_sunset.toml
+#
+# Plan §11.1 fixture #5 — autumnal equinox 2026-09-22 17:30 UTC,
+# single high cirrus deck around 9 km, coverage 0.4. The high sun
+# angle + thin ice cloud should produce subtle backlit halos at sunset
+# and soft pink/orange tints across the western sky.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 221730Z 23005KT 9999 CI300 16/05 Q1019 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 16.0
+dewpoint_c     = 5.0
+pressure_hpa   = 1019.0
+wind_dir_deg   = 230.0
+wind_speed_mps = 5.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cirrus"
+base_m             = 8500.0
+top_m              = 9500.0
+coverage           = 0.55
+density_scale      = 0.6       # cirrus is optically thin
+shape_octave_bias  = 0.4       # wispy
+detail_octave_bias = 0.5
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

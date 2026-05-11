@@ -59,6 +59,12 @@ fn main() -> Result<()> {
         return ps_app::headless_dump::run(&workspace_root, &out_dir);
     }
 
+    // CLI: `render --scene <toml> --time <ISO8601> --output <path>`
+    // Phase 11.2 headless rendering subcommand.
+    if let Some(args) = ps_app::render_cli::parse_args(&argv) {
+        return ps_app::render_cli::run(&workspace_root, args);
+    }
+
     // CLI override: `--lut-overlay` flips `config.debug.atmosphere_lut_overlay`
     // on independently of the config file.
     let cli_lut_overlay = argv.iter().any(|a| a == "--lut-overlay");

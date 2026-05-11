@@ -1,0 +1,43 @@
+# tests/scenes/overcast_drizzle.toml
+#
+# Plan §11.1 fixture #3 — overcast stratus with light drizzle. Single
+# stratus deck 400-800 m, coverage 1.0, 1 mm/h rain, wet ground.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 121000Z 22008KT 4000 -DZ OVC005 11/10 Q1004 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 4000.0
+temperature_c  = 11.0
+dewpoint_c     = 10.0
+pressure_hpa   = 1004.0
+wind_dir_deg   = 220.0
+wind_speed_mps = 4.0
+
+[surface.wetness]
+ground_wetness  = 0.8
+puddle_coverage = 0.4
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Stratus"
+base_m             = 400.0
+top_m              = 800.0
+coverage           = 0.72   # METAR OVC ≈ 1.0; pulled into the 0.6-0.75 band
+                            # where the Schneider remap (plan §6) leaves visible
+                            # cloud structure rather than a saturated dark deck
+                            # (followup #57 / #58)
+density_scale      = 1.6    # compensates for the coverage reduction so the
+                            # deck still reads as overcast
+shape_octave_bias  = -0.2     # blockier (less wispy detail)
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "Rain"
+intensity_mm_per_h = 1.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

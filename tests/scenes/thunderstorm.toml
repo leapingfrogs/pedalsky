@@ -1,0 +1,43 @@
+# tests/scenes/thunderstorm.toml
+#
+# Plan §11.1 fixture #4 — single cumulonimbus 800-11000 m, coverage 0.8,
+# heavy rain 20 mm/h. Exercises the anvil profile (cloud_type 7 in NDF)
+# plus heavy precipitation + lightning generation.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 161600Z 18020G35KT 2000 +TSRA CB CB050 24/22 Q0998 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 2000.0
+temperature_c  = 24.0
+dewpoint_c     = 22.0          # nearly saturated → unstable airmass
+pressure_hpa   = 998.0
+wind_dir_deg   = 180.0
+wind_speed_mps = 10.0          # gusting 17 m/s in METAR; mean here
+
+[surface.wetness]
+ground_wetness  = 1.0
+puddle_coverage = 0.7
+puddle_start    = 0.5
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulonimbus"
+base_m             = 800.0
+top_m              = 11000.0
+coverage           = 0.75   # CB ≈ 0.8-1.0 in METAR; pulled to 0.75 so the
+                            # storm core has visible cloud structure rather
+                            # than saturating dark (followup #57 / #58)
+density_scale      = 2.0    # very thick, dark cloud (bumped to compensate
+                            # for the coverage reduction)
+shape_octave_bias  = -0.3      # blockier mass (the convective core)
+detail_octave_bias = 0.2       # crisper edges (active convection)
+
+[precipitation]
+type               = "Rain"
+intensity_mm_per_h = 20.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.5

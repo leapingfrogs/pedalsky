@@ -1,0 +1,32 @@
+# tests/scenes/twilight_civil.toml
+#
+# Plan §11.1 fixture #7 — civil twilight (sun ~5° below the horizon).
+# Validates the low-illuminance path of the atmosphere LUTs and the
+# auto-exposure debug path. The scene itself has no clouds; the time-
+# of-day comes from the per-render --time CLI argument and observer
+# latitude. Dunblane on 2026-12-21 around 04:30 UTC puts the sun
+# approximately 5° below the horizon (twilight wedge to the
+# south-east).
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 0.0
+dewpoint_c     = -2.0
+pressure_hpa   = 1018.0
+wind_dir_deg   = 90.0
+wind_speed_mps = 1.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

@@ -11,6 +11,10 @@ description = "PedalSky main binary: winit window, render loop, subsystem regist
 name = "ps-app"
 path = "src/main.rs"
 
+[[bin]]
+name = "ps-bless"
+path = "src/bin/ps-bless.rs"
+
 [dependencies]
 ps-core.workspace        = true
 ps-postprocess.workspace = true
@@ -39,3 +43,6 @@ half.workspace      = true
 image.workspace     = true
 serde.workspace     = true
 serde_json.workspace = true
+
+[dev-dependencies]
+image-compare       = { workspace = true }

@@ -1,0 +1,41 @@
+# tests/scenes/winter_overcast_snow.toml
+#
+# Plan §11.1 fixture #6 — winter stratocumulus overcast with light
+# snow falling onto an existing 10 cm snow base. Cold dry-bulb (-3 °C)
+# triggers the snow rendering path in the ground shader.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 080900Z 03007KT 6000 -SN SCT008 BKN015 M03/M04 Q1010 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 6000.0
+temperature_c  = -3.0
+dewpoint_c     = -4.0
+pressure_hpa   = 1010.0
+wind_dir_deg   = 30.0          # NNE — common cold-airmass direction
+wind_speed_mps = 3.5
+
+[surface.wetness]
+ground_wetness  = 0.2          # melt around the edges
+puddle_coverage = 0.05
+puddle_start    = 0.6
+snow_depth_m    = 0.10         # 10 cm settled snow
+
+[[clouds.layers]]
+type               = "Stratocumulus"
+base_m             = 800.0
+top_m              = 1500.0
+coverage           = 0.72   # METAR BKN/OVC ≈ 0.9; pulled into the 0.6-0.75
+                            # visible band (plan §6 Schneider remap; followup #57)
+density_scale      = 1.5    # compensates for the coverage reduction
+shape_octave_bias  = -0.1
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "Snow"
+intensity_mm_per_h = 1.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
