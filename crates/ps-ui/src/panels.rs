@@ -39,6 +39,8 @@ pub fn ui(ctx: &egui::Context, state: &mut UiState) {
                 ui.separator();
                 godrays_panel(ui, state);
                 ui.separator();
+                lightning_panel(ui, state);
+                ui.separator();
                 debug_panel(ui, state);
             });
         });
@@ -479,6 +481,8 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= ui.checkbox(&mut s.clouds, "Clouds").changed();
         any |= ui.checkbox(&mut s.precipitation, "Precipitation").changed();
         any |= ui.checkbox(&mut s.wet_surface, "Wet surface").changed();
+        any |= ui.checkbox(&mut s.godrays, "Godrays").changed();
+        any |= ui.checkbox(&mut s.lightning, "Lightning").changed();
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
@@ -925,6 +929,68 @@ fn godrays_panel(ui: &mut egui::Ui, state: &mut UiState) {
             "Crepuscular rays appear only when the sun is in front of \
              the camera. Look toward the sun (e.g. yaw 180° at noon \
              at default Dunblane lat) to see the effect.",
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Lightning panel (Phase 12.3) — strike RNG seed + intensity tunables
+// ---------------------------------------------------------------------------
+
+fn lightning_panel(ui: &mut egui::Ui, state: &mut UiState) {
+    ui.collapsing("Lightning", |ui| {
+        // The on/off lives in the Subsystems panel
+        // (`[render.subsystems].lightning`); this panel only tunes
+        // the engine-side render parameters once enabled.
+        let l = &mut state.live_config.render.lightning;
+        let mut changed = false;
+
+        // Seed is u64 — the egui Slider is generic but stepping a
+        // u64 through a slider isn't useful. Expose it as a numeric
+        // input so the user can paste a value for repeatable bolts.
+        ui.horizontal(|ui| {
+            ui.label("Seed");
+            let mut seed_str = format!("{}", l.seed);
+            if ui.text_edit_singleline(&mut seed_str).lost_focus() {
+                if let Ok(v) = seed_str.parse::<u64>() {
+                    if v != l.seed {
+                        l.seed = v;
+                        changed = true;
+                    }
+                }
+            }
+        });
+
+        changed |= Slider::new(&mut l.peak_cloud_illuminance, 0.0..=200_000.0)
+            .text("Peak cloud illuminance (cd/m²·sr)")
+            .max_decimals(0)
+            .logarithmic(true)
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut l.bolt_peak_emission, 0.0..=2.0e9)
+            .text("Bolt peak emission (cd/m²·sr)")
+            .max_decimals(0)
+            .logarithmic(true)
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut l.illumination_radius_m, 0.0..=20_000.0)
+            .text("Illumination radius (m)")
+            .max_decimals(0)
+            .ui(ui)
+            .changed();
+        changed |= Slider::new(&mut l.max_active_strikes, 1..=32)
+            .text("Max active strikes")
+            .ui(ui)
+            .changed();
+
+        if changed {
+            state.pending.config_dirty = true;
+        }
+
+        ui.label(
+            "Bolts trigger from the scene's strikes_per_min_per_km2 \
+             via a Poisson process. Set the rate in the scene file \
+             (e.g. tests/scenes/diag_lightning.toml).",
         );
     });
 }

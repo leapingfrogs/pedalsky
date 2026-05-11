@@ -41,6 +41,9 @@ pub struct RenderArgs {
     /// Camera pitch override in degrees (rotation about X). Default 5°
     /// (matches the existing reference scene rendering).
     pub pitch_deg: f32,
+    /// Phase 12.3 — override the lightning RNG seed for deterministic
+    /// strikes. `None` keeps the seed from the engine config block.
+    pub seed: Option<u64>,
 }
 
 /// Detect `render <args...>` after the binary name. Returns `None`
@@ -57,6 +60,7 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
     let mut height: u32 = 720;
     let mut yaw_deg: f32 = 0.0;
     let mut pitch_deg: f32 = 5.0;
+    let mut seed: Option<u64> = None;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--scene" => scene = iter.next().map(PathBuf::from),
@@ -73,6 +77,9 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
             }
             "--pitch-deg" => {
                 pitch_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(5.0)
+            }
+            "--seed" => {
+                seed = iter.next().and_then(|s| s.parse().ok());
             }
             _ => {
                 eprintln!("unknown render flag: {arg}");
@@ -100,6 +107,7 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
         height,
         yaw_deg,
         pitch_deg,
+        seed,
     })
 }
 
@@ -124,6 +132,12 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     // Disable backdrop / debug subsystems for the headless render.
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
+
+    // Phase 12.3 — apply --seed override so headless renders of
+    // lightning-bearing scenes are reproducible.
+    if let Some(s) = args.seed {
+        config.render.lightning.seed = s;
+    }
 
     // Init headless GPU.
     let gpu = ps_core::gpu::init_headless().context("init headless GPU")?;
