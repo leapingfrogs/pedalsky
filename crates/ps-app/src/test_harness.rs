@@ -22,6 +22,7 @@ use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
+use ps_windsock::WindsockFactory;
 use std::sync::Arc;
 
 use crate::main_helpers::encode_frame_clear;
@@ -150,6 +151,7 @@ impl HeadlessApp {
             .with_factory(Box::new(lightning_factory))
             .with_factory(Box::new(AuroraFactory))
             .with_factory(Box::new(BloomFactory))
+            .with_factory(Box::new(WindsockFactory))
             .with_factory(Box::new(tonemap_factory))
             .build(config, gpu)
             .context("AppBuilder::build")?;

@@ -45,6 +45,7 @@ atmosphere    = true
 clouds        = true
 precipitation = false
 wet_surface   = false
+windsock      = false   # Phase 13.6 — 3D wind direction cone in front of camera
 # Phase 1 demo subsystems — exist purely to exercise the render-graph
 # executor and hot-reload path. They will be removed in Phase 5+.
 backdrop      = true

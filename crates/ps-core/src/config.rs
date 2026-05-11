@@ -241,6 +241,9 @@ pub struct SubsystemFlags {
     /// Phase 13.3 bloom (HDR bright-pass + Gaussian pyramid).
     #[serde(default = "default_true")]
     pub bloom: bool,
+    /// Phase 13.6 windsock (3D wind direction indicator).
+    #[serde(default)]
+    pub windsock: bool,
     /// Phase 1 demo: Backdrop (clears HDR target to a solid colour).
     pub backdrop: bool,
     /// Phase 1 demo: Tint (fullscreen RGB multiply).
@@ -263,6 +266,7 @@ impl Default for SubsystemFlags {
             lightning: true,
             aurora: true,
             bloom: true,
+            windsock: false,
             backdrop: true,
             tint: false,
         }

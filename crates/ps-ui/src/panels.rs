@@ -16,6 +16,10 @@ use crate::state::UiState;
                      // the API is mid-transition.
 pub fn ui(ctx: &egui::Context, state: &mut UiState) {
     top_bar(ctx, state);
+    // Phase 13.6 — compass rose overlay (top-right corner). Drawn
+    // before the left panel so its layer order is below the sliders
+    // when they overlap on narrow windows.
+    compass_overlay(ctx, state);
     egui::Panel::left("ps-ui-left")
         .resizable(true)
         .default_size(360.0)
@@ -489,6 +493,7 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
         any |= ui.checkbox(&mut s.lightning, "Lightning").changed();
         any |= ui.checkbox(&mut s.aurora, "Aurora").changed();
         any |= ui.checkbox(&mut s.bloom, "Bloom").changed();
+        any |= ui.checkbox(&mut s.windsock, "Windsock").changed();
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
@@ -1287,4 +1292,176 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
             });
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13.6 — compass-rose overlay
+//
+// Floats in the top-right corner. Shows:
+//   - cardinal N/E/S/W marks on the outer ring
+//   - a yellow wedge for the camera's current heading (where the
+//     viewer is looking on the horizontal plane)
+//   - a sun and moon disc at their (azimuth, altitude) — the
+//     altitude controls the radius (zenith = centre, horizon = ring)
+//   - a small wind barb showing the direction the wind is blowing
+//     FROM, with the barb length scaled by speed
+//
+// Pure egui paint into a single `Area`; consumes no UiState (it only
+// reads from `world_readout`).
+// ---------------------------------------------------------------------------
+
+fn compass_overlay(ctx: &egui::Context, state: &UiState) {
+    let r = &state.world_readout;
+    egui::Area::new(egui::Id::new("ps-ui-compass"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            // Use a fixed canvas. egui's allocate_painter sizes the
+            // overlay to this rect, so no auto-shrink.
+            let canvas_size = egui::vec2(150.0, 150.0);
+            let (response, painter) =
+                ui.allocate_painter(canvas_size, egui::Sense::hover());
+            let rect = response.rect;
+            let centre = rect.center();
+            let radius = (rect.width().min(rect.height()) * 0.5) - 6.0;
+
+            // Background disc (semi-transparent so the rendered scene
+            // shows through).
+            painter.circle_filled(
+                centre,
+                radius,
+                Color32::from_black_alpha(140),
+            );
+            painter.circle_stroke(
+                centre,
+                radius,
+                egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
+            );
+
+            // Cardinal points.
+            let cardinals = [(0.0, "N"), (90.0, "E"), (180.0, "S"), (270.0, "W")];
+            for (az_deg, label) in cardinals {
+                let p = polar_point(centre, radius - 4.0, az_deg);
+                painter.text(
+                    p,
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(13.0),
+                    if label == "N" {
+                        Color32::from_rgb(255, 180, 120)
+                    } else {
+                        Color32::WHITE
+                    },
+                );
+            }
+
+            // Camera heading — yellow wedge from centre toward the
+            // direction the camera is facing. Yaw=0 means looking
+            // down −Z (= north), positive yaw rotates the camera
+            // counter-clockwise when viewed from above (right-handed
+            // about +Y); on a compass that *clockwise* azimuth runs
+            // the opposite way, so we negate.
+            let yaw_az_deg = (-r.camera_yaw_deg) as f32;
+            let cam_tip = polar_point(centre, radius - 8.0, yaw_az_deg);
+            painter.line_segment(
+                [centre, cam_tip],
+                egui::Stroke::new(2.5, Color32::from_rgb(240, 220, 60)),
+            );
+            // Small arrowhead.
+            for side in [-1.0_f32, 1.0] {
+                let p = polar_point(
+                    centre,
+                    radius - 18.0,
+                    yaw_az_deg + 8.0 * side,
+                );
+                painter.line_segment(
+                    [cam_tip, p],
+                    egui::Stroke::new(2.0, Color32::from_rgb(240, 220, 60)),
+                );
+            }
+
+            // Sun marker. Above-horizon: filled gold disc; below
+            // horizon: hollow circle, faded.
+            paint_celestial(
+                &painter,
+                centre,
+                radius,
+                r.sun_az_deg as f32,
+                r.sun_alt_deg as f32,
+                Color32::from_rgb(255, 210, 100),
+            );
+            // Moon marker — paler.
+            paint_celestial(
+                &painter,
+                centre,
+                radius,
+                r.moon_az_deg as f32,
+                r.moon_alt_deg as f32,
+                Color32::from_rgb(200, 200, 220),
+            );
+
+            // Wind barb. Show as a line from the rim *inward*: the
+            // wind comes from the indicated direction. Length scales
+            // with speed (0 mps → invisible nub; 20 mps → most of the
+            // radius). Calm wind (≈0) draws nothing.
+            if r.wind_speed_mps > 0.5 {
+                let len = (r.wind_speed_mps / 20.0).clamp(0.15, 0.95) * (radius - 10.0);
+                let from_rim = polar_point(centre, radius - 4.0, r.wind_dir_deg);
+                let toward_centre = polar_point(centre, radius - 4.0 - len, r.wind_dir_deg);
+                let blue = Color32::from_rgb(120, 180, 240);
+                painter.line_segment(
+                    [from_rim, toward_centre],
+                    egui::Stroke::new(2.0, blue),
+                );
+                // Barb tick at the upwind end.
+                let perp_az = r.wind_dir_deg + 90.0;
+                let tip_a = polar_offset(toward_centre, 6.0, perp_az);
+                let tip_b = polar_offset(toward_centre, -6.0, perp_az);
+                painter.line_segment([toward_centre, tip_a], egui::Stroke::new(1.5, blue));
+                painter.line_segment([toward_centre, tip_b], egui::Stroke::new(1.5, blue));
+            }
+        });
+}
+
+/// Project `(azimuth_deg, distance)` (azimuth measured clockwise from
+/// north, screen coordinates with `+y` down) onto the screen plane
+/// centred at `centre`. North → straight up (so we flip the sign of
+/// the cosine term to account for egui's +y-down convention).
+fn polar_point(centre: egui::Pos2, distance: f32, az_deg: f32) -> egui::Pos2 {
+    polar_offset(centre, distance, az_deg)
+}
+
+fn polar_offset(centre: egui::Pos2, distance: f32, az_deg: f32) -> egui::Pos2 {
+    let theta = az_deg.to_radians();
+    let dx = distance * theta.sin();
+    let dy = -distance * theta.cos();
+    centre + egui::vec2(dx, dy)
+}
+
+/// Paint sun / moon marker at a given (azimuth, altitude). Above
+/// the horizon → coloured disc; below → faded outline.
+fn paint_celestial(
+    painter: &egui::Painter,
+    centre: egui::Pos2,
+    radius: f32,
+    az_deg: f32,
+    alt_deg: f32,
+    colour: Color32,
+) {
+    // Radius scales with cosine of altitude: zenith → centre, horizon
+    // → rim. (1 - alt/90) is the equivalent linear mapping and is
+    // closer to what users expect from a "planispheric" overlay.
+    let alt_norm = (alt_deg / 90.0).clamp(-0.5, 1.0);
+    let r_screen = (1.0 - alt_norm.max(0.0)) * (radius - 8.0);
+    let p = polar_point(centre, r_screen, az_deg);
+    if alt_deg >= 0.0 {
+        painter.circle_filled(p, 4.0, colour);
+    } else {
+        painter.circle_stroke(
+            p,
+            4.0,
+            egui::Stroke::new(1.2, colour.linear_multiply(0.4)),
+        );
+    }
 }

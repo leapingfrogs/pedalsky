@@ -29,6 +29,7 @@ ps-godrays.workspace     = true
 ps-lightning.workspace   = true
 ps-aurora.workspace      = true
 ps-bloom.workspace       = true
+ps-windsock.workspace    = true
 ps-ui.workspace          = true
 toml.workspace           = true
 

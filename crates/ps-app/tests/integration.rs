@@ -179,6 +179,31 @@ fn pedalsky_toml_at_workspace_root_boots_the_app() {
     let _ = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new from workspace toml");
 }
 
+/// Phase 13.6 — the windsock subsystem renders cleanly when atmosphere
+/// is enabled (the shader binds the AP LUT, so the pass needs the LUTs
+/// to be live). With no GPU validation errors this smoke test just
+/// asserts construction + one full frame.
+#[test]
+fn windsock_subsystem_renders_one_frame() {
+    let Some(gpu) = gpu() else { return };
+
+    let mut config = config_with_ev0_passthrough();
+    // The windsock shader samples the atmosphere AP LUT, so the
+    // atmosphere subsystem must be on for the pass to draw.
+    config.render.subsystems.atmosphere = true;
+    config.render.subsystems.ground = false;
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+    config.render.subsystems.windsock = true;
+
+    let setup = TestSetup::new(gpu, &config, (96, 64));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    // Rendering should not panic or trip validation. The exact pixel
+    // contents depend on default surface wind direction (240°) and
+    // are not asserted here.
+    let _pixels = app.render_one_frame(gpu);
+}
+
 fn average_rgb(pixels: &[u8]) -> [f32; 3] {
     let mut sum = [0u64; 3];
     let mut count = 0u64;

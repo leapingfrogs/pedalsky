@@ -41,6 +41,7 @@ use ps_ground::GroundFactory;
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
+use ps_windsock::WindsockFactory;
 use tracing::{debug, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use winit::application::ApplicationHandler;
@@ -920,6 +921,13 @@ impl RunState {
                 moon_alt_deg: f64::from(self.world.moon.altitude_rad).to_degrees(),
                 moon_az_deg: f64::from(self.world.moon.azimuth_rad).to_degrees(),
                 julian_day: ps_core::astro::julian_day_utc(self.world.clock.current_utc()),
+                // Camera yaw in the FlyCamera is in radians, with
+                // yaw=0 → looking down −Z (= north in PedalSky's
+                // +X east, +Z south right-handed frame). Convert to
+                // a compass azimuth (clockwise from north).
+                camera_yaw_deg: f64::from(self.camera.yaw).to_degrees(),
+                wind_dir_deg: self.weather.surface.wind_dir_deg,
+                wind_speed_mps: self.weather.surface.wind_speed_mps,
             };
         }
         self.ui_bridge.build_ui_frame(&self.window);
@@ -1418,6 +1426,9 @@ fn build_app(
         // Phase 13.3 — HDR bloom at PostProcess (before tone-map).
         // Gated on `[render.subsystems].bloom`.
         .with_factory(Box::new(BloomFactory))
+        // Phase 13.6 — windsock geometry at Opaque (after ground).
+        // Off by default; gated on `[render.subsystems].windsock`.
+        .with_factory(Box::new(WindsockFactory))
         .with_factory(Box::new(tonemap_factory))
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)

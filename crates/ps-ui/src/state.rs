@@ -90,6 +90,16 @@ pub struct UiWorldReadout {
     pub moon_az_deg: f64,
     /// Julian day for the current simulated UTC.
     pub julian_day: f64,
+    /// Phase 13.6 — camera heading (azimuth, clockwise from north),
+    /// degrees. Used by the compass rose overlay.
+    pub camera_yaw_deg: f64,
+    /// Phase 13.6 — surface wind direction (meteorological — the
+    /// direction the wind is *coming from*), clockwise from north,
+    /// degrees. Mirror of `weather.surface.wind_dir_deg` so the
+    /// compass rose can draw a barb without re-reading WeatherState.
+    pub wind_dir_deg: f32,
+    /// Phase 13.6 — wind speed in m/s.
+    pub wind_speed_mps: f32,
 }
 
 /// The full shared state cell.

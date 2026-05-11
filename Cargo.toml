@@ -15,6 +15,7 @@ members = [
     "crates/ps-lightning",
     "crates/ps-aurora",
     "crates/ps-bloom",
+    "crates/ps-windsock",
     "crates/ps-app",
 ]
 
@@ -86,6 +87,7 @@ ps-godrays     = { path = "crates/ps-godrays" }
 ps-lightning   = { path = "crates/ps-lightning" }
 ps-aurora      = { path = "crates/ps-aurora" }
 ps-bloom       = { path = "crates/ps-bloom" }
+ps-windsock    = { path = "crates/ps-windsock" }
 
 [profile.dev]
 opt-level = 1            # debug builds with shader compilation are slow at -O0
