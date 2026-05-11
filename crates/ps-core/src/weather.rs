@@ -266,6 +266,37 @@ impl WeatherState {
             (tex, view)
         };
         let (weather_map, weather_map_view) = make_2d("stub-wm", wgpu::TextureFormat::Rgba16Float);
+        // Upload coverage = 1.0 so cloud subsystem tests against this stub
+        // see a fully-covered weather map; the cloud layer's own coverage
+        // scalar (0.4 by default) still does the gating.
+        {
+            let coverage_pixel = [
+                half::f16::from_f32(1.0),
+                half::f16::from_f32(0.0),
+                half::f16::from_f32(0.0),
+                half::f16::from_f32(0.0),
+            ];
+            let bytes: &[u8] = bytemuck::cast_slice(&coverage_pixel);
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &weather_map,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(8),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         let (wind_field, wind_field_view) = make_3d();
         let (top_down_density_mask, top_down_density_mask_view) =
             make_2d("stub-mask", wgpu::TextureFormat::R8Unorm);

@@ -56,8 +56,11 @@ pub struct CloudsSubsystem {
     params_buffer: Arc<wgpu::Buffer>,
     /// Per-frame storage buffer for the layer array.
     layers_buffer: Arc<wgpu::Buffer>,
-    /// Group-2 bind group (noise textures + samplers + cloud uniforms).
-    cloud_data_bg: Arc<wgpu::BindGroup>,
+    /// Group-2 bind group (noise textures + samplers + cloud uniforms +
+    /// weather map). Rebuilt each frame in `prepare()` because the
+    /// weather_map view comes from `WeatherState` and may change on
+    /// hot-reload.
+    cloud_data_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
 }
 
 /// Cloud render target bundle. Owned by `Arc<Mutex<>>` so pass closures
@@ -187,44 +190,7 @@ impl CloudsSubsystem {
             mapped_at_creation: false,
         }));
 
-        let cloud_data_bg = Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("clouds-data-bg"),
-            layout: &noise.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&noise.base_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&noise.detail_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&noise.curl_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&noise.blue_noise_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&noise.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&noise.nearest_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: layers_buffer.as_entire_binding(),
-                },
-            ],
-        }));
+        let cloud_data_bg = Arc::new(Mutex::new(None));
 
         let rt = Arc::new(Mutex::new(CloudRt::new(
             device,
@@ -291,6 +257,54 @@ impl RenderSubsystem for CloudsSubsystem {
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
         ctx.queue
             .write_buffer(&self.layers_buffer, 0, bytemuck::cast_slice(&self.cpu_layers));
+
+        // Rebuild the group-2 bind group every frame: the weather_map view
+        // is owned by `WeatherState` and may be replaced by hot-reload.
+        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("clouds-data-bg"),
+            layout: &self.noise.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.noise.base_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&self.noise.detail_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.noise.curl_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&self.noise.blue_noise_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.noise.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.noise.nearest_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.layers_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(
+                        &ctx.weather.textures.weather_map_view,
+                    ),
+                },
+            ],
+        });
+        *self.cloud_data_bg.lock().expect("clouds: data bg lock") = Some(Arc::new(bg));
     }
 
     fn register_passes(&self) -> Vec<RegisteredPass> {
@@ -339,10 +353,15 @@ impl RenderSubsystem for CloudsSubsystem {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
+                    let data_bg_guard = cloud_data_bg.lock().expect("clouds: data bg lock");
+                    let Some(data_bg) = data_bg_guard.as_ref() else {
+                        // prepare() hasn't run yet — skip this frame.
+                        return;
+                    };
                     pass.set_pipeline(&pipelines_march.march);
                     pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                     pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                    pass.set_bind_group(2, cloud_data_bg.as_ref(), &[]);
+                    pass.set_bind_group(2, data_bg.as_ref(), &[]);
                     pass.set_bind_group(3, &luts.bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }),

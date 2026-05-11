@@ -30,6 +30,7 @@
 @group(2) @binding(5) var nearest_sampler: sampler;
 @group(2) @binding(6) var<uniform> params: CloudParams;
 @group(2) @binding(7) var<storage, read> cloud_layers: CloudLayerArray;
+@group(2) @binding(8) var weather_map: texture_2d<f32>;
 
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut:  texture_2d<f32>;
@@ -268,11 +269,10 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
         let pi = p + sun_dir * t;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
         let weather = textureSampleLevel(
-            noise_base, noise_sampler,
-            vec3<f32>(world_to_weather_uv(pi.xz), 0.5), 0.0,
+            weather_map, noise_sampler,
+            world_to_weather_uv(pi.xz), 0.0,
         );
-        let local_density = sample_density(pi, alt, layer,
-                                           vec4<f32>(1.0, weather.r, 0.0, 0.0));
+        let local_density = sample_density(pi, alt, layer, weather);
         od = od + local_density * step;
     }
     return od;
@@ -382,13 +382,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         for (var s = 0u; s < params.cloud_steps; s = s + 1u) {
             let p = ray.origin + ray.dir * t;
             let alt = altitude_from_entry(p, r0, cos_view, h0, t);
-            // Read the synthesised weather map — Phase 3 hasn't wired the
-            // layer-coverage texture into the cloud bind yet, so we
-            // approximate with a constant weather.r = 1.0 for now and
-            // rely on per-layer coverage in the layer struct. The 0
-            // channel will be replaced once §6.x wires the
-            // weather_map texture into the cloud bind group.
-            let weather_sample = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+            let weather_sample = textureSampleLevel(
+                weather_map, noise_sampler,
+                world_to_weather_uv(p.xz), 0.0,
+            );
             let density = sample_density(p, alt, layer, weather_sample);
 
             if (density > 1e-3) {
