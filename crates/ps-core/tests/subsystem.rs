@@ -75,5 +75,6 @@ fn _ctx_smoke(
         world_bind_group: bg,
         luts_bind_group: luts_bg,
         frame_uniforms,
+        weather,
     };
 }

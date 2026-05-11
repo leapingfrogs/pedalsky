@@ -479,6 +479,7 @@ fn frame_actually_calls_prepare_and_passes_in_pass_stage_order() {
         world_bind_group: &stub,
         luts_bind_group: None,
         frame_uniforms: &frame_uniforms,
+        weather: &weather,
     };
     let mut encoder = gpu
         .device

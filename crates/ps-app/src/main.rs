@@ -134,6 +134,13 @@ struct RunState {
     bindings: ps_core::FrameWorldBindings,
 
     tonemap: Tonemap,
+    /// Phase 9.2 debug auto-exposure compute pass + read-back staging.
+    /// Always allocated; only dispatched when
+    /// `config.debug.auto_exposure = true`.
+    auto_exposure: ps_postprocess::AutoExposure,
+    /// Latest auto-exposure-derived EV100 from the previous frame's
+    /// read-back. `None` until the first auto-exposure read completes.
+    auto_exposure_ev100: Option<f32>,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
     app: App,
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
@@ -268,6 +275,7 @@ impl RunState {
         let hdr = HdrFramebufferImpl::new(&windowed.gpu, size);
         let bindings = ps_core::FrameWorldBindings::new(&windowed.gpu.device);
         let tonemap = Tonemap::new(&windowed.gpu.device, &hdr, windowed.surface_config.format);
+        let auto_exposure = ps_postprocess::AutoExposure::new(&windowed.gpu.device, &hdr);
 
         let (app, atmosphere_luts_cell) = build_app(config, &windowed.gpu)?;
         let atmosphere_luts = atmosphere_luts_cell
@@ -327,6 +335,8 @@ impl RunState {
             hdr,
             bindings,
             tonemap,
+            auto_exposure,
+            auto_exposure_ev100: None,
             app,
             camera,
             keys: KeyState::default(),
@@ -362,6 +372,8 @@ impl RunState {
                 self.windowed_gpu.resize(size);
                 self.hdr.resize(&self.windowed_gpu.gpu, size);
                 self.tonemap
+                    .rebuild_bindings(&self.windowed_gpu.gpu.device, &self.hdr);
+                self.auto_exposure
                     .rebuild_bindings(&self.windowed_gpu.gpu.device, &self.hdr);
             }
             WindowEvent::KeyboardInput {
@@ -673,15 +685,30 @@ impl RunState {
             world_bind_group: &self.bindings.world_bind_group,
             luts_bind_group,
             frame_uniforms: &frame_uniforms,
+            weather: &self.weather,
         };
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
 
-        // Tone-map.
+        // Phase 9.2 debug auto-exposure: dispatch the reduction pass so
+        // the staging buffer holds an updated value for next frame's
+        // read-back. Skipped when the [debug] flag is off.
+        if config.debug.auto_exposure {
+            self.auto_exposure.dispatch(&mut encoder);
+        }
+
+        // Tone-map. When auto-exposure is on, prefer the latest derived
+        // EV100 (one-frame lag from the previous frame's read-back);
+        // otherwise the user-configured value.
+        let tm_ev100 = if config.debug.auto_exposure {
+            self.auto_exposure_ev100.unwrap_or(self.ev100)
+        } else {
+            self.ev100
+        };
         self.tonemap.render(
             &mut encoder,
             &self.windowed_gpu.gpu.queue,
             &swap_view,
-            self.ev100,
+            tm_ev100,
             self.tonemap_mode,
         );
 
@@ -701,6 +728,16 @@ impl RunState {
         }
 
         self.windowed_gpu.gpu.queue.submit([encoder.finish()]);
+        // Phase 9.2: drain the auto-exposure staging buffer (one-frame
+        // lag). Read-back blocks; that's acceptable for a debug mode.
+        if config.debug.auto_exposure {
+            if let Some(ev) = self
+                .auto_exposure
+                .read_back_ev100(&self.windowed_gpu.gpu.device)
+            {
+                self.auto_exposure_ev100 = Some(ev);
+            }
+        }
         frame.present();
 
         self.frame_index = self.frame_index.wrapping_add(1);

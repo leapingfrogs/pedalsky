@@ -71,4 +71,10 @@ pub struct RenderContext<'a> {
     pub luts_bind_group: Option<&'a wgpu::BindGroup>,
     /// Same uniforms passed to `prepare()`, for closures that need scalars.
     pub frame_uniforms: &'a FrameUniforms,
+    /// Synthesised weather state — same reference handed to `prepare()`,
+    /// re-exposed here so pass closures that need texture views from
+    /// `WeatherState.textures` (cloud march for the weather map, precip
+    /// for wind_field/density mask) can rebuild bind groups against the
+    /// live views inside the pass.
+    pub weather: &'a WeatherState,
 }

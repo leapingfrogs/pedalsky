@@ -187,14 +187,38 @@ impl HeadlessApp {
         surface_override: Option<ps_core::SurfaceParams>,
         cloud_mask_override: Option<f32>,
     ) -> Vec<u8> {
+        self.render_one_frame_full(
+            gpu,
+            camera,
+            surface_override,
+            cloud_mask_override,
+            None,
+        )
+    }
+
+    /// Full-fat variant for tests that need to override the world state
+    /// (e.g. twilight tests that move the sun below the horizon).
+    pub fn render_one_frame_full(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+        surface_override: Option<ps_core::SurfaceParams>,
+        cloud_mask_override: Option<f32>,
+        world_override: Option<ps_core::WorldState>,
+    ) -> Vec<u8> {
         let (w, h) = self.setup.size;
         let aspect = w as f32 / h as f32;
         let view = camera.view_matrix();
         let proj = camera.projection_matrix(aspect);
         // World state for tests defaults to J2000.0 noon at the equator —
         // gives a sun overhead, useful for sky tests.
-        let world = ps_core::WorldState::default();
+        let world = world_override.unwrap_or_default();
         let mut weather = ps_core::WeatherState::stub_for_tests(gpu);
+        // Sync the stubbed weather to the (possibly overridden) world's
+        // sun direction so the atmosphere LUT bake reflects the test
+        // scenario.
+        weather.sun_direction = world.sun_direction_world;
+        weather.sun_illuminance = glam::Vec3::splat(world.toa_illuminance_lux);
         if let Some(s) = surface_override {
             weather.surface = s;
         }
@@ -294,6 +318,7 @@ impl HeadlessApp {
             world_bind_group: &self.setup.bindings.world_bind_group,
             luts_bind_group,
             frame_uniforms: &frame_uniforms,
+            weather: &weather,
         };
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
 

@@ -444,6 +444,19 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 ty: texture_2d,
                 count: None,
             },
+            // Binding 9: HDR framebuffer's depth view, sampled via
+            // textureLoad (no sampler needed). Used by the cloud march
+            // for per-pixel depth-aware termination per plan §9.1.
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
 }

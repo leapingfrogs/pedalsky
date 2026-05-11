@@ -6,6 +6,8 @@
 
 #![deny(missing_docs)]
 
+pub mod auto_exposure;
 pub mod tonemap;
 
+pub use auto_exposure::AutoExposure;
 pub use tonemap::{Tonemap, TonemapMode};

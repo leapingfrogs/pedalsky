@@ -31,6 +31,9 @@
 @group(2) @binding(6) var<uniform> params: CloudParams;
 @group(2) @binding(7) var<storage, read> cloud_layers: CloudLayerArray;
 @group(2) @binding(8) var weather_map: texture_2d<f32>;
+// Phase 9.1: per-pixel HDR depth used as the cloud march t_max so
+// clouds correctly clip behind opaque geometry.
+@group(2) @binding(9) var scene_depth: texture_depth_2d;
 
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut:  texture_2d<f32>;
@@ -332,6 +335,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let jitter_xy = vec2<i32>(i32(in.pos.x), i32(in.pos.y));
     let jitter = textureLoad(blue_noise, jitter_xy & vec2<i32>(63), 0).r;
 
+    // Phase 9.1 depth-aware termination: read the HDR depth at this
+    // pixel and convert to a world-space distance along the view ray.
+    // depth_ndc == 0 means the pixel reached the far plane (sky); the
+    // march should run to its full per-layer interval. Otherwise t_max
+    // is the distance from the camera to the opaque hit so clouds clip
+    // behind ground / future opaque geometry.
+    let depth_ndc = textureLoad(scene_depth, jitter_xy, 0);
+    var depth_t_max: f32 = 1.0e30;
+    if (depth_ndc > 0.0) {
+        let viewport = frame.viewport_size.xy;
+        let ndc = vec2<f32>(
+            (in.pos.x / viewport.x) * 2.0 - 1.0,
+            1.0 - (in.pos.y / viewport.y) * 2.0,
+        );
+        let h = frame.inv_view_proj * vec4<f32>(ndc, depth_ndc, 1.0);
+        let world = h.xyz / h.w;
+        depth_t_max = max(length(world - ray.origin), 0.0);
+    }
+
     // Per-layer intervals.
     var hits: array<LayerHit, 8>;
     let layer_count = min(params.cloud_layer_count, MAX_CLOUD_LAYERS);
@@ -340,8 +362,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         var t1: f32;
         let ok = ray_layer_intersect(ray.origin, ray.dir,
                                      cloud_layers.layers[l], &t0, &t1);
+        // Clip the layer interval against the opaque hit. If the entire
+        // interval is behind the depth buffer, mark the layer as not hit.
         var flag: u32 = 0u;
-        if (ok) { flag = 1u; }
+        if (ok) {
+            t1 = min(t1, depth_t_max);
+            if (t1 > t0) { flag = 1u; }
+        }
         hits[l] = LayerHit(l, t0, t1, flag);
     }
 
