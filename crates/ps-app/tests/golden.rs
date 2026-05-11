@@ -27,14 +27,14 @@ const RENDER_H: u32 = 720;
 /// `crates/ps-app/src/bin/ps-bless.rs` so the regenerated goldens
 /// share the same render parameters.
 const SCENES: &[(&str, &str, f32)] = &[
-    ("clear_summer_noon", "2026-06-21T11:00:00Z", 15.0),
-    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 15.0),
+    ("clear_summer_noon", "2026-06-21T11:00:00Z", 14.0),
+    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0),
     ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0),
     ("thunderstorm", "2026-08-16T16:00:00Z", 14.0),
     ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0),
-    ("winter_overcast_snow", "2026-01-08T09:00:00Z", 15.0),
+    ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0),
     ("twilight_civil", "2026-12-21T04:30:00Z", 8.0),
-    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 15.0),
+    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 14.0),
 ];
 
 fn workspace_root() -> PathBuf {

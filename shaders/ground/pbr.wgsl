@@ -323,8 +323,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // tint slider still applies.
     let cell = voronoi(p.xz, 5.0);
     let palette = voronoi_palette(cell.x);
-    let base_albedo = palette * (world.ground_albedo.rgb * 3.0); // palette already
-                                                                  // averages ~0.18.
+    // The palette entries average ~0.18 (a generic ground albedo).
+    // world.ground_albedo acts as a tint: with the default (0.18,0.18,0.18)
+    // it leaves the palette unchanged; brighter values scale up uniformly,
+    // and per-channel values let the user push the ground warmer or cooler.
+    let base_albedo = palette * (world.ground_albedo.rgb / 0.18);
     let base_roughness = 0.85;
     let dielectric_f0 = vec3<f32>(0.04);
 

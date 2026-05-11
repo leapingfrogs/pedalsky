@@ -5,7 +5,7 @@
 # triggers the snow rendering path in the ground shader.
 #
 # Equivalent METAR (synthetic):
-#   EGPN 080900Z 03007KT 6000 -SN SCT008 BKN015 M03/M04 Q1010 NOSIG
+#   EGPN 081200Z 03007KT 6000 -SN SCT008 BKN015 M03/M04 Q1010 NOSIG
 
 schema_version = 1
 
