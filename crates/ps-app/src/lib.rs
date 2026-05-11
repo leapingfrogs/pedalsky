@@ -8,6 +8,7 @@
 
 pub mod headless_dump;
 pub mod main_helpers;
+pub mod probe;
 pub mod test_harness;
 
 /// Internal: convert `[time]` from the engine config into a UTC `DateTime`.

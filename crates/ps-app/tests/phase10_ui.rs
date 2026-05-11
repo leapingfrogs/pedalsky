@@ -179,6 +179,50 @@ fn ui_state_round_trips_through_handle() {
 }
 
 #[test]
+fn probe_transmittance_returns_sensible_rgb() {
+    // Phase 10.A4 — dispatch the probe compute, read back, check
+    // values are in (0, 1) and finite. Centre-pixel through the
+    // atmosphere from sea level looking forward should give non-zero
+    // transmittance dominated by red (Rayleigh scatters blue more).
+    let Some(gpu) = gpu() else { return };
+    let mut config = baseline_config();
+    config.render.subsystems.atmosphere = true;
+    let setup = TestSetup::new(gpu, &config, (64, 64));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    // Render a frame so the LUTs are baked.
+    let _ = app.render_one_frame(gpu);
+
+    // Now run the probe.
+    let probe = ps_app::probe::ProbeReadback::new(gpu);
+    let luts = app
+        .atmosphere_luts_for_diag()
+        .expect("LUTs published");
+    // Build minimal frame + world bind groups via the test harness's
+    // shared bindings.
+    let result = {
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("probe-test"),
+        });
+        probe.dispatch(
+            &mut encoder,
+            &gpu.queue,
+            &gpu.device,
+            (32, 32),
+            app.frame_bind_group_for_test(),
+            app.world_bind_group_for_test(),
+            &luts.bind_group,
+        );
+        gpu.queue.submit([encoder.finish()]);
+        probe.read(gpu).expect("read probe")
+    };
+    eprintln!("probe transmittance = {result:?}");
+    for c in &result {
+        assert!(c.is_finite(), "transmittance must be finite (got {result:?})");
+        assert!(*c >= 0.0 && *c <= 1.0, "transmittance out of [0,1]: {result:?}");
+    }
+}
+
+#[test]
 fn gpu_timestamps_drain_returns_per_pass_durations() {
     // App::drain_gpu_timings should return one entry per registered
     // pass when the device supports timestamps. NVIDIA's Vulkan driver

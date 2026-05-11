@@ -167,6 +167,16 @@ impl HeadlessApp {
         &self.app
     }
 
+    /// Test-only accessor for the canonical group-0 bind group.
+    pub fn frame_bind_group_for_test(&self) -> &wgpu::BindGroup {
+        &self.setup.bindings.frame_bind_group
+    }
+
+    /// Test-only accessor for the canonical group-1 bind group.
+    pub fn world_bind_group_for_test(&self) -> &wgpu::BindGroup {
+        &self.setup.bindings.world_bind_group
+    }
+
     /// Apply a new config in place (mirrors the hot-reload path).
     pub fn reconfigure(&mut self, gpu: &GpuContext, config: &Config) -> Result<()> {
         self.app

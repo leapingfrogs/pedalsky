@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use ps_core::Config;
+use ps_core::{AtmosphereParams, Config, Scene};
 
 /// Side-channel state populated by panel logic and drained by the host.
 #[derive(Default)]
@@ -36,6 +36,16 @@ pub struct UiPending {
     /// Save current state to file. Host writes both pedalsky.toml and
     /// the scene TOML.
     pub save_scene: Option<PathBuf>,
+
+    /// Phase 10.A1: live atmosphere parameter override. Host applies
+    /// directly to WeatherState.atmosphere and triggers the
+    /// atmosphere subsystem's static-LUT re-bake.
+    pub live_atmosphere: Option<AtmosphereParams>,
+
+    /// Phase 10.A2/A3: live scene override (wetness, snow, cloud
+    /// layers). Host replaces the in-memory Scene and re-synthesises
+    /// WeatherState.
+    pub live_scene: Option<Scene>,
 }
 
 /// Read-only frame stats the host pushes into the UI for the Debug panel.
@@ -79,6 +89,15 @@ pub struct UiState {
     pub world_readout: UiWorldReadout,
     /// Cached debug-panel selections (LUT viewer modes etc.).
     pub debug: UiDebugSelection,
+    /// Mirror of the host's live `Scene` (host pushes each frame).
+    /// Atmosphere / wet-surface / cloud-layer panels read current
+    /// values from here; their slider edits clone, mutate, and write
+    /// back via `pending.live_scene`.
+    pub latest_scene: Option<Scene>,
+    /// Mirror of the host's live `WeatherState.atmosphere` (host pushes
+    /// each frame). The atmosphere coefficient panel reads current
+    /// values from here.
+    pub latest_atmosphere: Option<AtmosphereParams>,
 }
 
 /// Debug-panel toggles that don't belong in `Config`.
@@ -104,6 +123,8 @@ impl UiState {
             frame_stats: UiFrameStats::default(),
             world_readout: UiWorldReadout::default(),
             debug: UiDebugSelection::default(),
+            latest_scene: None,
+            latest_atmosphere: None,
         }
     }
 }

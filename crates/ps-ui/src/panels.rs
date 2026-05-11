@@ -413,72 +413,236 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
 
 fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("Atmosphere", |ui| {
+        // Tuning toggles (config-side).
         let a = &mut state.live_config.render.atmosphere;
-        let mut any = false;
-        any |= ui.checkbox(&mut a.multi_scattering, "Multi-scattering").changed();
-        any |= ui.checkbox(&mut a.sun_disk, "Sun disk").changed();
-        any |= ui.checkbox(&mut a.ozone_enabled, "Ozone").changed();
-        any |= Slider::new(&mut a.sun_angular_radius_deg, 0.05..=2.0)
+        let mut tuning_changed = false;
+        tuning_changed |= ui.checkbox(&mut a.multi_scattering, "Multi-scattering").changed();
+        tuning_changed |= ui.checkbox(&mut a.sun_disk, "Sun disk").changed();
+        tuning_changed |= ui.checkbox(&mut a.ozone_enabled, "Ozone").changed();
+        tuning_changed |= Slider::new(&mut a.sun_angular_radius_deg, 0.05..=2.0)
             .text("Sun angular radius (deg)")
             .max_decimals(4)
             .ui(ui)
             .changed();
-
-        if ui.button("Reset to physical Earth defaults").clicked() {
-            *a = ps_core::config::AtmosphereTuning::default();
-            any = true;
-        }
-        if any {
+        if tuning_changed {
             state.pending.config_dirty = true;
         }
-        ui.label(
-            "Note: physical AtmosphereParams (Rayleigh / Mie / ozone profiles) \
-             are wired through `ps_core::AtmosphereParams::default` by the \
-             synthesis pipeline. UI exposure of those individual coefficients \
-             ships with v2 — the WeatherState rebake hook is in place.",
-        );
+
+        ui.separator();
+        ui.label("Physical parameters (AtmosphereParams)");
+        // Coefficient sliders (WeatherState-side).
+        let Some(current) = state.latest_atmosphere else {
+            ui.label("(awaiting first frame to mirror WeatherState)");
+            return;
+        };
+        let mut atmo = current;
+        let mut any = false;
+        // Planet geometry.
+        any |= drag_f32(ui, &mut atmo.planet_radius_m, "planet_radius_m",
+                         1.0e6..=1.0e8, 1000.0);
+        any |= drag_f32(ui, &mut atmo.atmosphere_top_m, "atmosphere_top_m",
+                         1.0e4..=2.0e6, 1000.0);
+        any |= drag_f32(ui, &mut atmo.rayleigh_scale_height_m,
+                         "rayleigh_scale_height_m", 100.0..=20000.0, 100.0);
+        any |= drag_f32(ui, &mut atmo.mie_scale_height_m,
+                         "mie_scale_height_m", 100.0..=10000.0, 100.0);
+        // Rayleigh scattering (per-channel).
+        ui.label("Rayleigh scattering (per metre)");
+        any |= drag_vec4_xyz(ui, &mut atmo.rayleigh_scattering, "rayleigh", 1e-7);
+        // Mie scattering / absorption.
+        ui.label("Mie scattering (per metre)");
+        any |= drag_vec4_xyz(ui, &mut atmo.mie_scattering, "mie_s", 1e-7);
+        ui.label("Mie absorption (per metre)");
+        any |= drag_vec4_xyz(ui, &mut atmo.mie_absorption, "mie_a", 1e-7);
+        any |= Slider::new(&mut atmo.mie_g, 0.0..=0.99)
+            .text("mie_g (HG anisotropy)")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        // Ozone.
+        ui.label("Ozone absorption (per metre)");
+        any |= drag_vec4_xyz(ui, &mut atmo.ozone_absorption, "ozone", 1e-8);
+        any |= drag_f32(ui, &mut atmo.ozone_center_m, "ozone_center_m",
+                         0.0..=80000.0, 100.0);
+        any |= drag_f32(ui, &mut atmo.ozone_thickness_m, "ozone_thickness_m",
+                         100.0..=80000.0, 100.0);
+        // Ground albedo (for atmosphere bounce).
+        ui.label("Ground albedo (atmosphere bounce)");
+        any |= drag_vec4_xyz(ui, &mut atmo.ground_albedo, "albedo", 0.01);
+
+        if ui.button("Reset to Earth defaults").clicked() {
+            atmo = ps_core::AtmosphereParams::default();
+            any = true;
+        }
+
+        if any {
+            state.latest_atmosphere = Some(atmo);
+            state.pending.live_atmosphere = Some(atmo);
+        }
     });
 }
 
+fn drag_f32(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    label: &str,
+    range: std::ops::RangeInclusive<f32>,
+    speed: f32,
+) -> bool {
+    ui.horizontal(|ui| {
+        let mut v = *value;
+        let r = DragValue::new(&mut v)
+            .range(*range.start()..=*range.end())
+            .speed(speed)
+            .max_decimals(6)
+            .ui(ui);
+        ui.label(label);
+        if r.changed() {
+            *value = v;
+            true
+        } else {
+            false
+        }
+    })
+    .inner
+}
+
+fn drag_vec4_xyz(
+    ui: &mut egui::Ui,
+    value: &mut glam::Vec4,
+    label: &str,
+    speed: f32,
+) -> bool {
+    let mut any = false;
+    ui.horizontal(|ui| {
+        ui.label(format!("{label}.r"));
+        let mut x = value.x;
+        if DragValue::new(&mut x).speed(speed).max_decimals(8).ui(ui).changed() {
+            value.x = x;
+            any = true;
+        }
+        ui.label(format!("{label}.g"));
+        let mut y = value.y;
+        if DragValue::new(&mut y).speed(speed).max_decimals(8).ui(ui).changed() {
+            value.y = y;
+            any = true;
+        }
+        ui.label(format!("{label}.b"));
+        let mut z = value.z;
+        if DragValue::new(&mut z).speed(speed).max_decimals(8).ui(ui).changed() {
+            value.z = z;
+            any = true;
+        }
+    });
+    any
+}
+
 // ---------------------------------------------------------------------------
-// Clouds panel — every CloudsTuning field + per-layer overrides
+// Clouds panel — every CloudsTuning field + per-layer accordions
 // ---------------------------------------------------------------------------
 
 fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("Clouds", |ui| {
+        // Engine-side march tuning.
         let c = &mut state.live_config.render.clouds;
-        let mut any = false;
-        any |= Slider::new(&mut c.cloud_steps, 32..=512)
+        let mut tuning_changed = false;
+        tuning_changed |= Slider::new(&mut c.cloud_steps, 32..=512)
             .text("Cloud march steps")
             .ui(ui)
             .changed();
-        any |= Slider::new(&mut c.light_steps, 1..=16)
+        tuning_changed |= Slider::new(&mut c.light_steps, 1..=16)
             .text("Light march steps")
             .ui(ui)
             .changed();
-        any |= Slider::new(&mut c.multi_scatter_octaves, 1..=8)
+        tuning_changed |= Slider::new(&mut c.multi_scatter_octaves, 1..=8)
             .text("Multi-scatter octaves")
             .ui(ui)
             .changed();
-        any |= Slider::new(&mut c.detail_strength, 0.0..=1.0)
+        tuning_changed |= Slider::new(&mut c.detail_strength, 0.0..=1.0)
             .text("Detail strength")
             .max_decimals(4)
             .ui(ui)
             .changed();
-        any |= Slider::new(&mut c.powder_strength, 0.0..=1.0)
+        tuning_changed |= Slider::new(&mut c.powder_strength, 0.0..=1.0)
             .text("Powder strength")
             .max_decimals(4)
             .ui(ui)
             .changed();
-        any |= ui.checkbox(&mut c.freeze_time, "Freeze time").changed();
-        if any {
+        tuning_changed |= ui.checkbox(&mut c.freeze_time, "Freeze time").changed();
+        if tuning_changed {
             state.pending.config_dirty = true;
         }
-        ui.label(
-            "Per-layer envelopes (CloudLayerGpu) come from the loaded scene; \
-             reload via Save scene… → edit → Load scene… or the v2 layer \
-             accordions (planned).",
-        );
+
+        ui.separator();
+        ui.label("Layers (Scene.clouds.layers)");
+        let Some(scene) = state.latest_scene.as_ref() else {
+            ui.label("(awaiting first frame to mirror Scene)");
+            return;
+        };
+        let mut new_scene = scene.clone();
+        let mut layers_changed = false;
+        for (i, layer) in new_scene.clouds.layers.iter_mut().enumerate() {
+            ui.collapsing(format!("Layer {i}: {:?}", layer.cloud_type), |ui| {
+                layers_changed |= drag_f32(ui, &mut layer.base_m, "base_m",
+                                            0.0..=18000.0, 10.0);
+                layers_changed |= drag_f32(ui, &mut layer.top_m, "top_m",
+                                            0.0..=18000.0, 10.0);
+                layers_changed |= Slider::new(&mut layer.coverage, 0.0..=1.0)
+                    .text("coverage")
+                    .max_decimals(4)
+                    .ui(ui)
+                    .changed();
+                layers_changed |= Slider::new(&mut layer.density_scale, 0.0..=4.0)
+                    .text("density_scale")
+                    .max_decimals(4)
+                    .ui(ui)
+                    .changed();
+                ui.horizontal(|ui| {
+                    ui.label("type");
+                    ComboBox::from_id_salt(format!("ps-ui-cloud-kind-{i}"))
+                        .selected_text(format!("{:?}", layer.cloud_type))
+                        .show_ui(ui, |ui| {
+                            use ps_core::CloudType;
+                            for k in [
+                                CloudType::Cumulus,
+                                CloudType::Stratus,
+                                CloudType::Stratocumulus,
+                                CloudType::Altocumulus,
+                                CloudType::Altostratus,
+                                CloudType::Cirrus,
+                                CloudType::Cirrostratus,
+                                CloudType::Cumulonimbus,
+                            ] {
+                                if ui
+                                    .selectable_label(
+                                        layer.cloud_type == k,
+                                        format!("{k:?}"),
+                                    )
+                                    .clicked()
+                                    && layer.cloud_type != k
+                                {
+                                    layer.cloud_type = k;
+                                    layers_changed = true;
+                                }
+                            }
+                        });
+                });
+                layers_changed |= Slider::new(&mut layer.shape_octave_bias, -1.0..=1.0)
+                    .text("shape_octave_bias")
+                    .max_decimals(4)
+                    .ui(ui)
+                    .changed();
+                layers_changed |= Slider::new(&mut layer.detail_octave_bias, -1.0..=1.0)
+                    .text("detail_octave_bias")
+                    .max_decimals(4)
+                    .ui(ui)
+                    .changed();
+            });
+        }
+        if layers_changed {
+            state.latest_scene = Some(new_scene.clone());
+            state.pending.live_scene = Some(new_scene);
+        }
     });
 }
 
@@ -486,13 +650,39 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
 // Wet surface panel — SurfaceParams.wetness block
 // ---------------------------------------------------------------------------
 
-fn wet_surface_panel(ui: &mut egui::Ui, _state: &mut UiState) {
+fn wet_surface_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("Wet surface", |ui| {
-        // Wet/snow values currently live on the *scene*, not the engine
-        // config. Edits flow through Load scene… → edit → Load scene…
-        // for now.
-        ui.label("Wetness, snow depth, and puddle parameters are scene-side.");
-        ui.label("Edit the scene TOML and Load scene… to apply.");
+        let Some(scene) = state.latest_scene.as_ref() else {
+            ui.label("(awaiting first frame to mirror Scene)");
+            return;
+        };
+        let mut new_scene = scene.clone();
+        let w = &mut new_scene.surface.wetness;
+        let mut any = false;
+        any |= Slider::new(&mut w.ground_wetness, 0.0..=1.0)
+            .text("ground_wetness")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        any |= Slider::new(&mut w.puddle_coverage, 0.0..=1.0)
+            .text("puddle_coverage")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        any |= Slider::new(&mut w.puddle_start, 0.0..=1.0)
+            .text("puddle_start")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        any |= Slider::new(&mut w.snow_depth_m, 0.0..=1.0)
+            .text("snow_depth_m")
+            .max_decimals(4)
+            .ui(ui)
+            .changed();
+        if any {
+            state.latest_scene = Some(new_scene.clone());
+            state.pending.live_scene = Some(new_scene);
+        }
     });
 }
 

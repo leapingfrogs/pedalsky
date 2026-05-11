@@ -151,6 +151,8 @@ struct RunState {
     /// `app` via the factory dispatch path). Used to feed winit events
     /// into egui and to call `build_ui_frame` each frame.
     ui_bridge: std::sync::Arc<ps_ui::UiBridge>,
+    /// Phase 10.A4 probe-pixel transmittance readback.
+    probe: ps_app::probe::ProbeReadback,
     /// `App` constructed from factories. Owns backdrop/ground/tint.
     app: App,
     /// Phase 5: LUTs handle published by `AtmosphereFactory`. `None`
@@ -229,7 +231,7 @@ impl ApplicationHandler for AppShell {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        state.handle_window_event(event_loop, event, &mut self.config);
+        state.handle_window_event(event_loop, event, &mut self.config, &mut self.scene);
     }
 
     fn device_event(
@@ -304,6 +306,7 @@ impl RunState {
             &hdr,
         ));
 
+        let probe = ps_app::probe::ProbeReadback::new(&windowed.gpu);
         let ui_handle = ps_ui::UiHandle::new(config.clone());
         let (app, atmosphere_luts_cell, tonemap_handle, ui_bridge) = build_app(
             config,
@@ -375,6 +378,7 @@ impl RunState {
             tonemap_handle,
             ui_handle,
             ui_bridge,
+            probe,
             app,
             camera,
             keys: KeyState::default(),
@@ -402,6 +406,7 @@ impl RunState {
         event_loop: &ActiveEventLoop,
         event: WindowEvent,
         config: &mut Config,
+        scene: &mut Scene,
     ) {
         // Phase 10: forward the event to egui first. If egui consumes
         // it (e.g. focus on a slider, mouse over a panel), don't pass
@@ -443,7 +448,7 @@ impl RunState {
                 self.set_cursor_grab(false);
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = self.draw(config) {
+                if let Err(e) = self.draw(config, scene) {
                     tracing::error!(error = %e, "draw failed");
                     event_loop.exit();
                 }
@@ -595,7 +600,7 @@ impl RunState {
         }
     }
 
-    fn draw(&mut self, config: &mut Config) -> Result<()> {
+    fn draw(&mut self, config: &mut Config, scene: &mut Scene) -> Result<()> {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().max(1e-6);
         self.last_frame = now;
@@ -763,6 +768,21 @@ impl RunState {
         self.ui_bridge.build_ui_frame(&self.window);
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
 
+        // Phase 10.A4: dispatch the probe-pixel transmittance probe.
+        // No-op if atmosphere is disabled (no LUT bind group).
+        if let Some(luts_bg) = luts_bind_group {
+            let probe_pixel = self.ui_handle.lock().debug.probe_pixel;
+            self.probe.dispatch(
+                &mut encoder,
+                &self.windowed_gpu.gpu.queue,
+                &self.windowed_gpu.gpu.device,
+                probe_pixel,
+                &self.bindings.frame_bind_group,
+                &self.bindings.world_bind_group,
+                luts_bg,
+            );
+        }
+
         // Phase 5 debug overlay (after tone-map; writes to the swapchain
         // with LoadOp::Load so the tone-mapped scene shows through where
         // the overlay isn't drawing).
@@ -788,8 +808,14 @@ impl RunState {
         if !gpu_passes.is_empty() {
             self.ui_handle.lock().frame_stats.gpu_passes = gpu_passes;
         }
+        // Phase 10.A4: drain probe-pixel transmittance.
+        if luts_bind_group.is_some() {
+            if let Ok(t) = self.probe.read(&self.windowed_gpu.gpu) {
+                self.ui_handle.lock().debug.probe_transmittance = t;
+            }
+        }
         // Phase 10.3 / 10.4: drain UI pending requests.
-        self.drain_ui_pending(config)?;
+        self.drain_ui_pending(config, scene)?;
         frame.present();
 
         self.frame_index = self.frame_index.wrapping_add(1);
@@ -805,8 +831,8 @@ impl RunState {
         Ok(())
     }
 
-    /// Phase 10.3/10.4 — drain pending UI requests after each frame.
-    fn drain_ui_pending(&mut self, config: &mut Config) -> Result<()> {
+    /// Phase 10.3/10.4/10.A — drain pending UI requests after each frame.
+    fn drain_ui_pending(&mut self, config: &mut Config, scene: &mut Scene) -> Result<()> {
         let pending = std::mem::take(&mut self.ui_handle.lock().pending);
 
         // 10.3: slider edits → reconfigure.
@@ -852,9 +878,10 @@ impl RunState {
         // 10.4: scene load/save.
         if let Some(path) = pending.load_scene {
             match Scene::load(&path) {
-                Ok(scene) => {
+                Ok(loaded) => {
                     info!(target: "ps_app", path = %path.display(), "loading scene");
-                    self.resynthesise_weather(&scene, config);
+                    *scene = loaded;
+                    self.resynthesise_weather(scene, config);
                 }
                 Err(e) => warn!(error = %e, "load scene failed"),
             }
@@ -863,6 +890,32 @@ impl RunState {
             if let Err(e) = self.write_scene_toml(&path, config) {
                 warn!(error = %e, "save scene failed");
             }
+        }
+
+        // 10.A1 — atmosphere coefficient edits land directly into the
+        // live WeatherState; the atmosphere subsystem detects the
+        // change at next frame's prepare via reconfigure (which marks
+        // its static LUTs dirty).
+        if let Some(atmo) = pending.live_atmosphere {
+            self.weather.atmosphere = atmo;
+            // Force atmosphere subsystem to re-bake static LUTs.
+            self.app
+                .reconfigure(config, &self.windowed_gpu.gpu)
+                .context("App::reconfigure (live atmo)")?;
+        }
+
+        // 10.A2 / 10.A3 — scene-side edits trigger a re-synthesise of
+        // the WeatherState (cloud layers, surface wetness etc.).
+        if let Some(new_scene) = pending.live_scene {
+            *scene = new_scene;
+            self.resynthesise_weather(scene, config);
+        }
+
+        // Push live mirrors into the UI for the next frame's panels.
+        {
+            let mut s = self.ui_handle.lock();
+            s.latest_atmosphere = Some(self.weather.atmosphere);
+            s.latest_scene = Some(scene.clone());
         }
 
         Ok(())
