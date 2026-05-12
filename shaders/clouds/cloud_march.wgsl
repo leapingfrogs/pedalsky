@@ -190,6 +190,42 @@ const APPROX_MIE_D_MIN: f32 = 5.0;
 const APPROX_MIE_D_MAX: f32 = 50.0;
 const CB_ANVIL_DROPLET_DIAMETER_UM: f32 = 50.0;
 
+/// Ice halo features at 22° and 46° from the sun direction. Real
+/// hexagonal ice crystals refract light through 60° prism faces,
+/// producing concentrated angular peaks at these two deflection
+/// angles. The 22° halo (single refraction) is the headline
+/// feature — most photographs of cirrus around the sun show a
+/// faint circle of brightness at this angle; the 46° halo (double
+/// refraction) is fainter and rarer.
+///
+/// No HG/Draine-class approximation captures these features (they
+/// arise from coherent geometric optics through ordered crystal
+/// shapes, not from probabilistic single-scatter integrals). We add
+/// them as two narrow Gaussian-like lobes on top of the Approximate
+/// Mie evaluation, gated by an ice fraction smoothly ramped from
+/// the water/ice boundary at d ≈ 35 µm.
+///
+/// Strength is intentionally subtle (peak 8% amplitude relative to
+/// the Mie evaluation). Width is 0.5° (Gaussian σ in angle space)
+/// — narrow enough to read as a halo, wide enough to survive a
+/// modest march step count.
+const ICE_HALO_22_COS:    f32 = 0.92718; // cos(22°)
+const ICE_HALO_46_COS:    f32 = 0.69466; // cos(46°)
+const ICE_HALO_WIDTH_DEG: f32 = 0.5;
+const ICE_HALO_22_PEAK:   f32 = 0.08;
+const ICE_HALO_46_PEAK:   f32 = 0.03;
+const ICE_DIAMETER_LOW:   f32 = 35.0;
+const ICE_DIAMETER_HIGH:  f32 = 50.0;
+
+fn ice_halo_lobe(cos_theta: f32, peak_cos: f32, width_rad: f32) -> f32 {
+    // Approximate the angular Gaussian via a Gaussian in cos-space.
+    // For small width, cos(α + δ) ≈ cos(α) - sin(α)·δ, so a
+    // width-σ in degrees becomes width-σ·sin(α) in cos-space.
+    let sigma_cos = width_rad * sqrt(max(1.0 - peak_cos * peak_cos, 1e-4));
+    let dx = (cos_theta - peak_cos) / max(sigma_cos, 1e-4);
+    return exp(-0.5 * dx * dx);
+}
+
 fn cloud_phase(
     cos_theta: f32, layer: CloudLayerGpu, h_norm: f32, g_scale: f32,
 ) -> f32 {
@@ -211,7 +247,22 @@ fn cloud_phase(
     // is fit-dependent and untouched. cos_theta is geometric.
     let p_hg = henyey_greenstein(cos_theta, g_hg * g_scale);
     let p_d  = draine_phase(cos_theta, g_d * g_scale, alpha);
-    return (1.0 - w_d) * p_hg + w_d * p_d;
+    var p_mie = (1.0 - w_d) * p_hg + w_d * p_d;
+
+    // Ice halo lobes — ramp in from the water/ice boundary. The
+    // multi-octave g_scale also broadens the halo across successive
+    // octaves (physically: forward-multiply-scattered light loses
+    // angular precision), which keeps the halo from "punching
+    // through" the diffuse multi-scatter background.
+    let ice_fraction = smoothstep(ICE_DIAMETER_LOW, ICE_DIAMETER_HIGH, d);
+    if (ice_fraction > 0.0) {
+        let width = radians(ICE_HALO_WIDTH_DEG) / max(g_scale, 0.1);
+        let h22 = ice_halo_lobe(cos_theta, ICE_HALO_22_COS, width);
+        let h46 = ice_halo_lobe(cos_theta, ICE_HALO_46_COS, width);
+        let halo = ICE_HALO_22_PEAK * h22 + ICE_HALO_46_PEAK * h46;
+        p_mie = p_mie + ice_fraction * halo;
+    }
+    return p_mie;
 }
 
 // ---------------------------------------------------------------------------

@@ -198,6 +198,46 @@ approximation captures the *direction* of the wavelength
 dependence (blue scatters more as droplets shrink) without paying
 the full per-channel Mie evaluation cost.
 
+### Ice halos at 22° / 46°
+
+Hexagonal ice crystals refract light through 60° prism faces,
+producing concentrated angular peaks at **22°** (single internal
+refraction — the headline halo, visible as a sharp circle around
+the sun in many cirrus photographs) and **46°** (double internal
+refraction — fainter and rarer). No HG/Draine-class approximation
+captures these features: they arise from coherent geometric optics
+through ordered crystal shapes, not from probabilistic
+single-scatter integrals.
+
+`cloud_phase` in the cloud march adds two narrow Gaussian-like
+lobes on top of the Approximate Mie evaluation:
+
+- **Peak positions:** `cos_theta = cos(22°) ≈ 0.927`,
+  `cos(46°) ≈ 0.695`.
+- **Width:** 0.5° Gaussian sigma in angle space (converted to
+  cos-space via `σ_cos ≈ σ_rad · sin(angle)`).
+- **Peak amplitudes:** 8% (22°) and 3% (46°) relative to the Mie
+  value. Tuned subtle — real halos are faint rings, not bright
+  arcs.
+- **Ice fraction gate:** `smoothstep(35, 50, droplet_diameter_um)`.
+  Below 35 µm (water-cloud regime) the halo is absent; above 50 µm
+  (full ice) it's at full strength. Cumulonimbus's mixed-phase
+  diameter blend already crosses this threshold inside the anvil
+  region.
+- **Multi-octave broadening:** the Hillaire `g_scale` factor
+  widens the halo across successive multi-scatter octaves —
+  physically the halo loses angular precision as light bounces
+  multiple times. This also prevents the halo from "punching
+  through" the diffuse multi-scatter background.
+
+The 22° halo is the most visually identifiable cue that
+distinguishes ice clouds from water clouds in photographs.
+PedalSky's implementation isn't perfect — real halos can include
+sun dogs, upper tangent arcs, parhelic circles, and other features
+keyed to specific crystal orientations — but the two-lobe
+approximation captures the headline angular feature that no
+HG/Draine fit can.
+
 ### Anvil bias
 
 `anvil_bias = 1.0` for Cumulonimbus only (others default to 0).
@@ -283,13 +323,6 @@ apply globally rather than per-cloud-type.
 These are noted-but-not-yet-implemented improvements that would land
 the next tier of fidelity:
 
-- **Ice halos.** Sharp 22° / 46° lobes are characteristic of
-  hexagonal ice crystals and no HG/Draine-class approximation
-  captures them. Adding an explicit angular feature when the
-  view-to-sun cosine matches `cos 22°` or `cos 46°` for ice
-  clouds (`droplet_diameter_um > 35 µm` is a reasonable gate)
-  would recover the cue. Not currently implemented anywhere in
-  the real-time literature.
 - **Real-data ingestion path.** A `CloudLayer::from_nwp_grid_cell(...)`
   helper that takes (cloud_type, r_e, LWC/IWC, base, top, coverage)
   and produces a `CloudLayer` with the right `density_scale`,
