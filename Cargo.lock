@@ -1314,9 +1314,9 @@ dependencies = [
 
 [[package]]
 name = "image-compare"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bf712e96694f43e33b8394265e4d4bc06998c3648718148e4584d80dc3b3165"
+checksum = "176623a137baf75908084aff53578d6336cbd932bffaf12fabe26b343eb13338"
 dependencies = [
  "image",
  "itertools",
@@ -2389,12 +2389,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
-
-[[package]]
-name = "pollster"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
@@ -2498,7 +2492,7 @@ dependencies = [
  "image",
  "image-compare",
  "naga",
- "pollster 0.3.0",
+ "pollster",
  "ps-atmosphere",
  "ps-aurora",
  "ps-backdrop",
@@ -2593,7 +2587,7 @@ dependencies = [
  "half",
  "naga",
  "notify",
- "pollster 0.3.0",
+ "pollster",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -2987,7 +2981,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "percent-encoding",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",

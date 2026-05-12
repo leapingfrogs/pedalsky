@@ -30,7 +30,7 @@ publish = false
 # GPU + windowing
 wgpu       = { version = "29", features = ["trace"] }
 winit      = "0.30"
-pollster   = "0.3"
+pollster   = "0.4"
 
 # Math + GPU data layout
 glam      = { version = "0.32", features = ["serde", "bytemuck"] }
@@ -63,7 +63,7 @@ egui-winit      = "0.34"
 exr             = "1"
 
 # Golden-image regression (Phase 11.3)
-image-compare   = "0.4"
+image-compare   = "0.5"
 
 # Errors
 anyhow    = "1"
