@@ -261,6 +261,42 @@ pub fn default_density_scale(cloud_type: CloudType) -> f32 {
     }
 }
 
+/// Default per-cloud-type Henyey–Greenstein anisotropy
+/// `(g_forward, g_backward, g_blend)`.
+///
+/// Phase function is the single biggest driver of cloud *character*
+/// (silver-lining halo, sun-side glow, edge brightness). Water-
+/// droplet clouds with ~5–15 µm droplets exhibit a sharp forward
+/// lobe (g ≈ 0.85); ice-crystal clouds with hexagonal plates /
+/// columns scatter more isotropically (g ≈ 0.4) and have stronger
+/// side / backward components — the 22° / 46° halos that no HG
+/// approximation captures fully. The values below are the
+/// Schneider / Hillaire / Bouthors dual-lobe fits with an
+/// ice-crystal pair derived from TrueSky and SilverLining defaults
+/// (PedalSky research synthesis, 2026-05-12).
+///
+/// Cumulonimbus is mixed-phase (water core, ice anvil). For Phase
+/// 13 follow-up B we treat it as water-droplet uniformly; a future
+/// pass (item C) will interpolate between water and ice phase
+/// inside the layer based on normalised height.
+pub fn default_hg(cloud_type: CloudType) -> (f32, f32, f32) {
+    match cloud_type {
+        // Water-droplet clouds — Schneider 2015 / Hillaire 2016 /
+        // Bouthors 2008 fit to Mie at ~10 µm droplet radius.
+        CloudType::Cumulus
+        | CloudType::Stratus
+        | CloudType::Stratocumulus
+        | CloudType::Altocumulus
+        | CloudType::Cumulonimbus => (0.80, -0.30, 0.50),
+        // Mixed-phase altostratus — water at base, ice in upper deck.
+        // Sit between the two pairs.
+        CloudType::Altostratus => (0.65, -0.20, 0.45),
+        // Ice clouds — Baran 2012 ice phase function fit. Less
+        // forward-peaked, weaker backward lobe.
+        CloudType::Cirrus | CloudType::Cirrostratus => (0.40, -0.15, 0.40),
+    }
+}
+
 impl SurfaceMaterial {
     /// Numeric encoding stored in `SurfaceParams.material` (mirrors
     /// the WGSL constants in `pbr.wgsl`). Stable across versions.

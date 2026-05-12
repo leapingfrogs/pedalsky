@@ -183,6 +183,10 @@ mod tests {
             shape_bias: 0.0,
             detail_bias: 0.0,
             anvil_bias: 0.0,
+            g_forward: 0.80,
+            g_backward: -0.30,
+            g_blend: 0.50,
+            _pad_after_hg: 0.0,
         }
     }
 

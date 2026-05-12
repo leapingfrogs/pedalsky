@@ -89,6 +89,14 @@ impl Default for AtmosphereParams {
 pub type WorldUniformsGpu = AtmosphereParams;
 
 /// Per-cloud-layer parameters consumed by Phase 6 (plan §3.2 + §6).
+///
+/// Phase 13 follow-up — `g_forward / g_backward / g_blend` are now
+/// per-layer so the cloud march can use the correct
+/// Henyey–Greenstein anisotropy for water-droplet vs. ice-crystal
+/// clouds within the same frame. Synthesis populates these from
+/// `ps_core::default_hg(cloud_type)`; scenes don't currently
+/// override them. The global `CloudParams.hg_*_bias` multipliers
+/// scale them at render time.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable, PartialEq)]
 pub struct CloudLayerGpu {
@@ -108,6 +116,18 @@ pub struct CloudLayerGpu {
     pub detail_bias: f32,
     /// Anvil bias (only meaningful for Cumulonimbus).
     pub anvil_bias: f32,
+    /// Forward Henyey–Greenstein lobe `g`. Water clouds ≈ 0.85,
+    /// ice clouds ≈ 0.40. Picked by synthesis from cloud type.
+    pub g_forward: f32,
+    /// Backward HG lobe (negative). Water ≈ -0.30, ice ≈ -0.15.
+    pub g_backward: f32,
+    /// Dual-lobe blend factor. Conventionally 0.5; ice clouds sit
+    /// slightly lower (0.4) per Baran 2012.
+    pub g_blend: f32,
+    /// std140 / std430 alignment pad — keeps the struct array
+    /// stride at a multiple of 16 bytes regardless of which packing
+    /// model is in play.
+    pub _pad_after_hg: f32,
 }
 
 impl Default for CloudLayerGpu {
@@ -121,6 +141,10 @@ impl Default for CloudLayerGpu {
             shape_bias: 0.0,
             detail_bias: 0.0,
             anvil_bias: 0.0,
+            g_forward: 0.80,
+            g_backward: -0.30,
+            g_blend: 0.50,
+            _pad_after_hg: 0.0,
         }
     }
 }
@@ -448,7 +472,9 @@ mod tests {
         // Phase 4 will lock these against WGSL via naga; pin sizes now so
         // accidental layout changes are visible in code review.
         assert_eq!(std::mem::size_of::<AtmosphereParams>(), 144);
-        assert_eq!(std::mem::size_of::<CloudLayerGpu>(), 32);
+        // 32 in v1; bumped to 48 by per-layer Henyey–Greenstein
+        // (g_forward, g_backward, g_blend + one std140 trailing pad).
+        assert_eq!(std::mem::size_of::<CloudLayerGpu>(), 48);
         // Phase 13.4 bumped from 48 → 64 (added `material` +
         // 3 std140 pad scalars).
         assert_eq!(std::mem::size_of::<SurfaceParams>(), 64);

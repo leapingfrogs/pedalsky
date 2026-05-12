@@ -11,18 +11,23 @@ const MAX_CLOUD_LAYERS: u32 = 8u;
 // march can integrate per-channel transmittance with chromatic Mie
 // behaviour. WGSL packs `vec3<f32>` as 16-byte aligned but only 12
 // bytes used; a following scalar fits into the trailing 4 bytes.
-// `g_forward` deliberately follows `sigma_a` so it lives in those
-// 4 trailing bytes — the Rust struct in `params.rs` mirrors this
-// exact packing. The std140 linter in
+// `hg_forward_bias` deliberately follows `sigma_a` so it lives in
+// those 4 trailing bytes — the Rust struct in `params.rs` mirrors
+// this exact packing. The std140 linter in
 // `crates/ps-app/tests/wgsl_layout.rs` enforces it per-field.
+//
+// Phase 13 follow-up B — the HG anisotropy moved per-layer
+// (`CloudLayerGpu.g_forward / g_backward / g_blend`). What lives
+// here is a global multiplier the user can dial as an artistic
+// bias; default 1.0 reproduces the synthesised per-layer values.
 struct CloudParams {
     sigma_s: vec3<f32>,           // per-channel scattering /m
     _pad_after_sigma_s: f32,      // forces sigma_a onto a fresh 16 B chunk
     sigma_a: vec3<f32>,           // per-channel absorption /m
-    g_forward: f32,               // packs into sigma_a's trailing 4 bytes
+    hg_forward_bias: f32,         // multiplier on layer.g_forward; packs into sigma_a's trailing 4 bytes
 
-    g_backward: f32,              // -0.3
-    g_blend: f32,                 // 0.5
+    hg_backward_bias: f32,        // multiplier on layer.g_backward
+    hg_blend_bias: f32,           // multiplier on layer.g_blend (clamped [0,1] in shader)
     detail_strength: f32,         // 0.35
     curl_strength: f32,           // 0.1
 
@@ -60,6 +65,16 @@ struct CloudLayerGpu {
     shape_bias: f32,
     detail_bias: f32,
     anvil_bias: f32,
+    // Phase 13 follow-up — per-layer Henyey–Greenstein. Water-droplet
+    // clouds (cumulus / stratus / stratocumulus / altocumulus / cb
+    // core) ≈ (0.85, -0.30, 0.50); ice clouds (cirrus / cirrostratus)
+    // ≈ (0.40, -0.15, 0.40). Synthesis picks the right pair from the
+    // cloud type; the cloud march reads them directly. The global
+    // `CloudParams.hg_*_bias` multipliers scale them at render time.
+    g_forward: f32,
+    g_backward: f32,
+    g_blend: f32,
+    _pad_after_hg: f32,
 };
 
 struct CloudLayerArray {

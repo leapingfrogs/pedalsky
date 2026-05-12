@@ -22,8 +22,8 @@ pub const MAX_CLOUD_LAYERS: u32 = 8;
 /// Layout (each block is 16 B):
 ///
 ///   0  sigma_s.r/g/b + _pad_after_sigma_s
-///   1  sigma_a.r/g/b + g_forward
-///   2  g_backward, g_blend, detail_strength, curl_strength
+///   1  sigma_a.r/g/b + hg_forward_bias
+///   2  hg_backward_bias, hg_blend_bias, detail_strength, curl_strength
 ///   3  powder_strength, multi_scatter_a, multi_scatter_b, multi_scatter_c
 ///   4  ambient_strength, base_scale_m, detail_scale_m, weather_scale_m
 ///   5  light_steps, cloud_steps, multi_scatter_octaves, cloud_layer_count
@@ -44,14 +44,19 @@ pub struct CloudParamsGpu {
     /// Per-channel absorption coefficient (per metre). Near-zero for
     /// real water droplets across the visible spectrum.
     pub sigma_a: [f32; 3],
-    /// Forward HG g — packed into sigma_a's trailing 4 bytes per
-    /// std140 vec3 packing.
-    pub g_forward: f32,
+    /// Global multiplier applied to every layer's `g_forward`.
+    /// Default 1.0 = use the synthesised per-cloud-type value
+    /// unchanged. Phase 13 follow-up B promoted HG to per-layer;
+    /// this knob remains as an artistic bias the user can apply on
+    /// top. Packed into sigma_a's trailing 4 bytes per std140 vec3
+    /// packing.
+    pub hg_forward_bias: f32,
 
-    /// Backward HG g (negative).
-    pub g_backward: f32,
-    /// Dual-lobe blend factor.
-    pub g_blend: f32,
+    /// Global multiplier applied to every layer's `g_backward`.
+    pub hg_backward_bias: f32,
+    /// Global multiplier applied to every layer's `g_blend`. Result
+    /// is clamped to [0, 1] in the shader.
+    pub hg_blend_bias: f32,
     /// Detail erosion strength.
     pub detail_strength: f32,
     /// Curl perturbation strength.
@@ -122,10 +127,12 @@ impl Default for CloudParamsGpu {
             sigma_s: [0.030, 0.040, 0.060],
             _pad_after_sigma_s: 0.0,
             sigma_a: [0.0, 0.0, 0.0],
-            g_forward: 0.8,
+            // Default 1.0 = "use the synthesised per-cloud-type HG
+            // values unchanged" (Phase 13 follow-up B).
+            hg_forward_bias: 1.0,
 
-            g_backward: -0.3,
-            g_blend: 0.5,
+            hg_backward_bias: 1.0,
+            hg_blend_bias: 1.0,
             // Schneider 2015 quotes 0.35 but the canonical remap formula
             // wipes coverage<0.5 layers entirely. Keep low here so the
             // default cumulus layer is visible; UI will expose this and
@@ -171,6 +178,6 @@ mod tests {
 
     #[test]
     fn cloud_layer_size_matches_wgsl() {
-        assert_eq!(std::mem::size_of::<CloudLayerGpu>(), 32);
+        assert_eq!(std::mem::size_of::<CloudLayerGpu>(), 48);
     }
 }

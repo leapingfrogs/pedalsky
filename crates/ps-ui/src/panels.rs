@@ -759,6 +759,43 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .max_decimals(4)
             .ui(ui)
             .changed();
+
+        // Phase 13 follow-up B — HG anisotropy biases. Default 1.0 ⇒
+        // use the per-cloud-type values from synthesis unchanged
+        // (water-droplet clouds ≈ 0.8/-0.3/0.5; ice clouds ≈
+        // 0.4/-0.15/0.4). Sliders run [0.5, 1.5] so the user can
+        // dial each lobe character without flipping the sign.
+        ui.label("HG anisotropy bias (× per-layer values)");
+        tuning_changed |= Slider::new(&mut c.hg_forward_bias, 0.5..=1.5)
+            .text("forward (× g_forward)")
+            .max_decimals(3)
+            .ui(ui)
+            .on_hover_text(
+                "Multiplies the per-layer forward HG lobe. Lower → \
+                 broader forward scatter (softer sun-side glow); \
+                 higher → sharper silver lining.",
+            )
+            .changed();
+        tuning_changed |= Slider::new(&mut c.hg_backward_bias, 0.5..=1.5)
+            .text("backward (× g_backward)")
+            .max_decimals(3)
+            .ui(ui)
+            .on_hover_text(
+                "Multiplies the per-layer backward HG lobe (which is \
+                 itself negative). Stronger backward scattering \
+                 brightens the anti-sun side.",
+            )
+            .changed();
+        tuning_changed |= Slider::new(&mut c.hg_blend_bias, 0.5..=1.5)
+            .text("blend (× g_blend)")
+            .max_decimals(3)
+            .ui(ui)
+            .on_hover_text(
+                "Multiplies the per-layer dual-lobe blend. Result is \
+                 clamped to [0, 1] in the shader.",
+            )
+            .changed();
+
         tuning_changed |= ui.checkbox(&mut c.freeze_time, "Freeze time").changed();
         // Phase 13.9 — optional temporal rotation of the spatial blue
         // noise. Auto-gated by `freeze_time` engine-side, but show the

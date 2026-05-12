@@ -92,15 +92,20 @@ fn henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
 }
 
 /// Dual-lobe HG with anisotropy g scaled by `g_scale`. Used by the
-/// multi-octave multiple-scattering approximation: cos_theta is geometric
-/// and is NOT scaled; only g is.
-fn dual_lobe_hg_with_g_scale(cos_theta: f32, g_scale: f32) -> f32 {
-    let gf = params.g_forward * g_scale;
-    let gb = params.g_backward * g_scale;
+/// multi-octave multiple-scattering approximation: cos_theta is
+/// geometric and is NOT scaled; only g is. Reads the layer's
+/// Henyey–Greenstein values (set per cloud type by ps-synthesis) and
+/// multiplies them by the global `params.hg_*_bias` knobs from the
+/// Clouds UI panel — defaults of 1.0 reproduce the synthesised
+/// values unchanged.
+fn dual_lobe_hg_with_g_scale(cos_theta: f32, layer: CloudLayerGpu, g_scale: f32) -> f32 {
+    let gf = layer.g_forward  * params.hg_forward_bias  * g_scale;
+    let gb = layer.g_backward * params.hg_backward_bias * g_scale;
+    let blend = clamp(layer.g_blend * params.hg_blend_bias, 0.0, 1.0);
     return mix(
         henyey_greenstein(cos_theta, gf),
         henyey_greenstein(cos_theta, gb),
-        params.g_blend,
+        blend,
     );
 }
 
@@ -543,7 +548,7 @@ fn fs_main(in: VsOut) -> CloudOut {
                 var b = 1.0;
                 var c = 1.0;
                 for (var n = 0u; n < params.multi_scatter_octaves; n = n + 1u) {
-                    let phase = dual_lobe_hg_with_g_scale(cos_theta, c);
+                    let phase = dual_lobe_hg_with_g_scale(cos_theta, layer, c);
                     sun_in = sun_in + a * frame.sun_illuminance.rgb
                                     * phase
                                     * exp(-sigma_t * od_to_sun * b);

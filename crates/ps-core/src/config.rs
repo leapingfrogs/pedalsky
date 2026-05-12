@@ -332,6 +332,24 @@ pub struct CloudsTuning {
     /// remain deterministic regardless of this toggle.
     #[serde(default)]
     pub temporal_jitter: bool,
+    /// Phase 13 follow-up B — global multipliers on the per-layer
+    /// Henyey–Greenstein anisotropy values. Defaults of 1.0 apply
+    /// the synthesised per-cloud-type values unchanged; the sliders
+    /// exist as an artistic bias the user can dial on top.
+    #[serde(default = "default_hg_bias")]
+    pub hg_forward_bias: f32,
+    /// Global multiplier on `g_backward`. See `hg_forward_bias`.
+    #[serde(default = "default_hg_bias")]
+    pub hg_backward_bias: f32,
+    /// Global multiplier on `g_blend`. See `hg_forward_bias`.
+    #[serde(default = "default_hg_bias")]
+    pub hg_blend_bias: f32,
+}
+
+/// Default value for the HG bias multipliers — kept as a free
+/// function so `#[serde(default = "...")]` can reference it.
+fn default_hg_bias() -> f32 {
+    1.0
 }
 
 impl Default for CloudsTuning {
@@ -345,6 +363,9 @@ impl Default for CloudsTuning {
             reprojection: "off".into(),
             freeze_time: false,
             temporal_jitter: false,
+            hg_forward_bias: 1.0,
+            hg_backward_bias: 1.0,
+            hg_blend_bias: 1.0,
         }
     }
 }
