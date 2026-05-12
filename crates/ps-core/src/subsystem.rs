@@ -60,6 +60,16 @@ pub trait RenderSubsystem: Send + Sync {
     /// buffers and rebuild bind groups. Subsystems MUST rebuild bind groups
     /// here rather than caching across frames; another subsystem may have
     /// been recreated by hot-reload, invalidating cached references.
+    ///
+    /// **Phase 13.8 bind-group rebuild invariant.** Subsystems that bind
+    /// shared atmosphere LUTs (ground, clouds, water, windsock) must not
+    /// cache the bind group across `prepare()` calls — the LUT bundle
+    /// gets re-published as a fresh `Arc<AtmosphereLuts>` whenever the
+    /// atmosphere subsystem is toggled off and back on, and any cached
+    /// reference would point at a dropped texture. Build the LUT bind
+    /// group inside the pass closure (or each frame in `prepare`) from
+    /// the live `PrepareContext::atmosphere_luts` / `RenderContext::
+    /// luts_bind_group` reference.
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>);
 
     /// Render-graph passes this subsystem contributes. Called once at

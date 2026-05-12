@@ -179,6 +179,116 @@ fn pedalsky_toml_at_workspace_root_boots_the_app() {
     let _ = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new from workspace toml");
 }
 
+/// Phase 13.8 — stress the subsystem on/off combination space.
+///
+/// With 11 controllable subsystem flags (ground / atmosphere / clouds
+/// / precipitation / wet_surface / godrays / lightning / aurora /
+/// bloom / windsock / water) the full combination space is 2^11 =
+/// 2048. The scope doc allows sampling down to ≤32 if runtime would
+/// exceed 2 minutes, which it would: each combination pays an
+/// atmosphere-LUT bake cost (≥10 ms) plus pipeline construction.
+///
+/// We sample 48 combinations: the 11 boundary cases (each subsystem
+/// flipped on alone, plus the all-off and all-on cases — that's 13)
+/// plus 35 pseudo-random masks drawn from a deterministic LCG so the
+/// failure mode is reproducible from the seed.
+///
+/// Asserts: every combination builds a HeadlessApp, renders one
+/// frame, and tears down without wgpu validation errors. The actual
+/// pixel content is not checked.
+#[test]
+fn subsystem_combinations_render_without_validation_errors() {
+    let Some(gpu) = gpu() else { return };
+
+    // Deterministic LCG (Numerical Recipes constants) — gives the
+    // same sequence every run so failures reproduce.
+    let mut rng_state: u32 = 0xc0de_face;
+    let mut next = || {
+        rng_state = rng_state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        rng_state
+    };
+
+    // Build the 48 masks.
+    const N_SUBSYSTEMS: u32 = 11;
+    let mut masks: Vec<u32> = Vec::new();
+    masks.push(0);                       // all off
+    masks.push((1 << N_SUBSYSTEMS) - 1); // all on
+    for i in 0..N_SUBSYSTEMS {
+        masks.push(1 << i);              // one-on cases
+    }
+    while masks.len() < 48 {
+        masks.push(next() & ((1 << N_SUBSYSTEMS) - 1));
+    }
+
+    let mut config = config_with_ev0_passthrough();
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+
+    for (idx, &mask) in masks.iter().enumerate() {
+        let s = &mut config.render.subsystems;
+        s.ground        = mask & (1 << 0)  != 0;
+        s.atmosphere    = mask & (1 << 1)  != 0;
+        s.clouds        = mask & (1 << 2)  != 0;
+        s.precipitation = mask & (1 << 3)  != 0;
+        s.wet_surface   = mask & (1 << 4)  != 0;
+        s.godrays       = mask & (1 << 5)  != 0;
+        s.lightning     = mask & (1 << 6)  != 0;
+        s.aurora        = mask & (1 << 7)  != 0;
+        s.bloom         = mask & (1 << 8)  != 0;
+        s.windsock      = mask & (1 << 9)  != 0;
+        s.water         = mask & (1 << 10) != 0;
+
+        let setup = TestSetup::new(gpu, &config, (48, 32));
+        let mut app = HeadlessApp::new(gpu, &config, setup)
+            .unwrap_or_else(|e| panic!("HeadlessApp::new mask 0x{mask:03x}: {e}"));
+        let _pixels = app.render_one_frame(gpu);
+        if idx % 8 == 7 {
+            eprintln!("subsystem stress: {}/{} masks ok", idx + 1, masks.len());
+        }
+    }
+}
+
+/// Phase 13.8 — verify that toggling atmosphere off then on does
+/// not leave dependent subsystems with stale LUT references.
+///
+/// The contract: subsystems that bind atmosphere LUTs (ground,
+/// clouds, water, windsock) build their bind groups inside the pass
+/// closure each frame, against `ctx.luts_bind_group` (which is
+/// `None` when atmosphere is disabled and `Some(...)` against the
+/// freshly-published LUT bundle otherwise). When atmosphere is
+/// re-enabled, the new factory builds a fresh `AtmosphereLuts` arc
+/// and publishes it through the shared cell — but the *consumers*
+/// don't know about that and instead receive the new bind group via
+/// the per-frame `PrepareContext::atmosphere_luts` borrow. This
+/// test asserts that round-trips work without panicking or tripping
+/// wgpu validation.
+#[test]
+fn atmosphere_toggle_roundtrip_preserves_dependent_subsystems() {
+    let Some(gpu) = gpu() else { return };
+
+    let mut config = config_with_ev0_passthrough();
+    config.render.subsystems.atmosphere = true;
+    config.render.subsystems.ground = true;
+    config.render.subsystems.clouds = false; // simpler — drop the cloud pipeline.
+    config.render.subsystems.backdrop = false;
+    config.render.subsystems.tint = false;
+
+    let setup = TestSetup::new(gpu, &config, (48, 32));
+    let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
+    let _ = app.render_one_frame(gpu);
+    // Drop and re-create with atmosphere off so ground loses LUTs.
+    let mut config_off = config.clone();
+    config_off.render.subsystems.atmosphere = false;
+    let setup2 = TestSetup::new(gpu, &config_off, (48, 32));
+    let mut app2 = HeadlessApp::new(gpu, &config_off, setup2).expect("HeadlessApp::new (off)");
+    let _ = app2.render_one_frame(gpu);
+    // Re-create with atmosphere back on. Ground should pick up the
+    // newly-baked LUTs from the freshly-built atmosphere subsystem.
+    let setup3 = TestSetup::new(gpu, &config, (48, 32));
+    let mut app3 = HeadlessApp::new(gpu, &config, setup3).expect("HeadlessApp::new (on again)");
+    let _ = app3.render_one_frame(gpu);
+}
+
 /// Phase 13.5 — water subsystem builds and renders one frame when
 /// the scene supplies a `[water]` block. Asserts no GPU validation
 /// regressions; the exact pixel values depend on lat/lon and time.

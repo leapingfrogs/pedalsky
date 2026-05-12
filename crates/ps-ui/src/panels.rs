@@ -486,17 +486,59 @@ fn subsystem_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("Subsystems", |ui| {
         let s = &mut state.live_config.render.subsystems;
         let mut any = false;
-        any |= ui.checkbox(&mut s.ground, "Ground").changed();
+        // Phase 13.8 — `ground`, `clouds`, `windsock`, and `water` all
+        // bind the atmosphere LUT bundle. With atmosphere disabled
+        // their pass closures no-op cleanly, but it's surprising for
+        // the user to toggle them on and see no result. Grey out the
+        // affected boxes and explain the dependency in a tooltip.
+        let atmosphere_on = s.atmosphere;
+        any |= ui
+            .add_enabled_ui(atmosphere_on, |ui| {
+                ui.checkbox(&mut s.ground, "Ground")
+                    .on_disabled_hover_text(
+                        "Ground PBR samples the atmosphere transmittance / \
+                         sky-view / aerial-perspective LUTs. Enable Atmosphere first.",
+                    )
+                    .changed()
+            })
+            .inner;
         any |= ui.checkbox(&mut s.atmosphere, "Atmosphere").changed();
-        any |= ui.checkbox(&mut s.clouds, "Clouds").changed();
+        any |= ui
+            .add_enabled_ui(atmosphere_on, |ui| {
+                ui.checkbox(&mut s.clouds, "Clouds")
+                    .on_disabled_hover_text(
+                        "Cloud march reads the atmosphere LUTs for sky-ambient \
+                         and AP composite. Enable Atmosphere first.",
+                    )
+                    .changed()
+            })
+            .inner;
         any |= ui.checkbox(&mut s.precipitation, "Precipitation").changed();
         any |= ui.checkbox(&mut s.wet_surface, "Wet surface").changed();
         any |= ui.checkbox(&mut s.godrays, "Godrays").changed();
         any |= ui.checkbox(&mut s.lightning, "Lightning").changed();
         any |= ui.checkbox(&mut s.aurora, "Aurora").changed();
         any |= ui.checkbox(&mut s.bloom, "Bloom").changed();
-        any |= ui.checkbox(&mut s.windsock, "Windsock").changed();
-        any |= ui.checkbox(&mut s.water, "Water").changed();
+        any |= ui
+            .add_enabled_ui(atmosphere_on, |ui| {
+                ui.checkbox(&mut s.windsock, "Windsock")
+                    .on_disabled_hover_text(
+                        "Windsock samples the AP LUT so it fades into haze. \
+                         Enable Atmosphere first.",
+                    )
+                    .changed()
+            })
+            .inner;
+        any |= ui
+            .add_enabled_ui(atmosphere_on, |ui| {
+                ui.checkbox(&mut s.water, "Water")
+                    .on_disabled_hover_text(
+                        "Water reflection samples the sky-view LUT and AP LUT. \
+                         Enable Atmosphere first.",
+                    )
+                    .changed()
+            })
+            .inner;
         any |= ui.checkbox(&mut s.backdrop, "Backdrop (debug)").changed();
         any |= ui.checkbox(&mut s.tint, "Tint (debug)").changed();
         if any {
