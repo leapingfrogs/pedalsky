@@ -17,6 +17,7 @@ members = [
     "crates/ps-bloom",
     "crates/ps-windsock",
     "crates/ps-water",
+    "crates/ps-weather-feed",
     "crates/ps-app",
 ]
 
@@ -90,6 +91,13 @@ ps-aurora      = { path = "crates/ps-aurora" }
 ps-bloom       = { path = "crates/ps-bloom" }
 ps-windsock    = { path = "crates/ps-windsock" }
 ps-water       = { path = "crates/ps-water" }
+ps-weather-feed = { path = "crates/ps-weather-feed" }
+
+# Phase 14 — HTTP client for the real-weather ingestion crate.
+# `ureq` chosen for: zero async runtime (synchronous, off-thread is
+# `std::thread::spawn`); native-tls so we get OS-trust roots for
+# free; small dep tree.
+ureq            = { version = "2.10", features = ["json"] }
 
 [profile.dev]
 opt-level = 1            # debug builds with shader compilation are slow at -O0

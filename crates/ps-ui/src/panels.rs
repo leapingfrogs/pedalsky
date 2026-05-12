@@ -76,6 +76,52 @@ fn top_bar(ctx: &egui::Context, state: &mut UiState) {
                     state.pending.save_scene = Some(path);
                 }
             }
+            // Phase 14 — Fetch real weather. Pulls Open-Meteo +
+            // (optionally) the nearest METAR and synthesises a
+            // `Scene` for the configured lat/lon at the current
+            // world clock time. While in flight the button shows
+            // "Fetching…" and is disabled; the host fetches on a
+            // background thread and feeds the result back through
+            // `pending.live_scene` so the resulting scene swap
+            // takes the same path a user-loaded scene would.
+            let in_flight = state.weather_fetch.in_flight;
+            ui.add_enabled_ui(!in_flight, |ui| {
+                let label = if in_flight {
+                    "Fetching…"
+                } else {
+                    "Fetch real weather"
+                };
+                if ui
+                    .button(label)
+                    .on_hover_text(
+                        "Pull live forecast + observed weather for the \
+                         configured lat/lon (Dunblane default) and \
+                         replace the active scene with a synthesised \
+                         multi-layer cloud + surface representation.",
+                    )
+                    .clicked()
+                {
+                    let now = state
+                        .pending
+                        .set_world_utc
+                        .unwrap_or_else(chrono::Utc::now);
+                    state.pending.fetch_real_weather =
+                        Some(crate::state::WeatherFetchRequest {
+                            lat: state.live_config.world.latitude_deg,
+                            lon: state.live_config.world.longitude_deg,
+                            time: now,
+                            enrich_with_metar: true,
+                        });
+                }
+            });
+            // Show last fetch result inline (success → green
+            // summary; failure → red error). Stays visible until
+            // the next click.
+            if let Some(err) = &state.weather_fetch.last_error {
+                ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+            } else if let Some(summary) = &state.weather_fetch.last_summary {
+                ui.colored_label(egui::Color32::from_rgb(80, 180, 80), summary);
+            }
             ui.separator();
             ui.label(format!("{:.1} fps", state.frame_stats.fps));
             ui.label(format!("{:.2} ms", state.frame_stats.frame_ms));

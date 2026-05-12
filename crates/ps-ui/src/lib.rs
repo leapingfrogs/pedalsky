@@ -29,6 +29,7 @@ use ps_core::{
 
 pub use state::{
     CameraSettings, UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState,
+    WeatherFetchRequest, WeatherFetchStatus,
     UiWorldReadout,
 };
 

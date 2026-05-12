@@ -8,3 +8,4 @@
 /tests/golden-diffs
 /scenes/saved*
 output.log
+/cache/weather/

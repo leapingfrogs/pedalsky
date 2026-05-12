@@ -254,6 +254,22 @@ struct RunState {
     /// `[debug] shader_hot_reload` flag is off or the watcher failed
     /// to start.
     shader_hot_reload: Option<ps_core::ShaderHotReload>,
+
+    /// Phase 14 — receiver for in-flight real-weather fetch
+    /// requests. `Some(rx)` when a background thread is currently
+    /// fetching; the host polls in `drain_ui_pending`. The
+    /// `JoinHandle` is held only to keep the thread alive; we
+    /// don't actually join — drop on RunState teardown is fine.
+    weather_fetch_rx: Option<crossbeam_channel::Receiver<WeatherFetchResult>>,
+}
+
+/// Result delivered from the weather-fetch worker thread.
+struct WeatherFetchResult {
+    /// The fetched scene, or the error string.
+    outcome: Result<ps_core::Scene, String>,
+    /// A short summary string for the UI ("Open-Meteo, …" or the
+    /// METAR station ICAO when enrichment fired). Empty on error.
+    summary: String,
 }
 
 #[derive(Default)]
@@ -502,6 +518,7 @@ impl RunState {
             title_prefix,
             hot_reload,
             shader_hot_reload,
+            weather_fetch_rx: None,
         })
     }
 
@@ -729,6 +746,109 @@ impl RunState {
                 );
             }
             Err(e) => warn!(error = %e, "synthesise failed; keeping previous WeatherState"),
+        }
+    }
+
+    /// Phase 14 — spawn a background thread that fetches live
+    /// weather. Multiple concurrent fetches are gated: if a
+    /// previous fetch is in flight (`weather_fetch_rx` is `Some`),
+    /// the new request is dropped on the floor. The UI's "Fetching…"
+    /// button state already disables the click while in flight, so
+    /// this is a belt-and-braces guard.
+    fn spawn_weather_fetch(&mut self, req: ps_ui::WeatherFetchRequest) {
+        if self.weather_fetch_rx.is_some() {
+            tracing::debug!(
+                target: "ps_app::weather_fetch",
+                "fetch already in flight; ignoring new request"
+            );
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded::<WeatherFetchResult>(1);
+        self.weather_fetch_rx = Some(rx);
+        // Mark the UI as in-flight so the button repaints.
+        self.ui_handle.lock().weather_fetch.in_flight = true;
+        self.ui_handle.lock().weather_fetch.last_error = None;
+        self.ui_handle.lock().weather_fetch.last_summary = None;
+
+        let cache_dir = match workspace_root() {
+            Ok(p) => p.join("cache").join("weather"),
+            Err(_) => std::path::PathBuf::from("cache").join("weather"),
+        };
+        let opts = ps_weather_feed::FetchOptions {
+            lat: req.lat,
+            lon: req.lon,
+            time: req.time,
+            enrich_with_metar: req.enrich_with_metar,
+            cache_dir,
+        };
+        std::thread::Builder::new()
+            .name("ps-weather-feed".into())
+            .spawn(move || {
+                let result = match ps_weather_feed::fetch_scene(&opts) {
+                    Ok(scene) => {
+                        let summary = format!(
+                            "Open-Meteo @ {:.3}, {:.3} ({} cloud layers)",
+                            opts.lat, opts.lon, scene.clouds.layers.len()
+                        );
+                        WeatherFetchResult {
+                            outcome: Ok(scene),
+                            summary,
+                        }
+                    }
+                    Err(e) => WeatherFetchResult {
+                        outcome: Err(format!("weather fetch failed: {e}")),
+                        summary: String::new(),
+                    },
+                };
+                let _ = tx.send(result);
+            })
+            .expect("spawn weather-fetch thread");
+    }
+
+    /// Drain a completed weather fetch (if any). Replaces the
+    /// live scene + triggers a synthesis re-bake when the worker
+    /// returns a successful Scene.
+    fn poll_weather_fetch(&mut self, scene: &mut Scene, config: &Config) {
+        let Some(rx) = &self.weather_fetch_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                // Worker panicked or completed without sending —
+                // clear the in-flight state so the user can retry.
+                self.weather_fetch_rx = None;
+                let mut h = self.ui_handle.lock();
+                h.weather_fetch.in_flight = false;
+                h.weather_fetch.last_error =
+                    Some("fetch thread disconnected without result".into());
+                return;
+            }
+        };
+        // We have a result. Clear in-flight state.
+        self.weather_fetch_rx = None;
+        match result.outcome {
+            Ok(new_scene) => {
+                info!(
+                    target: "ps_app",
+                    cloud_layers = new_scene.clouds.layers.len(),
+                    "real-weather fetch succeeded"
+                );
+                *scene = new_scene;
+                self.resynthesise_weather(scene, config);
+                let mut h = self.ui_handle.lock();
+                h.weather_fetch.in_flight = false;
+                h.weather_fetch.last_summary = Some(result.summary);
+                h.weather_fetch.last_error = None;
+            }
+            Err(err_msg) => {
+                warn!(target: "ps_app", error = %err_msg, "real-weather fetch failed");
+                let mut h = self.ui_handle.lock();
+                h.weather_fetch.in_flight = false;
+                h.weather_fetch.last_error = Some(err_msg);
+                h.weather_fetch.last_summary = None;
+            }
         }
     }
 
@@ -1127,6 +1247,15 @@ impl RunState {
             self.camera.near_m = cam.near_m;
             self.camera.speed_mps = cam.speed_mps;
         }
+
+        // Phase 14 — real-weather fetch request from the UI's
+        // "Fetch real weather" button.
+        if let Some(req) = pending.fetch_real_weather {
+            self.spawn_weather_fetch(req);
+        }
+        // Poll the worker channel for completed fetches and
+        // splice the result back into the scene path.
+        self.poll_weather_fetch(scene, config);
 
         // Push live mirrors into the UI for the next frame's panels.
         {

@@ -50,6 +50,44 @@ pub struct UiPending {
     /// Plan §0.4 — pending camera fov/near/speed edit from the World
     /// panel. Host applies to its FlyCamera on the next frame.
     pub live_camera: Option<CameraSettings>,
+
+    /// User clicked "Fetch real weather…". Host issues an
+    /// `ps_weather_feed::fetch_scene` call on a background thread
+    /// and, on success, replaces the in-memory scene through the
+    /// same path `live_scene` uses. While the fetch is in-flight
+    /// the host stamps `UiState.weather_fetch.in_flight = true` so
+    /// the button can render its "Fetching…" state.
+    pub fetch_real_weather: Option<WeatherFetchRequest>,
+}
+
+/// One-shot weather fetch request. Sent from the UI to the host
+/// when the user clicks the "Fetch real weather…" button.
+#[derive(Debug, Clone)]
+pub struct WeatherFetchRequest {
+    /// Observer latitude (degrees north).
+    pub lat: f64,
+    /// Observer longitude (degrees east).
+    pub lon: f64,
+    /// Target time (UTC). Defaults to the world clock's current
+    /// time at the moment the button is clicked.
+    pub time: DateTime<Utc>,
+    /// If true, the host fetches the nearest METAR station and
+    /// applies surface + present-weather enrichment.
+    pub enrich_with_metar: bool,
+}
+
+/// Status of a weather fetch — host writes; UI reads.
+#[derive(Default, Debug, Clone)]
+pub struct WeatherFetchStatus {
+    /// True while a fetch is in flight (button shows "Fetching…",
+    /// disabled).
+    pub in_flight: bool,
+    /// Most recent error string, if any. Cleared on next successful
+    /// fetch.
+    pub last_error: Option<String>,
+    /// Most recent successful fetch's source description (e.g.
+    /// "Open-Meteo + METAR EGPF, 0.4° away"). Cleared on error.
+    pub last_summary: Option<String>,
 }
 
 /// Snapshot of the host's camera configuration that the World panel
@@ -128,6 +166,11 @@ pub struct UiState {
     /// speed) — host pushes each frame; the World panel reads from
     /// here and writes edits to `pending.live_camera`.
     pub latest_camera: Option<CameraSettings>,
+
+    /// Real-weather fetch status — host writes after each fetch
+    /// attempt; UI reads to render the "Fetch real weather…"
+    /// button's state and any error message.
+    pub weather_fetch: WeatherFetchStatus,
 }
 
 /// Debug-panel toggles that don't belong in `Config`.
@@ -164,6 +207,7 @@ impl UiState {
             latest_scene: None,
             latest_atmosphere: None,
             latest_camera: None,
+            weather_fetch: WeatherFetchStatus::default(),
         }
     }
 }

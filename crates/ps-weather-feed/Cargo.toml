@@ -1,0 +1,21 @@
+[package]
+name = "ps-weather-feed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "PedalSky real-weather ingestion: Open-Meteo + METAR → Scene"
+
+[dependencies]
+ps-core.workspace   = true
+chrono.workspace    = true
+serde.workspace     = true
+serde_json.workspace = true
+anyhow.workspace    = true
+thiserror.workspace = true
+tracing.workspace   = true
+ureq.workspace      = true
+
+[dev-dependencies]
+tempfile = "3"
