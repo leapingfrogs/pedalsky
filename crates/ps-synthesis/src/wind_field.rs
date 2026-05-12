@@ -283,6 +283,7 @@ mod tests {
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,
+            droplet_diameter_um: None,
         });
         let t_clear = turbulence(&empty_scene(), 1500.0);
         let t_cumulus = turbulence(&scene, 1500.0);

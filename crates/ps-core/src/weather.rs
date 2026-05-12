@@ -90,13 +90,11 @@ pub type WorldUniformsGpu = AtmosphereParams;
 
 /// Per-cloud-layer parameters consumed by Phase 6 (plan §3.2 + §6).
 ///
-/// Phase 13 follow-up — `g_forward / g_backward / g_blend` are now
-/// per-layer so the cloud march can use the correct
-/// Henyey–Greenstein anisotropy for water-droplet vs. ice-crystal
-/// clouds within the same frame. Synthesis populates these from
-/// `ps_core::default_hg(cloud_type)`; scenes don't currently
-/// override them. The global `CloudParams.hg_*_bias` multipliers
-/// scale them at render time.
+/// Post-Phase-13 follow-up — the per-layer Henyey–Greenstein triple
+/// was retired in favour of `droplet_diameter_um`, which drives the
+/// Jendersie & d'Eon 2023 "Approximate Mie" phase function (HG +
+/// Draine blend). See `docs/cloud_calibration.md` for the
+/// per-cloud-type droplet-size table and rationale.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable, PartialEq)]
 pub struct CloudLayerGpu {
@@ -116,18 +114,23 @@ pub struct CloudLayerGpu {
     pub detail_bias: f32,
     /// Anvil bias (only meaningful for Cumulonimbus).
     pub anvil_bias: f32,
-    /// Forward Henyey–Greenstein lobe `g`. Water clouds ≈ 0.85,
-    /// ice clouds ≈ 0.40. Picked by synthesis from cloud type.
-    pub g_forward: f32,
-    /// Backward HG lobe (negative). Water ≈ -0.30, ice ≈ -0.15.
-    pub g_backward: f32,
-    /// Dual-lobe blend factor. Conventionally 0.5; ice clouds sit
-    /// slightly lower (0.4) per Baran 2012.
-    pub g_blend: f32,
+    /// Droplet effective diameter in micrometres, drives the
+    /// Jendersie–d'Eon 2023 Approximate Mie phase function. Picked
+    /// by synthesis from cloud type; valid range 5–50 µm. The
+    /// shader maps this to HG-peak `g_HG`, Draine `g_D`, Draine
+    /// `α`, and mixture weight `w_D` via the paper's fitted
+    /// expressions (Eqs. 4–7).
+    pub droplet_diameter_um: f32,
     /// std140 / std430 alignment pad — keeps the struct array
     /// stride at a multiple of 16 bytes regardless of which packing
-    /// model is in play.
-    pub _pad_after_hg: f32,
+    /// model is in play. Three trailing scalars occupy the space
+    /// the retired g_backward / g_blend / _pad_after_hg fields used
+    /// to use, so the storage-buffer stride is unchanged at 48 B.
+    pub _pad_after_droplets_0: f32,
+    /// std140 pad — second of three trailing scalars.
+    pub _pad_after_droplets_1: f32,
+    /// std140 pad — third of three trailing scalars.
+    pub _pad_after_droplets_2: f32,
 }
 
 impl Default for CloudLayerGpu {
@@ -141,10 +144,10 @@ impl Default for CloudLayerGpu {
             shape_bias: 0.0,
             detail_bias: 0.0,
             anvil_bias: 0.0,
-            g_forward: 0.80,
-            g_backward: -0.30,
-            g_blend: 0.50,
-            _pad_after_hg: 0.0,
+            droplet_diameter_um: 20.0,
+            _pad_after_droplets_0: 0.0,
+            _pad_after_droplets_1: 0.0,
+            _pad_after_droplets_2: 0.0,
         }
     }
 }

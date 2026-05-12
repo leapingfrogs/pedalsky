@@ -68,6 +68,7 @@ fn overlapping_cloud_layers_rejected_at_synthesis() {
         shape_octave_bias: 0.0,
         detail_octave_bias: 0.0,
         anvil_bias: None,
+        droplet_diameter_um: None,
     });
     scene.clouds.layers.push(ps_core::CloudLayer {
         cloud_type: ps_core::CloudType::Stratus,
@@ -78,6 +79,7 @@ fn overlapping_cloud_layers_rejected_at_synthesis() {
         shape_octave_bias: 0.0,
         detail_octave_bias: 0.0,
         anvil_bias: None,
+        droplet_diameter_um: None,
     });
     let config = Config::default();
     let world = WorldState::default();

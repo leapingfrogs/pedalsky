@@ -760,39 +760,21 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .ui(ui)
             .changed();
 
-        // Phase 13 follow-up B — HG anisotropy biases. Default 1.0 ⇒
-        // use the per-cloud-type values from synthesis unchanged
-        // (water-droplet clouds ≈ 0.8/-0.3/0.5; ice clouds ≈
-        // 0.4/-0.15/0.4). Sliders run [0.5, 1.5] so the user can
-        // dial each lobe character without flipping the sign.
-        ui.label("HG anisotropy bias (× per-layer values)");
-        tuning_changed |= Slider::new(&mut c.hg_forward_bias, 0.5..=1.5)
-            .text("forward (× g_forward)")
+        // Approximate Mie (Jendersie & d'Eon 2023) — single droplet
+        // diameter knob replaces the previous HG bias triple.
+        // Default 1.0 ⇒ use the per-cloud-type diameter from
+        // synthesis unchanged (water clouds ≈ 16–20 µm; ice ≈ 50 µm).
+        tuning_changed |= Slider::new(&mut c.droplet_diameter_bias, 0.25..=2.0)
+            .text("Droplet diameter bias")
             .max_decimals(3)
             .ui(ui)
             .on_hover_text(
-                "Multiplies the per-layer forward HG lobe. Lower → \
-                 broader forward scatter (softer sun-side glow); \
-                 higher → sharper silver lining.",
-            )
-            .changed();
-        tuning_changed |= Slider::new(&mut c.hg_backward_bias, 0.5..=1.5)
-            .text("backward (× g_backward)")
-            .max_decimals(3)
-            .ui(ui)
-            .on_hover_text(
-                "Multiplies the per-layer backward HG lobe (which is \
-                 itself negative). Stronger backward scattering \
-                 brightens the anti-sun side.",
-            )
-            .changed();
-        tuning_changed |= Slider::new(&mut c.hg_blend_bias, 0.5..=1.5)
-            .text("blend (× g_blend)")
-            .max_decimals(3)
-            .ui(ui)
-            .on_hover_text(
-                "Multiplies the per-layer dual-lobe blend. Result is \
-                 clamped to [0, 1] in the shader.",
+                "Multiplies the per-layer droplet effective diameter \
+                 fed to the Approximate Mie phase function. Lower → \
+                 smaller droplets (broader, hazier forward scatter); \
+                 higher → larger droplets (sharper silver lining). \
+                 Shader clamps the resulting diameter to the paper's \
+                 5–50 µm fit range.",
             )
             .changed();
 

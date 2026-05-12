@@ -183,10 +183,10 @@ mod tests {
             shape_bias: 0.0,
             detail_bias: 0.0,
             anvil_bias: 0.0,
-            g_forward: 0.80,
-            g_backward: -0.30,
-            g_blend: 0.50,
-            _pad_after_hg: 0.0,
+            droplet_diameter_um: 20.0,
+            _pad_after_droplets_0: 0.0,
+            _pad_after_droplets_1: 0.0,
+            _pad_after_droplets_2: 0.0,
         }
     }
 

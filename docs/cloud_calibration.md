@@ -4,6 +4,16 @@ Per-cloud-type numeric defaults for the volumetric cloud pipeline,
 with the published sources behind each value and the cases where the
 literature is silent or contradictory.
 
+> **2026-05-12 update — Approximate Mie migration.** The per-layer
+> Henyey–Greenstein triple was retired in favour of a single
+> droplet effective diameter (µm), which drives the Jendersie &
+> d'Eon 2023 "Approximate Mie" phase function (HG forward peak +
+> Draine bulk lobe). The diameter values are listed in the table
+> below; the HG coefficients are no longer authoritative — they
+> are derived inside the shader from the diameter via the paper's
+> Eqs. 4–7. See `shaders/clouds/cloud_march.wgsl::cloud_phase` for
+> the runtime evaluation.
+
 This document exists because the canonical Schneider 2015 + Hillaire
 2016 pipeline doesn't publish a per-cloud-type calibration table —
 the original papers describe *mechanisms* (Perlin–Worley base shape,
@@ -44,19 +54,19 @@ land in a plausible regime.
 | Field | Cu | St | Sc | Ac | As | Ci | Cs | Cb |
 |-------|----|----|----|----|----|----|----|----|
 | `density_scale` | 1.0 | 1.0 | 1.0 | 0.85 | 0.7 | 0.55 | 0.4 | 1.4 |
-| `g_forward` | 0.80 | 0.80 | 0.80 | 0.80 | 0.72 | 0.70 | 0.70 | 0.80 (water) → 0.70 (anvil) |
-| `g_backward` | -0.30 | -0.30 | -0.30 | -0.30 | -0.20 | -0.10 | -0.10 | -0.30 → -0.10 |
-| `g_blend` | 0.50 | 0.50 | 0.50 | 0.50 | 0.45 | 0.30 | 0.30 | 0.50 → 0.30 |
+| `droplet_diameter_um` | 20 | 16 | 16 | 14 | 30 | 50 | 50 | 20 (water) → 50 (anvil) |
 | `anvil_bias` (default) | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1.0 |
 | Altitude (m AGL) | 600–6000 | 0–1000 | 500–2200 | 2000–6000 | 2000–7000 | 6000–14000 | 6000–14000 | 600–16000 |
 | Optical depth τ (visible) | 5–30 | 8–40 | 8–25 | 3–10 | 5–30 | 0.02–3 | 0.5–3 | 30–1000+ |
 | Effective radius rₑ (μm) | 6–12 | 5–10 | 7–12 | 5–10 | 8–40 (mixed) | 20–60 | 25–70 | 10–80 (mixed) |
 | Phase (water/ice) | water | water | water | water | mixed | ice | ice | mixed |
 
-The Cumulonimbus HG entries show the water → ice transition the
-shader interpolates across `h ∈ [0.6, 0.85]` based on the sample's
-normalised height inside the layer (see
-`shaders/clouds/cloud_march.wgsl::dual_lobe_hg_with_g_scale`).
+The Cumulonimbus diameter entry shows the water → ice transition
+the shader interpolates across `h ∈ [0.6, 0.85]` based on the
+sample's normalised height inside the layer (see
+`shaders/clouds/cloud_march.wgsl::cloud_phase`). The Approximate
+Mie fit is valid for 5 ≤ d ≤ 50 µm; cirrus and cirrostratus sit at
+the upper edge of the fit range.
 
 ---
 
@@ -85,50 +95,78 @@ Verified ranges:
   cirrus to **over 1000 for a large cumulonimbus**" (verified via
   glossary.ametsoc.org/wiki/Cloud_optical_depth).
 
-### Phase function (Henyey–Greenstein)
+### Phase function (Approximate Mie, Jendersie & d'Eon 2023)
 
-Single-lobe HG cannot capture cloud scattering accurately: water
-clouds have a sharp forward peak from Mie scattering at ~10 µm
-droplets; ice clouds have weaker forward scattering with sharp halos
-at 22° and 46° that no HG captures. The pipeline uses a dual-lobe
-HG (`g_forward`, `g_backward`, `g_blend`) as a Schneider-style
-approximation. Values target a single-lobe-equivalent `g_eff`
-matching published data.
+The cloud march evaluates the **HG + Draine blend** from Jendersie &
+d'Eon's SIGGRAPH 2023 talk "An Approximate Mie Scattering Function
+for Fog and Cloud Rendering". A single parameter — droplet
+effective diameter `d` in µm — feeds the paper's four-coefficient
+fit (Eqs. 4–7) to derive the HG asymmetry `g_HG`, the Draine
+asymmetry `g_D`, the Draine alpha `α`, and the mixture weight
+`w_D`:
 
-**Water clouds** target `g_eff ≈ 0.85`. **Verified** against
-Kokhanovsky's optical-properties review: g = 0.858 for a 10 µm
-gamma droplet distribution at 550 nm. The dual-lobe triple
-(0.80, -0.30, 0.50) is a **convention** widely used in the
-community but not specifically published by Schneider or Hillaire —
-both originals use single-lobe HG. The dual-lobe form gives the
-back-side brightness that real clouds exhibit and that single-HG
-misses.
+```
+g_HG(d) = exp(-0.0990567 / (d - 1.67154))
+g_D(d)  = exp(-2.20679  / (d + 3.91029)) - 0.428934
+α(d)    = exp(3.62489 - 8.29288 / (d + 5.52825))
+w_D(d)  = exp(-0.599085 / (d - 0.641583) - 0.665888)
+```
 
-**Ice clouds** target `g_eff ≈ 0.75` per **Baran 2012** (JQSRT
-113:1239) and **Baran 2013** (ACP 13:3185). Verified: published
-range for ice asymmetry parameter is 0.74–0.80 (rough crystals
-0.74–0.78, smooth/halo-producing crystals up to ~0.80). PedalSky's
-ice triple (0.70, -0.10, 0.30) is a dual-lobe fit targeting that
-g_eff — slightly less forward-peaked than the water pair, with a
-narrower back lobe.
+The phase function is then (paper Eq. 3):
 
-> **A note on a now-corrected mistake.** An earlier PedalSky version
-> shipped ice HG = (0.40, -0.15, 0.40), based on an unverified claim
-> that TrueSky and SilverLining default ice cloud g to ≈0.4. The
-> 2026-05-12 verification pass found no live source supporting this;
-> Baran's published g_eff ≈ 0.75 is incompatible with such a low
-> g_forward. The values were corrected on the same date — see
-> `default_hg(CloudType)` in `crates/ps-core/src/scene.rs`.
+```
+p_fog(θ) = (1 - w_D) · HG(g_HG; θ) + w_D · Draine(g_D, α; θ)
+```
 
-**Altostratus** is mixed-phase (water at base, ice above the
-freezing level). The pair (0.72, -0.20, 0.45) targets g_eff ≈ 0.80,
-between the water and ice triples.
+where Draine generalises HG with an `(1 + α cos² θ)` term:
 
-**Cumulonimbus** is the second mixed-phase case (water in the
-convective core, ice in the anvil). The cloud march interpolates
-between the water triple at h_norm ≤ 0.6 and the ice triple at
-h_norm ≥ 0.85, with smoothstep blending across the band. The phase
-transition pre-empts the anvil NDF rise (which starts at h = 0.7).
+```
+Draine(g, α; θ) = (1 - g²)(1 + α cos² θ)
+                / [4 (1 + α(1 + 2g²)/3) · π · (1 + g² - 2g cos θ)^1.5]
+```
+
+Both HG and Draine are normalised to integrate to 1 over the
+sphere. The fit is **wavelength-independent** (the paper averages
+the underlying Mie reference over 400–700 nm).
+
+**Validity range.** The fit is calibrated for `5 ≤ d ≤ 50 µm`. The
+shader clamps inputs to that band before evaluation. Ice clouds
+(cirrus, cirrostratus) sit at the upper edge with d ≈ 50 µm; the
+fit extrapolates slightly above this, the paper notes the
+approximation degrades but stays usable.
+
+**Why Approximate Mie over the previous dual-lobe HG?** Three wins,
+verified against Mie reference data in the paper's Figure 1:
+sharper near-sun silver lining (single-HG was too broad), correct
+anti-sun back-scatter brightness (single-HG missed it entirely),
+and droplet-size-dependent shape (HG had no such input — any
+"per-cloud-type" character had to come from per-type magic
+constants). The single-droplet-diameter parametrisation is also
+the natural input from real weather data (NWP grids publish
+effective radius), so the future ingestion path simplifies.
+
+**Cumulonimbus** is mixed-phase: water droplets in the convective
+core, ice crystals in the anvil. The cloud march blends the
+diameter from the layer's own value (water, ~20 µm) at `h ≤ 0.6`
+toward 50 µm (ice anvil) at `h ≥ 0.85`. The transition pre-empts
+the anvil NDF rise (which starts at `h = 0.7`).
+
+**Constants come from the published paper.** The full talk PDF is
+linked in the sources section below. The HLSL reference
+implementation (`draine.hlsl` from NVIDIA's RTRT lab) was used as
+a syntactic cross-check; the WGSL port lives in
+`shaders/clouds/cloud_march.wgsl` as `draine_phase` and
+`cloud_phase`.
+
+> **History note.** PedalSky previously shipped a dual-lobe HG
+> approximation with per-layer `(g_forward, g_backward, g_blend)`
+> fields, calibrated against published water- and ice-cloud
+> asymmetry values (`g_eff ≈ 0.85` water, `≈ 0.75` ice). That
+> system worked but the Mie diffraction peak HG cannot capture
+> was visibly off (broad silver linings); the migration to
+> Approximate Mie was made in the same session that consolidated
+> the calibration docs. The HG fields no longer exist on
+> `CloudLayerGpu`; they were replaced by `droplet_diameter_um`.
 
 ### Anvil bias
 
@@ -176,7 +214,7 @@ apply globally rather than per-cloud-type.
 | `multi_scatter_octaves` | 4 | Hillaire 2016 recommends 4–8. PedalSky uses 4 for performance; 8 is the upper end of Wrenninge's recommendation. |
 | `powder_strength` | 1.0 | Schneider 2015 Beer-Powder lerp factor; canonical default. |
 | `detail_strength` | 0.05 | Lowered from Schneider's published 0.35 because the coverage remap in PedalSky pre-biases METAR coverage into a narrow band; high detail_strength erodes too aggressively in that regime. Documented in `cloud_layers.rs::remap_coverage_to_visible_band`. |
-| `hg_*_bias` | 1.0 | Global multipliers on the per-layer HG triple. Default = use synthesised per-cloud-type values unchanged. |
+| `droplet_diameter_bias` | 1.0 | Global multiplier on the per-layer droplet diameter (post-clamp to the 5–50 µm Mie fit range). Default = use synthesised per-cloud-type diameter unchanged. |
 
 ---
 
@@ -215,25 +253,29 @@ apply globally rather than per-cloud-type.
 These are noted-but-not-yet-implemented improvements that would land
 the next tier of fidelity:
 
-- **Droplet effective radius as a primary input.** When real weather
-  data feeds the renderer (NWP grids), `r_e` is naturally available
-  per cloud type. Mapping `r_e → g_forward` via the Bouthors 2008
-  Mie fit lets the renderer follow the data automatically.
-- **NVIDIA Approximate Mie phase function.** Jendersie & d'Eon 2023
-  publish a closed-form Mie approximation with proper droplet-size
-  scaling — see
-  research.nvidia.com/labs/rtr/approximate-mie/publications/approximate-mie.pdf.
 - **Per-channel sigma_s tied to droplet size.** Sub-µm droplet
-  populations (fresh fog, thin cirrus, cumulus updraft tops) actually
-  do exhibit chromatic Mie. The current PedalSky chromaticity is
-  decorative; tying it to droplet size would make it physical.
-- **Ice halos.** A sharp 22° lobe added on top of the HG dual-lobe
-  for ice clouds (when the sun is in view) would recover a key
-  visual cue that distinguishes ice from water clouds.
+  populations (fresh fog, thin cirrus, cumulus updraft tops)
+  actually do exhibit chromatic Mie. The current PedalSky
+  chromaticity is decorative; tying it to droplet size via the
+  Mie size parameter `x = 2π r_e / λ` would make it physical.
+  Approximate Mie itself is wavelength-independent (the paper
+  averages over 400–700 nm), so this would be an additional
+  per-channel scattering coefficient layer on top of the phase
+  function.
+- **Ice halos.** Sharp 22° / 46° lobes are characteristic of
+  hexagonal ice crystals and no HG/Draine-class approximation
+  captures them. Adding an explicit angular feature when the
+  view-to-sun cosine matches `cos 22°` or `cos 46°` for ice
+  clouds (`droplet_diameter_um > 35 µm` is a reasonable gate)
+  would recover the cue. Not currently implemented anywhere in
+  the real-time literature.
 - **Real-data ingestion path.** A `CloudLayer::from_nwp_grid_cell(...)`
   helper that takes (cloud_type, r_e, LWC/IWC, base, top, coverage)
   and produces a `CloudLayer` with the right `density_scale`,
-  `g_forward`, and `anvil_bias` derived from microphysics.
+  `droplet_diameter_um` (= 2 · r_e directly), and `anvil_bias`
+  derived from microphysics. With Approximate Mie landed, the
+  effective-radius → phase-function mapping is now trivial: the
+  renderer's diameter field IS the data feed's diameter field.
 
 ---
 

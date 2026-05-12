@@ -5,7 +5,9 @@
 //! stage repeats (independently of `Scene::validate` so synthesis is a
 //! self-contained boundary).
 
-use ps_core::{default_density_scale, default_hg, CloudLayer, CloudLayerGpu, CloudType};
+use ps_core::{
+    default_density_scale, default_droplet_diameter_um, CloudLayer, CloudLayerGpu, CloudType,
+};
 
 /// Synthesise GPU-ready cloud layers from the parsed scene's layers.
 ///
@@ -50,7 +52,9 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
         let density_scale = layer
             .density_scale
             .unwrap_or_else(|| default_density_scale(layer.cloud_type));
-        let (g_forward, g_backward, g_blend) = default_hg(layer.cloud_type);
+        let droplet_diameter_um = layer
+            .droplet_diameter_um
+            .unwrap_or_else(|| default_droplet_diameter_um(layer.cloud_type));
         out.push(CloudLayerGpu {
             base_m: layer.base_m,
             top_m: layer.top_m,
@@ -60,10 +64,10 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
             shape_bias: layer.shape_octave_bias,
             detail_bias: layer.detail_octave_bias,
             anvil_bias,
-            g_forward,
-            g_backward,
-            g_blend,
-            _pad_after_hg: 0.0,
+            droplet_diameter_um,
+            _pad_after_droplets_0: 0.0,
+            _pad_after_droplets_1: 0.0,
+            _pad_after_droplets_2: 0.0,
         });
     }
     out
@@ -143,6 +147,7 @@ mod tests {
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,
+            droplet_diameter_um: None,
         }
     }
 
@@ -197,29 +202,39 @@ mod tests {
         assert_eq!(gpu[0].density_scale, 2.5);
     }
 
-    /// Phase 13 follow-up B — water-cloud types get the canonical
-    /// Schneider/Hillaire HG triple; ice clouds (Ci/Cs) get the
-    /// lower-g Baran-style pair.
+    /// Per-cloud-type droplet effective diameter defaults. Values
+    /// pulled from `ps_core::default_droplet_diameter_um`; the
+    /// Approximate Mie phase function in the shader is fitted for
+    /// 5–50 µm.
     #[test]
-    fn per_type_hg_defaults() {
-        let water = (0.80_f32, -0.30_f32, 0.50_f32);
-        let ice = (0.70_f32, -0.10_f32, 0.30_f32);
-        let mixed = (0.72_f32, -0.20_f32, 0.45_f32); // altostratus
+    fn per_type_droplet_diameter_defaults() {
         let cases = [
-            (CloudType::Cumulus, water),
-            (CloudType::Stratus, water),
-            (CloudType::Stratocumulus, water),
-            (CloudType::Altocumulus, water),
-            (CloudType::Cumulonimbus, water),
-            (CloudType::Altostratus, mixed),
-            (CloudType::Cirrus, ice),
-            (CloudType::Cirrostratus, ice),
+            (CloudType::Cumulus, 20.0_f32),
+            (CloudType::Stratus, 16.0),
+            (CloudType::Stratocumulus, 16.0),
+            (CloudType::Altocumulus, 14.0),
+            (CloudType::Altostratus, 30.0),
+            (CloudType::Cirrus, 50.0),
+            (CloudType::Cirrostratus, 50.0),
+            (CloudType::Cumulonimbus, 20.0),
         ];
         for (t, expected) in cases {
             let gpu = synthesise_cloud_layers(&[make_layer(t, 100.0, 200.0)]);
-            let got = (gpu[0].g_forward, gpu[0].g_backward, gpu[0].g_blend);
-            assert_eq!(got, expected, "default HG for {t:?}");
+            assert_eq!(
+                gpu[0].droplet_diameter_um, expected,
+                "default droplet diameter for {t:?}",
+            );
         }
+    }
+
+    /// Scene-supplied `droplet_diameter_um` wins over the per-type
+    /// default.
+    #[test]
+    fn explicit_droplet_diameter_overrides_default() {
+        let mut layer = make_layer(CloudType::Cirrus, 8000.0, 9000.0);
+        layer.droplet_diameter_um = Some(35.0);
+        let gpu = synthesise_cloud_layers(&[layer]);
+        assert_eq!(gpu[0].droplet_diameter_um, 35.0);
     }
 
     #[test]

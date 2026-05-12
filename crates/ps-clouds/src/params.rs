@@ -22,8 +22,8 @@ pub const MAX_CLOUD_LAYERS: u32 = 8;
 /// Layout (each block is 16 B):
 ///
 ///   0  sigma_s.r/g/b + _pad_after_sigma_s
-///   1  sigma_a.r/g/b + hg_forward_bias
-///   2  hg_backward_bias, hg_blend_bias, detail_strength, curl_strength
+///   1  sigma_a.r/g/b + droplet_diameter_bias
+///   2  _pad_after_droplet_bias_0/1, detail_strength, curl_strength
 ///   3  powder_strength, multi_scatter_a, multi_scatter_b, multi_scatter_c
 ///   4  ambient_strength, base_scale_m, detail_scale_m, weather_scale_m
 ///   5  light_steps, cloud_steps, multi_scatter_octaves, cloud_layer_count
@@ -44,19 +44,22 @@ pub struct CloudParamsGpu {
     /// Per-channel absorption coefficient (per metre). Near-zero for
     /// real water droplets across the visible spectrum.
     pub sigma_a: [f32; 3],
-    /// Global multiplier applied to every layer's `g_forward`.
-    /// Default 1.0 = use the synthesised per-cloud-type value
-    /// unchanged. Phase 13 follow-up B promoted HG to per-layer;
-    /// this knob remains as an artistic bias the user can apply on
-    /// top. Packed into sigma_a's trailing 4 bytes per std140 vec3
-    /// packing.
-    pub hg_forward_bias: f32,
+    /// Global multiplier applied to every layer's
+    /// `droplet_diameter_um`. Default 1.0 = use the synthesised
+    /// per-cloud-type diameter unchanged. The Approximate Mie phase
+    /// function in the cloud march evaluates its fit at
+    /// `diameter * droplet_diameter_bias`, clamped to the paper's
+    /// 5–50 µm range. Packed into sigma_a's trailing 4 bytes per
+    /// std140 vec3 packing.
+    pub droplet_diameter_bias: f32,
 
-    /// Global multiplier applied to every layer's `g_backward`.
-    pub hg_backward_bias: f32,
-    /// Global multiplier applied to every layer's `g_blend`. Result
-    /// is clamped to [0, 1] in the shader.
-    pub hg_blend_bias: f32,
+    /// std140 pad — was `hg_backward_bias` before the Approximate
+    /// Mie migration retired the dual-lobe HG bias triple. Kept as
+    /// a pad slot so the rest of the struct layout doesn't shift.
+    pub _pad_after_droplet_bias_0: f32,
+    /// std140 pad — was `hg_blend_bias` before the Approximate Mie
+    /// migration retired the dual-lobe HG bias triple.
+    pub _pad_after_droplet_bias_1: f32,
     /// Detail erosion strength.
     pub detail_strength: f32,
     /// Curl perturbation strength.
@@ -127,12 +130,12 @@ impl Default for CloudParamsGpu {
             sigma_s: [0.030, 0.040, 0.060],
             _pad_after_sigma_s: 0.0,
             sigma_a: [0.0, 0.0, 0.0],
-            // Default 1.0 = "use the synthesised per-cloud-type HG
-            // values unchanged" (Phase 13 follow-up B).
-            hg_forward_bias: 1.0,
+            // Default 1.0 = "use the synthesised per-cloud-type
+            // droplet diameter unchanged".
+            droplet_diameter_bias: 1.0,
 
-            hg_backward_bias: 1.0,
-            hg_blend_bias: 1.0,
+            _pad_after_droplet_bias_0: 0.0,
+            _pad_after_droplet_bias_1: 0.0,
             // Schneider 2015 quotes 0.35 but the canonical remap formula
             // wipes coverage<0.5 layers entirely. Keep low here so the
             // default cumulus layer is visible; UI will expose this and

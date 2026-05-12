@@ -266,52 +266,55 @@ pub fn default_density_scale(cloud_type: CloudType) -> f32 {
     }
 }
 
-/// Default per-cloud-type Henyey–Greenstein anisotropy
-/// `(g_forward, g_backward, g_blend)`.
+/// Default per-cloud-type droplet effective diameter (µm), used
+/// when a scene leaves the `droplet_diameter_um` field on a layer
+/// unset. Drives the Jendersie–d'Eon 2023 Approximate Mie phase
+/// function in the cloud march.
 ///
-/// Phase function is the single biggest driver of cloud *character*
-/// (silver-lining halo, sun-side glow, edge brightness). The values
-/// below are dual-lobe HG fits chosen to match a target single-lobe
-/// effective `g_eff` — the dual-lobe form gives a small back-side
-/// brightness that single-HG misses.
+/// The values match published cloud-microphysics literature on
+/// effective droplet / crystal size per WMO cloud type:
 ///
-/// - **Water-droplet clouds** (Cu / St / Sc / Ac, plus Cb in the
-///   convective core): target `g_eff ≈ 0.85` for ~10 µm droplets at
-///   550 nm. Verified against Kokhanovsky's optical-properties
-///   review (g = 0.858 for a 10 µm gamma distribution); see
-///   `docs/cloud_calibration.md`.
-/// - **Ice-crystal clouds** (Ci / Cs): target `g_eff ≈ 0.75` per
-///   Baran 2012 / 2013. Less forward-peaked than water but still
-///   strongly forward; the single-HG approximation cannot capture
-///   the 22° / 46° halos.
-/// - **Altostratus**: mixed-phase (water at base, ice in upper
-///   deck). Pair sits between the water and ice triples.
+/// - **Water clouds** (Cu / St / Sc / Ac, plus Cb in the
+///   convective core): r_e ≈ 5–15 µm → d ≈ 10–30 µm. Marine
+///   stratocumulus ~10 µm; continental polluted Sc ~6 µm (Twomey
+///   effect, Wood 2012 MWR review). Pruppacher & Klett 1997 is the
+///   canonical reference.
+/// - **Mixed-phase altostratus**: r_e ≈ 15–25 µm → d ≈ 30–50 µm.
+/// - **Ice clouds** (Ci / Cs): r_e ≈ 20–60 µm → d ≈ 40–120 µm.
+///   Generalised effective diameter D_ge in the paper's notation;
+///   verified against multiple cirrus retrieval papers
+///   (acp.copernicus.org/22:15179/2022, JAS 68(2)).
+/// - **Cumulonimbus**: water-droplet (~20 µm) in the convective
+///   core; the shader interpolates toward ice (~50 µm) inside the
+///   anvil region using the same height-based blend that drove the
+///   previous HG transition. See
+///   `dual_lobe_hg_with_g_scale` in `shaders/clouds/cloud_march.wgsl`.
 ///
-/// Cumulonimbus is also mixed-phase but the cloud march
-/// interpolates the HG values inside the layer based on the
-/// sample's normalised height — see `dual_lobe_hg_with_g_scale`
-/// in `shaders/clouds/cloud_march.wgsl`. The default below is the
-/// water-cloud triple for the convective core; the shader blends
-/// toward an ice triple inside the anvil region.
-pub fn default_hg(cloud_type: CloudType) -> (f32, f32, f32) {
+/// The Approximate Mie fit (Jendersie & d'Eon 2023, Eqs. 4–7) is
+/// valid for **5 ≤ d ≤ 50 µm**. Values below clamp to that range
+/// inside the shader; values above (ice) extrapolate the fit, which
+/// the paper notes is reasonable in practice but increases
+/// approximation error. See `docs/cloud_calibration.md` for the
+/// full sources.
+pub fn default_droplet_diameter_um(cloud_type: CloudType) -> f32 {
     match cloud_type {
-        // Water-droplet clouds — dual-lobe fit targeting g_eff ≈ 0.85.
-        CloudType::Cumulus
-        | CloudType::Stratus
-        | CloudType::Stratocumulus
-        | CloudType::Altocumulus
-        | CloudType::Cumulonimbus => (0.80, -0.30, 0.50),
-        // Mixed-phase altostratus — water at base, ice in upper deck.
-        // Targets g_eff ≈ 0.80, between the water and ice triples.
-        CloudType::Altostratus => (0.72, -0.20, 0.45),
-        // Ice clouds — dual-lobe fit targeting Baran's g_eff ≈ 0.75.
-        // The earlier (0.40, -0.15, 0.40) triple was incorrect; it
-        // came from an unverified TrueSky/SilverLining claim that the
-        // verification pass could not substantiate. Live sources
-        // (Baran 2012/2013) put ice g_eff in the 0.74–0.80 band, so
-        // we keep g_forward strongly forward-peaked but drop the
-        // back-lobe blend so the overall asymmetry softens.
-        CloudType::Cirrus | CloudType::Cirrostratus => (0.70, -0.10, 0.30),
+        // Cumulus: r_e ~10 µm typical, d ≈ 20 µm.
+        CloudType::Cumulus => 20.0,
+        // Stratus, Stratocumulus: similar to cumulus, slightly
+        // smaller in marine boundary-layer clouds.
+        CloudType::Stratus | CloudType::Stratocumulus => 16.0,
+        // Altocumulus: mid-level, often slightly smaller droplets.
+        CloudType::Altocumulus => 14.0,
+        // Altostratus (mixed-phase): water at base, ice in upper
+        // deck. The single scalar sits between the two regimes.
+        CloudType::Altostratus => 30.0,
+        // Cirrus, Cirrostratus: ice crystals. Generalised effective
+        // diameter ≈ 50 µm; this is at the upper end of the paper's
+        // 5–50 µm fit range so the shader clamps.
+        CloudType::Cirrus | CloudType::Cirrostratus => 50.0,
+        // Cumulonimbus: water-droplet at the base (~10 µm r_e).
+        // The shader blends toward ice in the anvil region.
+        CloudType::Cumulonimbus => 20.0,
     }
 }
 
@@ -412,6 +415,15 @@ pub struct CloudLayer {
     /// relative to v1. Non-cumulonimbus layers ignore this field.
     #[serde(default)]
     pub anvil_bias: Option<f32>,
+    /// Droplet effective diameter in micrometres. `None` (the
+    /// default) selects the per-cloud-type default from
+    /// `default_droplet_diameter_um` (water clouds ≈ 14–20 µm, ice
+    /// clouds ≈ 50 µm). `Some(v)` overrides. Drives the Jendersie–
+    /// d'Eon 2023 Approximate Mie phase function in the cloud march.
+    /// Fitted range 5–50 µm; values outside that range extrapolate
+    /// the paper's fit.
+    #[serde(default)]
+    pub droplet_diameter_um: Option<f32>,
 }
 
 impl Default for CloudLayer {
@@ -425,6 +437,7 @@ impl Default for CloudLayer {
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,
+            droplet_diameter_um: None,
         }
     }
 }

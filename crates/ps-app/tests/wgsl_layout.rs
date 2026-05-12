@@ -115,9 +115,10 @@ fn cloud_params_layout_matches_wgsl() {
         &[
             ("sigma_s", std::mem::offset_of!(CloudParamsGpu, sigma_s) as u32),
             ("sigma_a", std::mem::offset_of!(CloudParamsGpu, sigma_a) as u32),
-            ("hg_forward_bias", std::mem::offset_of!(CloudParamsGpu, hg_forward_bias) as u32),
-            ("hg_backward_bias", std::mem::offset_of!(CloudParamsGpu, hg_backward_bias) as u32),
-            ("hg_blend_bias", std::mem::offset_of!(CloudParamsGpu, hg_blend_bias) as u32),
+            (
+                "droplet_diameter_bias",
+                std::mem::offset_of!(CloudParamsGpu, droplet_diameter_bias) as u32,
+            ),
             ("detail_strength", std::mem::offset_of!(CloudParamsGpu, detail_strength) as u32),
             ("curl_strength", std::mem::offset_of!(CloudParamsGpu, curl_strength) as u32),
             ("powder_strength", std::mem::offset_of!(CloudParamsGpu, powder_strength) as u32),
@@ -162,9 +163,10 @@ fn cloud_layer_gpu_layout_matches_wgsl() {
             ("shape_bias", std::mem::offset_of!(CloudLayerGpu, shape_bias) as u32),
             ("detail_bias", std::mem::offset_of!(CloudLayerGpu, detail_bias) as u32),
             ("anvil_bias", std::mem::offset_of!(CloudLayerGpu, anvil_bias) as u32),
-            ("g_forward", std::mem::offset_of!(CloudLayerGpu, g_forward) as u32),
-            ("g_backward", std::mem::offset_of!(CloudLayerGpu, g_backward) as u32),
-            ("g_blend", std::mem::offset_of!(CloudLayerGpu, g_blend) as u32),
+            (
+                "droplet_diameter_um",
+                std::mem::offset_of!(CloudLayerGpu, droplet_diameter_um) as u32,
+            ),
         ],
     );
 }

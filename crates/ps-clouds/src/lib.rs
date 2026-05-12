@@ -201,9 +201,7 @@ impl CloudsSubsystem {
         params.multi_scatter_octaves = c.multi_scatter_octaves;
         params.detail_strength = c.detail_strength;
         params.powder_strength = c.powder_strength;
-        params.hg_forward_bias = c.hg_forward_bias;
-        params.hg_backward_bias = c.hg_backward_bias;
-        params.hg_blend_bias = c.hg_blend_bias;
+        params.droplet_diameter_bias = c.droplet_diameter_bias;
         // Phase 13.9 — temporal jitter is gated by both the live flag
         // and `freeze_time` (paused screenshots must not shimmer).
         params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
@@ -219,14 +217,16 @@ impl CloudsSubsystem {
             shape_bias: 0.0,
             detail_bias: 0.0,
             anvil_bias: 0.0,
-            // Cumulus water-droplet HG (Schneider/Hillaire dual-lobe
-            // fit). Matches `ps_core::default_hg(CloudType::Cumulus)`
+            // Cumulus water-droplet effective diameter (~20 µm).
+            // Drives the Approximate Mie phase function in the cloud
+            // march. Matches
+            // `ps_core::default_droplet_diameter_um(CloudType::Cumulus)`
             // — duplicated rather than imported to keep the crate
             // boundary clean.
-            g_forward: 0.80,
-            g_backward: -0.30,
-            g_blend: 0.50,
-            _pad_after_hg: 0.0,
+            droplet_diameter_um: 20.0,
+            _pad_after_droplets_0: 0.0,
+            _pad_after_droplets_1: 0.0,
+            _pad_after_droplets_2: 0.0,
         };
 
         let params_buffer = Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
@@ -495,9 +495,7 @@ impl RenderSubsystem for CloudsSubsystem {
         self.params.multi_scatter_octaves = c.multi_scatter_octaves;
         self.params.detail_strength = c.detail_strength;
         self.params.powder_strength = c.powder_strength;
-        self.params.hg_forward_bias = c.hg_forward_bias;
-        self.params.hg_backward_bias = c.hg_backward_bias;
-        self.params.hg_blend_bias = c.hg_blend_bias;
+        self.params.droplet_diameter_bias = c.droplet_diameter_bias;
         self.params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
         // freeze_time: latch a non-advancing simulated_seconds for the
         // cloud march. The shader reads frame.simulated_seconds; we

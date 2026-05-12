@@ -24,10 +24,10 @@ struct CloudParams {
     sigma_s: vec3<f32>,           // per-channel scattering /m
     _pad_after_sigma_s: f32,      // forces sigma_a onto a fresh 16 B chunk
     sigma_a: vec3<f32>,           // per-channel absorption /m
-    hg_forward_bias: f32,         // multiplier on layer.g_forward; packs into sigma_a's trailing 4 bytes
+    droplet_diameter_bias: f32,   // multiplier on layer.droplet_diameter_um; packs into sigma_a's trailing 4 bytes
 
-    hg_backward_bias: f32,        // multiplier on layer.g_backward
-    hg_blend_bias: f32,           // multiplier on layer.g_blend (clamped [0,1] in shader)
+    _pad_after_droplet_bias_0: f32, // retired hg_backward_bias slot
+    _pad_after_droplet_bias_1: f32, // retired hg_blend_bias slot
     detail_strength: f32,         // 0.35
     curl_strength: f32,           // 0.1
 
@@ -65,16 +65,18 @@ struct CloudLayerGpu {
     shape_bias: f32,
     detail_bias: f32,
     anvil_bias: f32,
-    // Phase 13 follow-up — per-layer Henyey–Greenstein. Water-droplet
-    // clouds (cumulus / stratus / stratocumulus / altocumulus / cb
-    // core) ≈ (0.85, -0.30, 0.50); ice clouds (cirrus / cirrostratus)
-    // ≈ (0.40, -0.15, 0.40). Synthesis picks the right pair from the
-    // cloud type; the cloud march reads them directly. The global
-    // `CloudParams.hg_*_bias` multipliers scale them at render time.
-    g_forward: f32,
-    g_backward: f32,
-    g_blend: f32,
-    _pad_after_hg: f32,
+    // Approximate Mie (Jendersie & d'Eon 2023) droplet effective
+    // diameter in micrometres. Water clouds ~14–20 µm, ice clouds
+    // ~50 µm. The cloud march evaluates Eqs. 4–7 of the paper at
+    // runtime to derive (g_HG, g_D, α, w_D), then evaluates the
+    // HG+Draine blend (Eq. 3). The global
+    // `CloudParams.droplet_diameter_bias` multiplier scales the
+    // diameter at render time so users can dial the apparent
+    // droplet size without re-synthesising.
+    droplet_diameter_um: f32,
+    _pad_after_droplets_0: f32,
+    _pad_after_droplets_1: f32,
+    _pad_after_droplets_2: f32,
 };
 
 struct CloudLayerArray {

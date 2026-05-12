@@ -91,52 +91,73 @@ fn henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
     return (1.0 - g2) / (4.0 * HG_PI * pow(max(denom, 1e-4), 1.5));
 }
 
-/// Dual-lobe HG with anisotropy g scaled by `g_scale`. Used by the
-/// multi-octave multiple-scattering approximation: cos_theta is
-/// geometric and is NOT scaled; only g is. Reads the layer's
-/// Henyey–Greenstein values (set per cloud type by ps-synthesis) and
-/// multiplies them by the global `params.hg_*_bias` knobs from the
-/// Clouds UI panel — defaults of 1.0 reproduce the synthesised
-/// values unchanged.
-///
-/// Phase 13 follow-up C — Cumulonimbus is mixed-phase: water
-/// droplets in the convective core, ice crystals in the anvil. When
-/// the cloud type is 7 (Cumulonimbus) the HG values interpolate
-/// from water-HG at h_norm < 0.6 to ice-HG at h_norm > 0.85, which
-/// makes the anvil read as ice without splitting the layer into
-/// two materials. `h_norm` is the sample's normalised height inside
-/// the layer (0 at base, 1 at top); non-Cb layers ignore it.
-// Ice-cloud HG triple for the cumulonimbus anvil region. Targets
-// Baran 2012/2013 g_eff ≈ 0.75 — matches `ps_core::default_hg` for
-// Ci/Cs. The earlier (0.40, -0.15, 0.40) triple was retired after
-// the live-sources verification pass (see docs/cloud_calibration.md).
-const CB_ICE_G_FORWARD: f32  =  0.70;
-const CB_ICE_G_BACKWARD: f32 = -0.10;
-const CB_ICE_G_BLEND: f32    =  0.30;
+/// Draine phase function (Draine 2003), normalised to integrate to
+/// 1 over the sphere. Generalises HG: at α=0 it reduces to HG; at
+/// α=1, g=0 it is Rayleigh; at α=1 it is Cornette–Shanks. Used as
+/// the "bulk" lobe of the Jendersie & d'Eon 2023 HG+Draine fit.
+fn draine_phase(cos_theta: f32, g: f32, alpha: f32) -> f32 {
+    let g2 = g * g;
+    let denom = 1.0 + g2 - 2.0 * g * cos_theta;
+    let num = (1.0 - g2) * (1.0 + alpha * cos_theta * cos_theta);
+    let den = 4.0 * (1.0 + alpha * (1.0 + 2.0 * g2) / 3.0) * HG_PI
+            * pow(max(denom, 1e-4), 1.5);
+    return num / max(den, 1e-6);
+}
 
-fn dual_lobe_hg_with_g_scale(
+/// Cloud march phase function — Jendersie & d'Eon 2023 "An
+/// Approximate Mie Scattering Function for Fog and Cloud Rendering"
+/// (SIGGRAPH 2023). A single droplet effective diameter `d` (µm)
+/// parametrises the fit; the closed-form expressions (paper Eqs.
+/// 4–7) derive (g_HG, g_D, α, w_D) which evaluate as a blend of an
+/// HG forward peak and a Draine bulk lobe (paper Eq. 3):
+///
+///     p_fog(θ) = (1 - w_D) · HG(g_HG; θ) + w_D · Draine(g_D, α; θ).
+///
+/// The fit is valid for 5 ≤ d ≤ 50 µm (water-droplet and ice-crystal
+/// effective diameters typical of fog, cumulus, stratus, and cirrus).
+/// Outside that range the expressions extrapolate; clamp before
+/// evaluation. Wavelength-independent (paper averages over 400–700
+/// nm).
+///
+/// `g_scale` is the Hillaire multi-octave multiple-scattering
+/// attenuation factor — applied to both HG and Draine `g` values so
+/// each successive octave broadens the phase function the same way.
+/// `params.droplet_diameter_bias` multiplies the layer diameter so
+/// the user can dial droplet size from the Clouds UI panel.
+///
+/// Cumulonimbus is mixed-phase (water droplets in the convective
+/// core, ice crystals in the anvil). When the cloud type is 7
+/// (Cumulonimbus) the effective diameter blends from the layer's
+/// own value (water core) toward 50 µm (ice anvil) across
+/// h_norm ∈ [0.6, 0.85]. The transition pre-empts the anvil's NDF
+/// rise (which starts at 0.7) so the phase shift is visible before
+/// the anvil mass dominates.
+const APPROX_MIE_D_MIN: f32 = 5.0;
+const APPROX_MIE_D_MAX: f32 = 50.0;
+const CB_ANVIL_DROPLET_DIAMETER_UM: f32 = 50.0;
+
+fn cloud_phase(
     cos_theta: f32, layer: CloudLayerGpu, h_norm: f32, g_scale: f32,
 ) -> f32 {
-    var gf = layer.g_forward;
-    var gb = layer.g_backward;
-    var blend = layer.g_blend;
+    // Layer diameter, with the Cb mixed-phase transition.
+    var d = layer.droplet_diameter_um;
     if (layer.cloud_type == 7u) {
-        // smoothstep from water (h ≤ 0.6) to ice (h ≥ 0.85). The
-        // band is below the anvil-NDF rise (which starts at 0.7) so
-        // the phase transition pre-empts the anvil's visual onset.
         let mix_t = smoothstep(0.60, 0.85, clamp(h_norm, 0.0, 1.0));
-        gf    = mix(layer.g_forward,  CB_ICE_G_FORWARD,  mix_t);
-        gb    = mix(layer.g_backward, CB_ICE_G_BACKWARD, mix_t);
-        blend = mix(layer.g_blend,    CB_ICE_G_BLEND,    mix_t);
+        d = mix(layer.droplet_diameter_um, CB_ANVIL_DROPLET_DIAMETER_UM, mix_t);
     }
-    let gf_b    = gf    * params.hg_forward_bias  * g_scale;
-    let gb_b    = gb    * params.hg_backward_bias * g_scale;
-    let blend_b = clamp(blend * params.hg_blend_bias, 0.0, 1.0);
-    return mix(
-        henyey_greenstein(cos_theta, gf_b),
-        henyey_greenstein(cos_theta, gb_b),
-        blend_b,
-    );
+    d = clamp(d * params.droplet_diameter_bias, APPROX_MIE_D_MIN, APPROX_MIE_D_MAX);
+
+    // Approximate Mie fit (Jendersie & d'Eon 2023, Eqs. 4–7).
+    let g_hg    = exp(-0.0990567 / (d - 1.67154));
+    let g_d     = exp(-2.20679 / (d + 3.91029)) - 0.428934;
+    let alpha   = exp(3.62489 - 8.29288 / (d + 5.52825));
+    let w_d     = exp(-0.599085 / (d - 0.641583) - 0.665888);
+
+    // Apply Hillaire multi-octave `g_scale` to both `g` values; α
+    // is fit-dependent and untouched. cos_theta is geometric.
+    let p_hg = henyey_greenstein(cos_theta, g_hg * g_scale);
+    let p_d  = draine_phase(cos_theta, g_d * g_scale, alpha);
+    return (1.0 - w_d) * p_hg + w_d * p_d;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,11 +591,11 @@ fn fs_main(in: VsOut) -> CloudOut {
                 let beer_powder = beer * powder * 2.0;
                 let energy = mix(beer, beer_powder, params.powder_strength);
 
-                // Sample's normalised height inside the layer. Only
-                // consumed by the Cumulonimbus phase-shift branch
-                // inside `dual_lobe_hg_with_g_scale`; other layers
-                // ignore it.
-                let hg_h = clamp(
+                // Sample's normalised height inside the layer. Used
+                // by the Cumulonimbus mixed-phase branch in
+                // `cloud_phase` to blend the droplet diameter from
+                // water (core) to ice (anvil); other layers ignore it.
+                let phase_h = clamp(
                     (alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0),
                     0.0, 1.0,
                 );
@@ -587,7 +608,7 @@ fn fs_main(in: VsOut) -> CloudOut {
                 var b = 1.0;
                 var c = 1.0;
                 for (var n = 0u; n < params.multi_scatter_octaves; n = n + 1u) {
-                    let phase = dual_lobe_hg_with_g_scale(cos_theta, layer, hg_h, c);
+                    let phase = cloud_phase(cos_theta, layer, phase_h, c);
                     sun_in = sun_in + a * frame.sun_illuminance.rgb
                                     * phase
                                     * exp(-sigma_t * od_to_sun * b);
