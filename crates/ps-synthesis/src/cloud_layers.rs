@@ -5,7 +5,7 @@
 //! stage repeats (independently of `Scene::validate` so synthesis is a
 //! self-contained boundary).
 
-use ps_core::{CloudLayer, CloudLayerGpu, CloudType};
+use ps_core::{default_density_scale, CloudLayer, CloudLayerGpu, CloudType};
 
 /// Synthesise GPU-ready cloud layers from the parsed scene's layers.
 ///
@@ -30,10 +30,15 @@ use ps_core::{CloudLayer, CloudLayerGpu, CloudType};
 /// it can be mapped to bias defaults safely. For now, scenes that
 /// want type-specific edge character set their own bias values.
 ///
-/// `anvil_bias` is the only field with a non-zero default: 1.0 for
-/// Cumulonimbus (matches the v1 hard-coded anvil multiplier in the
-/// NDF), 0.0 for all others. Scenes can override via the optional
-/// `anvil_bias` field on `CloudLayer`.
+/// `anvil_bias` defaults to 1.0 for Cumulonimbus (matches the v1
+/// hard-coded anvil multiplier in the NDF) and 0.0 for all others.
+/// `density_scale` defaults to a per-type optical-depth value
+/// calibrated against the meteorological literature
+/// (Cumulus/Stratus/Stratocumulus = 1.0, Altocumulus = 0.85,
+/// Altostratus = 0.7, Cirrus = 0.55, Cirrostratus = 0.4,
+/// Cumulonimbus = 1.4 for the deep convective core). Scenes that
+/// supply explicit values via the optional `density_scale` /
+/// `anvil_bias` fields on `CloudLayer` override these defaults.
 pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
     let mut out = Vec::with_capacity(layers.len());
     for layer in layers {
@@ -42,11 +47,14 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
             _ => 0.0,
         };
         let anvil_bias = layer.anvil_bias.unwrap_or(type_anvil_default);
+        let density_scale = layer
+            .density_scale
+            .unwrap_or_else(|| default_density_scale(layer.cloud_type));
         out.push(CloudLayerGpu {
             base_m: layer.base_m,
             top_m: layer.top_m,
             coverage: remap_coverage_to_visible_band(layer.coverage),
-            density_scale: layer.density_scale,
+            density_scale,
             cloud_type: layer.cloud_type as u8 as u32,
             shape_bias: layer.shape_octave_bias,
             detail_bias: layer.detail_octave_bias,
@@ -55,6 +63,7 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
     }
     out
 }
+
 
 /// Map a scene-side coverage value in [0, 1] onto the Schneider 2015
 /// remap's "visible band" so that METAR-natural values (0.25 SCT, 0.5
@@ -125,7 +134,7 @@ mod tests {
             base_m: base,
             top_m: top,
             coverage: 0.5,
-            density_scale: 1.0,
+            density_scale: None,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,
@@ -149,6 +158,38 @@ mod tests {
         let gpu = synthesise_cloud_layers(&layers);
         assert_eq!(gpu[0].cloud_type, CloudType::Cumulonimbus as u8 as u32);
         assert_eq!(gpu[0].anvil_bias, 1.0);
+    }
+
+    /// Pin the per-type `density_scale` defaults — see
+    /// `default_density_scale` for the calibration rationale.
+    #[test]
+    fn per_type_density_scale_defaults() {
+        let cases = [
+            (CloudType::Cumulus, 1.0),
+            (CloudType::Stratus, 1.0),
+            (CloudType::Stratocumulus, 1.0),
+            (CloudType::Altocumulus, 0.85),
+            (CloudType::Altostratus, 0.7),
+            (CloudType::Cirrus, 0.55),
+            (CloudType::Cirrostratus, 0.4),
+            (CloudType::Cumulonimbus, 1.4),
+        ];
+        for (t, expected) in cases {
+            let gpu = synthesise_cloud_layers(&[make_layer(t, 100.0, 200.0)]);
+            assert_eq!(
+                gpu[0].density_scale, expected,
+                "default density_scale for {t:?}",
+            );
+        }
+    }
+
+    /// Scene-supplied `density_scale` wins over the per-type default.
+    #[test]
+    fn explicit_density_scale_overrides_default() {
+        let mut layer = make_layer(CloudType::Cirrus, 8000.0, 9000.0);
+        layer.density_scale = Some(2.5);
+        let gpu = synthesise_cloud_layers(&[layer]);
+        assert_eq!(gpu[0].density_scale, 2.5);
     }
 
     #[test]

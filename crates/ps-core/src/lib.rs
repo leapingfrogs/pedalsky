@@ -42,8 +42,9 @@ pub use hot_reload::{
     HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE,
 };
 pub use scene::{
-    aurora_colour_bias, Aurora, CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind,
-    Precipitation, Scene, SceneError, Surface, SurfaceMaterial, Water, Wetness,
+    aurora_colour_bias, default_density_scale, Aurora, CloudLayer, CloudType, Clouds,
+    CoverageGrid, Lightning, PrecipKind, Precipitation, Scene, SceneError, Surface,
+    SurfaceMaterial, Water, Wetness,
 };
 pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
 pub use weather::{

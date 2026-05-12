@@ -233,6 +233,34 @@ pub enum SurfaceMaterial {
     WaterEdge,
 }
 
+/// Per-cloud-type `density_scale` default used when a scene leaves
+/// the `density_scale` field on a layer unset. Values calibrated
+/// against:
+///
+/// - Wallace & Hobbs *Atmospheric Science* (2006), Houze *Cloud
+///   Dynamics* (2014) for optical-depth ranges per WMO type;
+/// - Schneider 2015 / Hillaire 2016 baseline sigma_s ≈ 0.04 /m;
+/// - The open-source consensus across Schneider HZD, Frostbite,
+///   TrueSky, SilverLining, and Bevy / Unity / Godot community
+///   reimplementations (PedalSky research synthesis, 2026-05-12).
+///
+/// Optical-depth targets (vertical, visible): Cumulus 5–30,
+/// Stratus 8–40, Stratocumulus 8–25, Altocumulus 3–10,
+/// Altostratus 5–30, Cirrus 0.03–1.0, Cirrostratus 0.5–3,
+/// Cumulonimbus 30–200+. The values below place each type near
+/// the middle of its band when combined with default `coverage`
+/// and layer thickness.
+pub fn default_density_scale(cloud_type: CloudType) -> f32 {
+    match cloud_type {
+        CloudType::Cumulus | CloudType::Stratus | CloudType::Stratocumulus => 1.0,
+        CloudType::Altocumulus => 0.85,
+        CloudType::Altostratus => 0.7,
+        CloudType::Cirrus => 0.55,
+        CloudType::Cirrostratus => 0.4,
+        CloudType::Cumulonimbus => 1.4,
+    }
+}
+
 impl SurfaceMaterial {
     /// Numeric encoding stored in `SurfaceParams.material` (mirrors
     /// the WGSL constants in `pbr.wgsl`). Stable across versions.
@@ -297,8 +325,17 @@ pub struct CloudLayer {
     pub top_m: f32,
     /// Coverage in \[0, 1\] before per-pixel weather-map modulation.
     pub coverage: f32,
-    /// Optical density multiplier.
-    pub density_scale: f32,
+    /// Per-layer optical density multiplier. `None` (the default)
+    /// selects the per-cloud-type default in `ps_synthesis`
+    /// (Cumulus/Stratus/Stratocumulus = 1.0, Altocumulus = 0.85,
+    /// Altostratus = 0.7, Cirrus = 0.55, Cirrostratus = 0.4,
+    /// Cumulonimbus = 1.4). The defaults track the published
+    /// per-type optical-depth ranges (Cumulus 5–30, Cirrus 0.03–1.0,
+    /// Cumulonimbus core 30–200+) so scenes that omit the field
+    /// land in the right ballpark for their cloud type. `Some(v)`
+    /// overrides.
+    #[serde(default)]
+    pub density_scale: Option<f32>,
     /// Per-layer bias on the base-shape low-frequency Worley FBM
     /// weighting. Subtle: redistributes the bulk density envelope.
     /// Useful range \[-1, 1\] but most effect lives near 0.
@@ -330,7 +367,7 @@ impl Default for CloudLayer {
             base_m: 1500.0,
             top_m: 2300.0,
             coverage: 0.5,
-            density_scale: 1.0,
+            density_scale: None,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,

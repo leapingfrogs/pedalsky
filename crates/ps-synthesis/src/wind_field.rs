@@ -279,7 +279,7 @@ mod tests {
             base_m: 1500.0,
             top_m: 2300.0,
             coverage: 0.6,
-            density_scale: 1.0,
+            density_scale: None,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
             anvil_bias: None,

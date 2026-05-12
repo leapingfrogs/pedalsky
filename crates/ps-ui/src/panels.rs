@@ -799,11 +799,27 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .max_decimals(4)
                     .ui(ui)
                     .changed();
-                layers_changed |= Slider::new(&mut layer.density_scale, 0.0..=4.0)
+                // density_scale is Option<f32>: None ⇒ use the
+                // per-cloud-type default from ps-core. Show the
+                // effective value (current Some, else default) and
+                // write Some(v) on change so the user's edit becomes
+                // explicit.
+                let density_default =
+                    ps_core::default_density_scale(layer.cloud_type);
+                let mut density_val = layer.density_scale.unwrap_or(density_default);
+                let density_resp = Slider::new(&mut density_val, 0.0..=4.0)
                     .text("density_scale")
                     .max_decimals(4)
                     .ui(ui)
-                    .changed();
+                    .on_hover_text(
+                        "Per-layer optical density multiplier. Defaults \
+                         track the per-cloud-type optical-depth ranges; \
+                         move the slider to override.",
+                    );
+                if density_resp.changed() {
+                    layer.density_scale = Some(density_val);
+                    layers_changed = true;
+                }
                 ui.horizontal(|ui| {
                     ui.label("type");
                     ComboBox::from_id_salt(format!("ps-ui-cloud-kind-{i}"))
