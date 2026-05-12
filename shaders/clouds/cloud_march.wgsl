@@ -98,14 +98,40 @@ fn henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
 /// multiplies them by the global `params.hg_*_bias` knobs from the
 /// Clouds UI panel — defaults of 1.0 reproduce the synthesised
 /// values unchanged.
-fn dual_lobe_hg_with_g_scale(cos_theta: f32, layer: CloudLayerGpu, g_scale: f32) -> f32 {
-    let gf = layer.g_forward  * params.hg_forward_bias  * g_scale;
-    let gb = layer.g_backward * params.hg_backward_bias * g_scale;
-    let blend = clamp(layer.g_blend * params.hg_blend_bias, 0.0, 1.0);
+///
+/// Phase 13 follow-up C — Cumulonimbus is mixed-phase: water
+/// droplets in the convective core, ice crystals in the anvil. When
+/// the cloud type is 7 (Cumulonimbus) the HG values interpolate
+/// from water-HG at h_norm < 0.6 to ice-HG at h_norm > 0.85, which
+/// makes the anvil read as ice without splitting the layer into
+/// two materials. `h_norm` is the sample's normalised height inside
+/// the layer (0 at base, 1 at top); non-Cb layers ignore it.
+const CB_ICE_G_FORWARD: f32  =  0.40;
+const CB_ICE_G_BACKWARD: f32 = -0.15;
+const CB_ICE_G_BLEND: f32    =  0.40;
+
+fn dual_lobe_hg_with_g_scale(
+    cos_theta: f32, layer: CloudLayerGpu, h_norm: f32, g_scale: f32,
+) -> f32 {
+    var gf = layer.g_forward;
+    var gb = layer.g_backward;
+    var blend = layer.g_blend;
+    if (layer.cloud_type == 7u) {
+        // smoothstep from water (h ≤ 0.6) to ice (h ≥ 0.85). The
+        // band is below the anvil-NDF rise (which starts at 0.7) so
+        // the phase transition pre-empts the anvil's visual onset.
+        let mix_t = smoothstep(0.60, 0.85, clamp(h_norm, 0.0, 1.0));
+        gf    = mix(layer.g_forward,  CB_ICE_G_FORWARD,  mix_t);
+        gb    = mix(layer.g_backward, CB_ICE_G_BACKWARD, mix_t);
+        blend = mix(layer.g_blend,    CB_ICE_G_BLEND,    mix_t);
+    }
+    let gf_b    = gf    * params.hg_forward_bias  * g_scale;
+    let gb_b    = gb    * params.hg_backward_bias * g_scale;
+    let blend_b = clamp(blend * params.hg_blend_bias, 0.0, 1.0);
     return mix(
-        henyey_greenstein(cos_theta, gf),
-        henyey_greenstein(cos_theta, gb),
-        blend,
+        henyey_greenstein(cos_theta, gf_b),
+        henyey_greenstein(cos_theta, gb_b),
+        blend_b,
     );
 }
 
@@ -540,6 +566,15 @@ fn fs_main(in: VsOut) -> CloudOut {
                 let beer_powder = beer * powder * 2.0;
                 let energy = mix(beer, beer_powder, params.powder_strength);
 
+                // Sample's normalised height inside the layer. Only
+                // consumed by the Cumulonimbus phase-shift branch
+                // inside `dual_lobe_hg_with_g_scale`; other layers
+                // ignore it.
+                let hg_h = clamp(
+                    (alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0),
+                    0.0, 1.0,
+                );
+
                 // Hillaire 2016 multi-octave multiple-scattering: each octave
                 // scales energy×a, optical-depth×b, anisotropy×c. cos_theta
                 // is geometric and never scaled; only g is.
@@ -548,7 +583,7 @@ fn fs_main(in: VsOut) -> CloudOut {
                 var b = 1.0;
                 var c = 1.0;
                 for (var n = 0u; n < params.multi_scatter_octaves; n = n + 1u) {
-                    let phase = dual_lobe_hg_with_g_scale(cos_theta, layer, c);
+                    let phase = dual_lobe_hg_with_g_scale(cos_theta, layer, hg_h, c);
                     sun_in = sun_in + a * frame.sun_illuminance.rgb
                                     * phase
                                     * exp(-sigma_t * od_to_sun * b);

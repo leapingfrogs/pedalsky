@@ -23,18 +23,22 @@ const SSIM_TOLERANCE: f64 = 0.99;
 const RENDER_W: u32 = 1280;
 const RENDER_H: u32 = 720;
 
-/// (scene_filename, time_iso8601, ev100) — must match
+/// (scene_filename, time_iso8601, ev100, pitch_deg) — must match
 /// `crates/ps-app/src/bin/ps-bless.rs` so the regenerated goldens
-/// share the same render parameters.
-const SCENES: &[(&str, &str, f32)] = &[
-    ("clear_summer_noon", "2026-06-21T11:00:00Z", 14.0),
-    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0),
-    ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0),
-    ("thunderstorm", "2026-08-16T16:00:00Z", 14.0),
-    ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0),
-    ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0),
-    ("twilight_civil", "2026-12-21T04:30:00Z", 8.0),
-    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 14.0),
+/// share the same render parameters. Phase 13 follow-up D —
+/// overhead-deck scenes (overcast_drizzle, winter_overcast_snow)
+/// use a steeper pitch so the camera actually points up into the
+/// cloud base rather than at the horizon; otherwise the deck
+/// renders edge-on through 9+ km of haze and reads as a thin band.
+const SCENES: &[(&str, &str, f32, f32)] = &[
+    ("clear_summer_noon",        "2026-06-21T11:00:00Z", 14.0,  5.0),
+    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0,  5.0),
+    ("overcast_drizzle",         "2026-04-12T10:00:00Z", 14.0, 45.0),
+    ("thunderstorm",             "2026-08-16T16:00:00Z", 14.0,  5.0),
+    ("high_cirrus_sunset",       "2026-09-22T17:30:00Z", 11.0,  5.0),
+    ("winter_overcast_snow",     "2026-01-08T12:00:00Z", 14.0, 60.0),
+    ("twilight_civil",           "2026-12-21T04:30:00Z",  8.0,  5.0),
+    ("mountain_wave_clouds",     "2026-03-15T13:00:00Z", 14.0,  5.0),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -68,6 +72,7 @@ pub fn render_scene(
     scene_name: &str,
     time_iso: &str,
     ev100: f32,
+    pitch_deg: f32,
 ) -> Vec<u8> {
     use chrono::{DateTime, Utc};
     let root = workspace_root();
@@ -96,7 +101,7 @@ pub fn render_scene(
     );
     let camera = FlyCamera {
         position: glam::Vec3::new(0.0, 1.7, 0.0),
-        pitch: 5_f32.to_radians(),
+        pitch: pitch_deg.to_radians(),
         ..FlyCamera::default()
     };
     app.render_one_frame_with_scene(gpu, camera, &scene, world)
@@ -123,8 +128,8 @@ fn all_scenes_match_goldens() {
         return;
     }
     let mut failures = Vec::new();
-    for (name, time_iso, ev100) in SCENES {
-        let actual = render_scene(gpu, name, time_iso, *ev100);
+    for (name, time_iso, ev100, pitch_deg) in SCENES {
+        let actual = render_scene(gpu, name, time_iso, *ev100, *pitch_deg);
         let actual_img = image::RgbaImage::from_raw(RENDER_W, RENDER_H, actual)
             .expect("rgba buffer length");
         let golden_path = golden_dir.join(format!("{name}.png"));

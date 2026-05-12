@@ -11,20 +11,24 @@ use anyhow::{Context, Result};
 const RENDER_W: u32 = 1280;
 const RENDER_H: u32 = 720;
 
-/// (scene_name, time_iso8601, ev100)
+/// (scene_name, time_iso8601, ev100, pitch_deg) — must match the
+/// `SCENES` table in `crates/ps-app/tests/golden.rs`.
 ///
 /// EV chosen per the Phase 9 acceptance bands: midday=15, sunset=12,
-/// twilight=8. Overcast scenes use EV=14 (1 stop brighter than midday
-/// to compensate for cloud darkening).
-const SCENES: &[(&str, &str, f32)] = &[
-    ("clear_summer_noon", "2026-06-21T11:00:00Z", 14.0),
-    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0),
-    ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0),
-    ("thunderstorm", "2026-08-16T16:00:00Z", 14.0),
-    ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0),
-    ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0),
-    ("twilight_civil", "2026-12-21T04:30:00Z", 8.0),
-    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 14.0),
+/// twilight=8. Overcast scenes use EV=14 (1 stop brighter than
+/// midday to compensate for cloud darkening). Phase 13 follow-up D —
+/// overhead-deck scenes use a steeper pitch (look up at the cloud
+/// base) so the deck reads as a sheet rather than as a thin band
+/// seen edge-on through 9+ km of haze.
+const SCENES: &[(&str, &str, f32, f32)] = &[
+    ("clear_summer_noon",        "2026-06-21T11:00:00Z", 14.0,  5.0),
+    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0,  5.0),
+    ("overcast_drizzle",         "2026-04-12T10:00:00Z", 14.0, 45.0),
+    ("thunderstorm",             "2026-08-16T16:00:00Z", 14.0,  5.0),
+    ("high_cirrus_sunset",       "2026-09-22T17:30:00Z", 11.0,  5.0),
+    ("winter_overcast_snow",     "2026-01-08T12:00:00Z", 14.0, 60.0),
+    ("twilight_civil",           "2026-12-21T04:30:00Z",  8.0,  5.0),
+    ("mountain_wave_clouds",     "2026-03-15T13:00:00Z", 14.0,  5.0),
 ];
 
 fn workspace_root() -> Result<PathBuf> {
@@ -46,8 +50,8 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&golden_dir).ok();
     let gpu = ps_core::gpu::init_headless().context("init headless GPU")?;
 
-    for (name, time_iso, ev100) in SCENES {
-        let pixels = render_one(&gpu, &root, name, time_iso, *ev100)?;
+    for (name, time_iso, ev100, pitch_deg) in SCENES {
+        let pixels = render_one(&gpu, &root, name, time_iso, *ev100, *pitch_deg)?;
         let img = image::RgbaImage::from_raw(RENDER_W, RENDER_H, pixels)
             .context("rgba buffer length")?;
         let path = golden_dir.join(format!("{name}.png"));
@@ -64,6 +68,7 @@ fn render_one(
     name: &str,
     time_iso: &str,
     ev100: f32,
+    pitch_deg: f32,
 ) -> Result<Vec<u8>> {
     use chrono::{DateTime, Utc};
     use ps_app::test_harness::{HeadlessApp, TestSetup};
@@ -96,7 +101,7 @@ fn render_one(
     );
     let camera = FlyCamera {
         position: glam::Vec3::new(0.0, 1.7, 0.0),
-        pitch: 5_f32.to_radians(),
+        pitch: pitch_deg.to_radians(),
         ..FlyCamera::default()
     };
     Ok(app.render_one_frame_with_scene(gpu, camera, &scene, world))
