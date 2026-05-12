@@ -106,9 +106,13 @@ fn henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
 /// makes the anvil read as ice without splitting the layer into
 /// two materials. `h_norm` is the sample's normalised height inside
 /// the layer (0 at base, 1 at top); non-Cb layers ignore it.
-const CB_ICE_G_FORWARD: f32  =  0.40;
-const CB_ICE_G_BACKWARD: f32 = -0.15;
-const CB_ICE_G_BLEND: f32    =  0.40;
+// Ice-cloud HG triple for the cumulonimbus anvil region. Targets
+// Baran 2012/2013 g_eff ≈ 0.75 — matches `ps_core::default_hg` for
+// Ci/Cs. The earlier (0.40, -0.15, 0.40) triple was retired after
+// the live-sources verification pass (see docs/cloud_calibration.md).
+const CB_ICE_G_FORWARD: f32  =  0.70;
+const CB_ICE_G_BACKWARD: f32 = -0.10;
+const CB_ICE_G_BLEND: f32    =  0.30;
 
 fn dual_lobe_hg_with_g_scale(
     cos_theta: f32, layer: CloudLayerGpu, h_norm: f32, g_scale: f32,

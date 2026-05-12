@@ -153,6 +153,9 @@ Notes:
   visible band so authors don't need to know the underlying remap.
 - `cloud_type` is one of `Cumulus`, `Stratus`, `Stratocumulus`,
   `Altocumulus`, `Altostratus`, `Cirrus`, `Cirrostratus`, `Cumulonimbus`.
+  Per-cloud-type defaults (density, phase function, altitude bands,
+  optical-depth targets) are documented with their published sources
+  in `docs/cloud_calibration.md`.
 - Multiple `[[clouds.layers]]` blocks must be **vertically disjoint**;
   `Scene::validate` rejects overlap with a structured error naming the
   offending pair.

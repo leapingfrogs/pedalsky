@@ -441,6 +441,12 @@ pub struct WeatherState {
     pub haze_extinction_per_m: Vec3,
 }
 
+// Original v1 layout. Phase 13 follow-up B promoted the
+// Henyey-Greenstein triple to per-layer fields (water-droplet
+// vs ice-crystal differentiation). The current layout in
+// `crates/ps-core/src/weather.rs` adds (g_forward, g_backward,
+// g_blend, _pad_after_hg) — see `docs/cloud_calibration.md` for
+// per-cloud-type defaults and verification sources.
 #[repr(C)] #[derive(Pod, Zeroable, Copy, Clone)]
 pub struct CloudLayerGpu {
     pub base_m: f32,

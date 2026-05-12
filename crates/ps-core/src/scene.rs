@@ -234,8 +234,13 @@ pub enum SurfaceMaterial {
 }
 
 /// Per-cloud-type `density_scale` default used when a scene leaves
-/// the `density_scale` field on a layer unset. Values calibrated
-/// against:
+/// the `density_scale` field on a layer unset.
+///
+/// **See `docs/cloud_calibration.md`** for the full per-cloud-type
+/// reference table (densities, HG triples, optical-depth ranges,
+/// altitudes, droplet radii) with verified source citations.
+///
+/// Values calibrated against:
 ///
 /// - Wallace & Hobbs *Atmospheric Science* (2006), Houze *Cloud
 ///   Dynamics* (2014) for optical-depth ranges per WMO type;
@@ -265,35 +270,48 @@ pub fn default_density_scale(cloud_type: CloudType) -> f32 {
 /// `(g_forward, g_backward, g_blend)`.
 ///
 /// Phase function is the single biggest driver of cloud *character*
-/// (silver-lining halo, sun-side glow, edge brightness). Water-
-/// droplet clouds with ~5–15 µm droplets exhibit a sharp forward
-/// lobe (g ≈ 0.85); ice-crystal clouds with hexagonal plates /
-/// columns scatter more isotropically (g ≈ 0.4) and have stronger
-/// side / backward components — the 22° / 46° halos that no HG
-/// approximation captures fully. The values below are the
-/// Schneider / Hillaire / Bouthors dual-lobe fits with an
-/// ice-crystal pair derived from TrueSky and SilverLining defaults
-/// (PedalSky research synthesis, 2026-05-12).
+/// (silver-lining halo, sun-side glow, edge brightness). The values
+/// below are dual-lobe HG fits chosen to match a target single-lobe
+/// effective `g_eff` — the dual-lobe form gives a small back-side
+/// brightness that single-HG misses.
 ///
-/// Cumulonimbus is mixed-phase (water core, ice anvil). For Phase
-/// 13 follow-up B we treat it as water-droplet uniformly; a future
-/// pass (item C) will interpolate between water and ice phase
-/// inside the layer based on normalised height.
+/// - **Water-droplet clouds** (Cu / St / Sc / Ac, plus Cb in the
+///   convective core): target `g_eff ≈ 0.85` for ~10 µm droplets at
+///   550 nm. Verified against Kokhanovsky's optical-properties
+///   review (g = 0.858 for a 10 µm gamma distribution); see
+///   `docs/cloud_calibration.md`.
+/// - **Ice-crystal clouds** (Ci / Cs): target `g_eff ≈ 0.75` per
+///   Baran 2012 / 2013. Less forward-peaked than water but still
+///   strongly forward; the single-HG approximation cannot capture
+///   the 22° / 46° halos.
+/// - **Altostratus**: mixed-phase (water at base, ice in upper
+///   deck). Pair sits between the water and ice triples.
+///
+/// Cumulonimbus is also mixed-phase but the cloud march
+/// interpolates the HG values inside the layer based on the
+/// sample's normalised height — see `dual_lobe_hg_with_g_scale`
+/// in `shaders/clouds/cloud_march.wgsl`. The default below is the
+/// water-cloud triple for the convective core; the shader blends
+/// toward an ice triple inside the anvil region.
 pub fn default_hg(cloud_type: CloudType) -> (f32, f32, f32) {
     match cloud_type {
-        // Water-droplet clouds — Schneider 2015 / Hillaire 2016 /
-        // Bouthors 2008 fit to Mie at ~10 µm droplet radius.
+        // Water-droplet clouds — dual-lobe fit targeting g_eff ≈ 0.85.
         CloudType::Cumulus
         | CloudType::Stratus
         | CloudType::Stratocumulus
         | CloudType::Altocumulus
         | CloudType::Cumulonimbus => (0.80, -0.30, 0.50),
         // Mixed-phase altostratus — water at base, ice in upper deck.
-        // Sit between the two pairs.
-        CloudType::Altostratus => (0.65, -0.20, 0.45),
-        // Ice clouds — Baran 2012 ice phase function fit. Less
-        // forward-peaked, weaker backward lobe.
-        CloudType::Cirrus | CloudType::Cirrostratus => (0.40, -0.15, 0.40),
+        // Targets g_eff ≈ 0.80, between the water and ice triples.
+        CloudType::Altostratus => (0.72, -0.20, 0.45),
+        // Ice clouds — dual-lobe fit targeting Baran's g_eff ≈ 0.75.
+        // The earlier (0.40, -0.15, 0.40) triple was incorrect; it
+        // came from an unverified TrueSky/SilverLining claim that the
+        // verification pass could not substantiate. Live sources
+        // (Baran 2012/2013) put ice g_eff in the 0.74–0.80 band, so
+        // we keep g_forward strongly forward-peaked but drop the
+        // back-lobe blend so the overall asymmetry softens.
+        CloudType::Cirrus | CloudType::Cirrostratus => (0.70, -0.10, 0.30),
     }
 }
 

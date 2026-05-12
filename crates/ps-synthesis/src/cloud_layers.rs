@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn per_type_hg_defaults() {
         let water = (0.80_f32, -0.30_f32, 0.50_f32);
-        let ice = (0.40_f32, -0.15_f32, 0.40_f32);
-        let mixed = (0.65_f32, -0.20_f32, 0.45_f32); // altostratus
+        let ice = (0.70_f32, -0.10_f32, 0.30_f32);
+        let mixed = (0.72_f32, -0.20_f32, 0.45_f32); // altostratus
         let cases = [
             (CloudType::Cumulus, water),
             (CloudType::Stratus, water),
