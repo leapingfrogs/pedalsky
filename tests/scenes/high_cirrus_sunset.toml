@@ -30,8 +30,8 @@ base_m             = 8500.0
 top_m              = 9500.0
 coverage           = 0.4
 density_scale      = 0.6       # cirrus is optically thin
-shape_octave_bias  = 0.4       # wispy
-detail_octave_bias = 0.5
+shape_octave_bias  = 0.0       # tune in the UI when wiring is calibrated
+detail_octave_bias = 0.0
 
 [precipitation]
 type               = "None"

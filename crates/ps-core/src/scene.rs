@@ -299,10 +299,28 @@ pub struct CloudLayer {
     pub coverage: f32,
     /// Optical density multiplier.
     pub density_scale: f32,
-    /// Bias on the shape-noise frequency (negative = blockier, positive = wispier).
+    /// Per-layer bias on the base-shape low-frequency Worley FBM
+    /// weighting. Subtle: redistributes the bulk density envelope.
+    /// Useful range \[-1, 1\] but most effect lives near 0.
     pub shape_octave_bias: f32,
-    /// Bias on the detail-noise frequency.
+    /// Per-layer bias on the high-frequency boundary erosion
+    /// strength. The Schneider remap is non-monotonic in apparent
+    /// density: positive bias culls more low-density samples *and*
+    /// concentrates surviving samples, so the cloud reads as either
+    /// thinner or denser depending on the layer's coverage and
+    /// density_scale. Recommended useful range is small (~±0.1);
+    /// larger magnitudes trigger sky-wide saturation or near-total
+    /// cloud loss. Plan §3.2.6 reserves per-type defaults here, but
+    /// those need a calibrated tuning bench to land safely; for now
+    /// the field is a pure per-scene knob.
     pub detail_octave_bias: f32,
+    /// Phase 13 follow-up — anvil bias for the Cumulonimbus NDF.
+    /// `None` (the default) selects the per-type default
+    /// (Cumulonimbus = 1.0, others = 0.0); `Some(v)` overrides. Range
+    /// 0..2 — 0 suppresses the anvil entirely, 2 doubles its strength
+    /// relative to v1. Non-cumulonimbus layers ignore this field.
+    #[serde(default)]
+    pub anvil_bias: Option<f32>,
 }
 
 impl Default for CloudLayer {
@@ -315,6 +333,7 @@ impl Default for CloudLayer {
             density_scale: 1.0,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
+            anvil_bias: None,
         }
     }
 }

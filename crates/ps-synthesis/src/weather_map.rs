@@ -220,6 +220,7 @@ mod tests {
             density_scale: 1.0,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
+            anvil_bias: None,
         });
         let wm = WeatherMap::synthesise(&scene, &Surface::default());
         // R is now a *spatial gate* (plan §3.2.3 followup #57): with no

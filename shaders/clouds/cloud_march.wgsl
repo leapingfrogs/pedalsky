@@ -108,7 +108,7 @@ fn dual_lobe_hg_with_g_scale(cos_theta: f32, g_scale: f32) -> f32 {
 // Density-height profile (NDF, 8 cloud types)
 // ---------------------------------------------------------------------------
 
-fn ndf(h: f32, t: u32) -> f32 {
+fn ndf(h: f32, t: u32, anvil_bias: f32) -> f32 {
     // All NDF profiles target a peak of ~0.78 so that scene-side
     // density_scale=1.0 produces comparable optical thickness across
     // cloud types. Per-type density character (cirrus = thin, cumulus
@@ -138,9 +138,13 @@ fn ndf(h: f32, t: u32) -> f32 {
             return smoothstep(0.0, 0.50, h) * (1.0 - smoothstep(0.8, 1.0, h));
         }
         case 7u: { // Cumulonimbus: bottom-heavy + anvil top
+            // Phase 13 follow-up — anvil strength scales with the
+            // per-layer `anvil_bias`. Default value 1.0 reproduces
+            // the v1 hard-coded look; raise toward 2 for a heavier
+            // anvil spread, lower toward 0 to suppress it entirely.
             let base  = smoothstep(0.0, 0.05, h);
             let mid   = smoothstep(0.95, 0.5, h);
-            let anvil = smoothstep(0.7, 0.9, h) * 1.5;
+            let anvil = smoothstep(0.7, 0.9, h) * 1.5 * clamp(anvil_bias, 0.0, 2.0);
             let mix_t = smoothstep(0.65, 0.8, h);
             return base * mix(mid, anvil, mix_t);
         }
@@ -267,12 +271,19 @@ fn sample_density(
     let base_uv = p / max(params.base_scale_m, 1.0);
     let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);
     // Schneider remap: low-frequency Worley FBM erodes the Perlin-Worley.
-    let lf_fbm = base.g * 0.625 + base.b * 0.25 + base.a * 0.125;
+    // Phase 13 follow-up — per-layer `shape_bias` shifts the LF FBM
+    // sum (clamped to a small range so the remap stays well-formed).
+    // Positive → more Worley FBM dominance → wispier cauliflower
+    // structure on the base shape; negative → smoother bulbous body.
+    let lf_fbm = clamp(
+        base.g * 0.625 + base.b * 0.25 + base.a * 0.125 + layer.shape_bias * 0.5,
+        0.0, 1.0,
+    );
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
     // Phase 12.1: per-pixel cloud type override (or layer default).
     let cloud_type = effective_cloud_type(p.xz, layer);
-    let profile = ndf(h, cloud_type);
+    let profile = ndf(h, cloud_type, layer.anvil_bias);
     var cloud = base_cloud * profile;
 
     // Coverage from synthesised weather × per-layer scalar.
@@ -291,11 +302,18 @@ fn sample_density(
                                      * params.detail_scale_m;
         let detail_uv = detail_p / max(params.detail_scale_m, 1.0);
         let detail = textureSampleLevel(noise_detail, noise_sampler, detail_uv, 0.0);
+        // Phase 13 follow-up — per-layer `detail_bias` shifts the HF
+        // erosion strength. Combined with the global
+        // `params.detail_strength`, it lets each layer have its own
+        // edge character (cirrus very wispy, cumulonimbus aggressively
+        // eroded, stratus fairly smooth). Clamped to [0, 1] so the
+        // remap stays well-formed.
         let hf_fbm = detail.r * 0.625 + detail.g * 0.25 + detail.b * 0.125;
         // Schneider 2015: detail erosion polarity flips with height -- wispy
         // top, fluffy base.
         let detail_mod = mix(hf_fbm, 1.0 - hf_fbm, clamp(h * 10.0, 0.0, 1.0));
-        cloud = remap(cloud, detail_mod * params.detail_strength, 1.0, 0.0, 1.0);
+        let layer_detail = clamp(params.detail_strength + layer.detail_bias, 0.0, 1.0);
+        cloud = remap(cloud, detail_mod * layer_detail, 1.0, 0.0, 1.0);
     }
 
     return clamp(cloud, 0.0, 1.0) * layer.density_scale;

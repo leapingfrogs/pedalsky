@@ -9,18 +9,39 @@ use ps_core::{CloudLayer, CloudLayerGpu, CloudType};
 
 /// Synthesise GPU-ready cloud layers from the parsed scene's layers.
 ///
-/// Per-type defaults (plan §3.2.6 table) are applied **only when the
-/// scene leaves the field at its struct default** (zero, since these are
-/// optional bias fields). For v1 the scene's `shape_octave_bias` and
-/// `detail_octave_bias` map directly to `shape_bias` and `detail_bias`;
-/// `anvil_bias` is set from the cloud type (Cumulonimbus = 1.0, others 0).
+/// `shape_octave_bias` and `detail_octave_bias` are passed through to
+/// the GPU `CloudLayerGpu.shape_bias` / `.detail_bias` fields where
+/// the cloud march now reads them (Phase 13 follow-up — previously
+/// these were declared but ignored). The semantics are:
+///
+/// - `shape_bias` shifts the base-shape low-frequency Worley FBM sum;
+///   the visual change is subtle (slight redistribution of the bulk
+///   density envelope).
+/// - `detail_bias` shifts the high-frequency boundary erosion
+///   strength. Because Schneider's remap **concentrates surviving
+///   samples while culling more low ones**, positive bias produces a
+///   denser-looking cloud volume (each surviving voxel hits cloud=1
+///   sooner) rather than the "wispier" reading the name suggests.
+///   Recommended useful range is small (~±0.1); larger magnitudes
+///   trigger sky-wide saturation or near-total cloud loss.
+///
+/// No per-type defaults are applied — the plan §3.2.6 "Detail
+/// erosion" classification needs a calibrated tuning bench before
+/// it can be mapped to bias defaults safely. For now, scenes that
+/// want type-specific edge character set their own bias values.
+///
+/// `anvil_bias` is the only field with a non-zero default: 1.0 for
+/// Cumulonimbus (matches the v1 hard-coded anvil multiplier in the
+/// NDF), 0.0 for all others. Scenes can override via the optional
+/// `anvil_bias` field on `CloudLayer`.
 pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
     let mut out = Vec::with_capacity(layers.len());
     for layer in layers {
-        let anvil_bias = match layer.cloud_type {
+        let type_anvil_default = match layer.cloud_type {
             CloudType::Cumulonimbus => 1.0,
             _ => 0.0,
         };
+        let anvil_bias = layer.anvil_bias.unwrap_or(type_anvil_default);
         out.push(CloudLayerGpu {
             base_m: layer.base_m,
             top_m: layer.top_m,
@@ -107,6 +128,7 @@ mod tests {
             density_scale: 1.0,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
+            anvil_bias: None,
         }
     }
 

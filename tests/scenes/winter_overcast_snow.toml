@@ -29,7 +29,7 @@ base_m             = 800.0
 top_m              = 1500.0
 coverage           = 0.9    # METAR BKN/OVC
 density_scale      = 1.0
-shape_octave_bias  = -0.1
+shape_octave_bias  = 0.0
 detail_octave_bias = 0.0
 
 [precipitation]

@@ -67,6 +67,7 @@ fn overlapping_cloud_layers_rejected_at_synthesis() {
         density_scale: 1.0,
         shape_octave_bias: 0.0,
         detail_octave_bias: 0.0,
+        anvil_bias: None,
     });
     scene.clouds.layers.push(ps_core::CloudLayer {
         cloud_type: ps_core::CloudType::Stratus,
@@ -76,6 +77,7 @@ fn overlapping_cloud_layers_rejected_at_synthesis() {
         density_scale: 1.0,
         shape_octave_bias: 0.0,
         detail_octave_bias: 0.0,
+        anvil_bias: None,
     });
     let config = Config::default();
     let world = WorldState::default();

@@ -32,8 +32,8 @@ base_m             = 4500.0
 top_m              = 5500.0
 coverage           = 0.65       # max coverage in the lozenges
 density_scale      = 0.85
-shape_octave_bias  = 0.2        # smoother (no convective cores)
-detail_octave_bias = -0.2       # softer edges
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
 
 [clouds.coverage_grid]
 extent_m  = 32000.0

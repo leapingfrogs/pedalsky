@@ -30,7 +30,7 @@ base_m             = 800.0   # METAR has OVC005 ≈ 150m; raised to 800m so
 top_m              = 1400.0
 coverage           = 1.0     # METAR OVC
 density_scale      = 1.0
-shape_octave_bias  = -0.2     # blockier (less wispy detail)
+shape_octave_bias  = 0.0
 detail_octave_bias = 0.0
 
 [precipitation]

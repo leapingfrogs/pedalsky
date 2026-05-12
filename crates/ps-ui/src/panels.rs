@@ -834,16 +834,51 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                             }
                         });
                 });
-                layers_changed |= Slider::new(&mut layer.shape_octave_bias, -1.0..=1.0)
+                let shape_resp = Slider::new(&mut layer.shape_octave_bias, -1.0..=1.0)
                     .text("shape_octave_bias")
                     .max_decimals(4)
                     .ui(ui)
-                    .changed();
-                layers_changed |= Slider::new(&mut layer.detail_octave_bias, -1.0..=1.0)
+                    .on_hover_text(
+                        "Bias on the base-shape low-frequency Worley \
+                         FBM weighting. Subtle — redistributes the bulk \
+                         density envelope. Most effect lives near 0.",
+                    );
+                layers_changed |= shape_resp.changed();
+                let detail_resp = Slider::new(&mut layer.detail_octave_bias, -1.0..=1.0)
                     .text("detail_octave_bias")
                     .max_decimals(4)
                     .ui(ui)
-                    .changed();
+                    .on_hover_text(
+                        "Bias on the boundary erosion strength. The \
+                         Schneider remap is non-monotonic: positive \
+                         bias culls more low-density samples while \
+                         concentrating survivors, so the cloud may \
+                         read as either thinner or denser depending \
+                         on the layer's coverage + density_scale. \
+                         Recommended range ~±0.1.",
+                    );
+                layers_changed |= detail_resp.changed();
+                // Phase 13 follow-up — anvil bias is meaningful only
+                // for Cumulonimbus. Default of None means "use the
+                // per-type default" (Cumulonimbus = 1.0). Show the
+                // slider only for Cumulonimbus so the panel stays
+                // concise.
+                if layer.cloud_type == ps_core::CloudType::Cumulonimbus {
+                    let mut anvil_val = layer.anvil_bias.unwrap_or(1.0);
+                    let anvil_resp = Slider::new(&mut anvil_val, 0.0..=2.0)
+                        .text("anvil_bias")
+                        .max_decimals(3)
+                        .ui(ui)
+                        .on_hover_text(
+                            "Strength of the cumulonimbus anvil top in \
+                             the NDF. 0 = no anvil, 1 = v1 default, \
+                             2 = double the anvil mass.",
+                        );
+                    if anvil_resp.changed() {
+                        layer.anvil_bias = Some(anvil_val);
+                        layers_changed = true;
+                    }
+                }
             });
         }
         if layers_changed {

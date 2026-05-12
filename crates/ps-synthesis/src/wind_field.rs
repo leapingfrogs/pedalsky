@@ -282,6 +282,7 @@ mod tests {
             density_scale: 1.0,
             shape_octave_bias: 0.0,
             detail_octave_bias: 0.0,
+            anvil_bias: None,
         });
         let t_clear = turbulence(&empty_scene(), 1500.0);
         let t_cumulus = turbulence(&scene, 1500.0);

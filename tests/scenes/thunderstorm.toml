@@ -29,8 +29,8 @@ base_m             = 800.0
 top_m              = 11000.0
 coverage           = 0.9    # METAR BKN/OVC for the convective core
 density_scale      = 1.4    # very thick, dark cloud
-shape_octave_bias  = -0.3      # blockier mass (the convective core)
-detail_octave_bias = 0.2       # crisper edges (active convection)
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
 
 [precipitation]
 type               = "Rain"
