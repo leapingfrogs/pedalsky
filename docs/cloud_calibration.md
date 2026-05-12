@@ -168,6 +168,36 @@ a syntactic cross-check; the WGSL port lives in
 > the calibration docs. The HG fields no longer exist on
 > `CloudLayerGpu`; they were replaced by `droplet_diameter_um`.
 
+### Per-channel chromatic scattering (`chromatic_mie_modulation`)
+
+The Approximate Mie phase function is wavelength-independent (the
+paper averages over 400–700 nm). Real Mie scattering for *typical*
+cloud droplets (`d ≥ ~20 µm` at visible λ ≈ 0.5 µm gives Mie size
+parameter `x = π d / λ ≈ 125`) is in the geometric-optics regime
+and is essentially flat across the visible spectrum — this is why
+cumulus and cirrus look white. But sub-micron droplet populations
+(fresh fog tops, thin cirrus edges, cumulus updraft tops) drop
+toward `x ≈ 1` and pick up a Rayleigh-like wavelength-selective
+component, which is why fog at sunset reads warm.
+
+`chromatic_mie_modulation(d_um)` in `cloud_march.wgsl` returns an
+RGB multiplier on `sigma_t` that captures this behaviour:
+
+- `d ≥ 20 µm` (cumulus, stratocumulus, cumulonimbus core, mature
+  cirrus): factor is `(1, 1, 1)` — wavelength-flat.
+- `d < 20 µm` (stratus, altocumulus, thin or fresh cirrus): factor
+  picks up a blue boost and a red attenuation, smoothly ramped via
+  `(1 - d/20)²`. The strength is capped at ±0.25 (max blue +25%,
+  max red −12.5%) so the chromatic shift stays a fringe modulation
+  rather than dominating the cloud appearance.
+
+The function is a simplified physical analogue, not a fit to
+tabulated Mie data — that would require evaluating the full Mie
+solution at three wavelengths per layer per frame. The
+approximation captures the *direction* of the wavelength
+dependence (blue scatters more as droplets shrink) without paying
+the full per-channel Mie evaluation cost.
+
 ### Anvil bias
 
 `anvil_bias = 1.0` for Cumulonimbus only (others default to 0).
@@ -208,7 +238,7 @@ apply globally rather than per-cloud-type.
 
 | Field | Default | Source |
 |-------|---------|--------|
-| `sigma_s` (RGB) | (0.030, 0.040, 0.060) /m | Hillaire 2016 baseline ≈ 0.04 /m; PedalSky chromaticity is an extension for sunset warm-fringing. Not physically motivated — Mie scattering for ~10 µm droplets is essentially wavelength-flat in the visible. |
+| `sigma_s` (RGB) | (0.030, 0.040, 0.060) /m | Hillaire 2016 baseline ≈ 0.04 /m. The chromatic spread was previously hand-tuned for sunset warm-fringing; the engine now derives chromatic modulation **per layer** from droplet diameter via `chromatic_mie_modulation(d)` in the cloud march (see "Per-channel chromatic scattering" below), so this baseline is still slightly biased but the per-layer factor is what produces the size-dependent warm fringes. |
 | `sigma_a` | 0 | Water droplet absorption is near-zero in the visible. |
 | `multi_scatter_a/b/c` | 0.5/0.5/0.5 | **Wrenninge 2015** "Art-directable Multiple Volumetric Scattering" (history.siggraph.org). a = energy retention per octave, b = optical-depth attenuation, c = phase eccentricity attenuation. Universal across implementations; not per-type. |
 | `multi_scatter_octaves` | 4 | Hillaire 2016 recommends 4–8. PedalSky uses 4 for performance; 8 is the upper end of Wrenninge's recommendation. |
@@ -253,15 +283,6 @@ apply globally rather than per-cloud-type.
 These are noted-but-not-yet-implemented improvements that would land
 the next tier of fidelity:
 
-- **Per-channel sigma_s tied to droplet size.** Sub-µm droplet
-  populations (fresh fog, thin cirrus, cumulus updraft tops)
-  actually do exhibit chromatic Mie. The current PedalSky
-  chromaticity is decorative; tying it to droplet size via the
-  Mie size parameter `x = 2π r_e / λ` would make it physical.
-  Approximate Mie itself is wavelength-independent (the paper
-  averages over 400–700 nm), so this would be an additional
-  per-channel scattering coefficient layer on top of the phase
-  function.
 - **Ice halos.** Sharp 22° / 46° lobes are characteristic of
   hexagonal ice crystals and no HG/Draine-class approximation
   captures them. Adding an explicit angular feature when the

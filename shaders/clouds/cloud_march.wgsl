@@ -82,6 +82,60 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> VsOut {
 }
 
 // ---------------------------------------------------------------------------
+// Chromatic Mie modulation
+// ---------------------------------------------------------------------------
+
+/// Per-channel chromatic scaling of the cloud's scattering cross
+/// section, derived from the droplet effective diameter `d` (µm).
+///
+/// The Mie size parameter is `x = π d / λ`. For everyday cloud
+/// droplets (`d ≥ ~5 µm` at visible λ ≈ 0.5 µm we get `x ≈ 30`),
+/// scattering is in the geometric-optics regime and is essentially
+/// wavelength-flat — this is why most clouds look white. For
+/// sub-micron droplet populations (fresh fog tops, thin cirrus
+/// edges, cumulus updraft tops) `x` drops toward unity and
+/// scattering picks up a wavelength-selective component that
+/// produces the warm fringes visible in real photography at
+/// sunset.
+///
+/// The function returns an RGB multiplier centred on 1.0 at large
+/// `d`. Small `d` boosts the blue end (more Rayleigh-like blue
+/// scattering means blue light gets scattered out of the
+/// transmitted path, leaving warmer remaining light). The transition
+/// is centred at `d ≈ 8 µm` and is fully wavelength-flat by
+/// `d ≈ 20 µm`. The strength is capped so the chromatic shift
+/// stays visually subtle — this is a fringe-effect knob, not a
+/// hero feature.
+///
+/// Wavelengths (centre of each sRGB primary's band): R ≈ 620 nm,
+/// G ≈ 550 nm, B ≈ 470 nm. `d` is in µm, λ in nm; the size
+/// parameter `x = π · d / (λ · 1e-3)` is unitless.
+fn chromatic_mie_modulation(d_um: f32) -> vec3<f32> {
+    // Wavelength-flat above this diameter (geometric optics).
+    let d_flat: f32 = 20.0;
+    // Maximum departure from grey at d → 0. Capped so the effect
+    // stays a fringe modulation rather than dominating the cloud
+    // appearance.
+    let max_strength: f32 = 0.25;
+
+    let t = clamp(1.0 - d_um / d_flat, 0.0, 1.0);
+    if (t <= 0.0) {
+        return vec3<f32>(1.0);
+    }
+    let strength = max_strength * t * t;
+
+    // Per-channel boost on the short-wavelength end. The blue
+    // channel scatters more than red as droplets shrink toward the
+    // Mie/Rayleigh boundary; reverse-modulate the channels around
+    // a unity midpoint so the chromatic shift averages to zero.
+    return vec3<f32>(
+        1.0 - 0.5 * strength,   // R: less scatter
+        1.0,                    // G: pivot
+        1.0 + strength,         // B: more scatter
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Phase functions
 // ---------------------------------------------------------------------------
 
@@ -543,11 +597,12 @@ fn fs_main(in: VsOut) -> CloudOut {
 
     var luminance = vec3<f32>(0.0);
     var transmittance = vec3<f32>(1.0);
-    // Phase 12.2b — per-channel extinction. sigma_t is a vec3 because
-    // sigma_s and sigma_a are themselves per-channel; the cloud's
-    // extinction is now wavelength-dependent (Mie-style), which is
-    // what produces visible warm fringing on cloud edges at sunset.
-    let sigma_t = params.sigma_s + params.sigma_a;
+    // Phase 12.2b — per-channel extinction. sigma_s and sigma_a are
+    // engine-wide grey baselines (vec3 only because of historical
+    // chromaticity tuning); the per-cloud-type chromatic shift now
+    // comes from `chromatic_mie_modulation(layer.droplet_diameter_um)`
+    // applied below inside the layer loop.
+    let sigma_t_baseline = params.sigma_s + params.sigma_a;
     let sun_dir = frame.sun_direction.xyz;
 
     // Track the luminance-weighted distance along the ray. Used after the
@@ -561,6 +616,17 @@ fn fs_main(in: VsOut) -> CloudOut {
         let lh = hits[i];
         if (lh.hit == 0u) { continue; }
         let layer = cloud_layers.layers[lh.idx];
+
+        // Per-layer chromatic extinction. Mie scattering is
+        // wavelength-flat for typical cloud droplets (d ≥ ~20 µm),
+        // but smaller droplet populations exhibit a Rayleigh-like
+        // blue boost — visible as warm fringes on fog tops, thin
+        // cirrus, and cumulus updraft tops at sunset. The
+        // chromatic modulation centres on 1.0 at the median
+        // wavelength so the achromatic optical thickness is
+        // preserved.
+        let sigma_t = sigma_t_baseline
+                    * chromatic_mie_modulation(layer.droplet_diameter_um);
 
         let segment = lh.t1 - lh.t0;
         if (segment <= 0.0) { continue; }
