@@ -49,6 +49,20 @@ pub struct RenderArgs {
     /// Useful for headless renders of high-latitude scenes (auroras
     /// at 65°N, polar twilight).
     pub latitude_deg: Option<f64>,
+    /// Phase 13.7 — animation sequence: end-of-range time (inclusive).
+    /// When set, `time` is the start of the range and `fps` is sampled
+    /// at `1/fps`-second intervals. `<output>` becomes a base name and
+    /// frames write to `<output>.NNNN.png` (zero-padded to four
+    /// digits) plus the matching `.exr` next to each.
+    pub time_end: Option<DateTime<Utc>>,
+    /// Phase 13.7 — frames per second. Defaults to 24. Ignored when
+    /// `time_end` is `None`.
+    pub fps: f32,
+    /// Phase 13.7 — re-synthesise `WeatherState` for every frame
+    /// (default), or once at the start of the sequence. The
+    /// "synthesise once" path is much faster but freezes the cloud
+    /// noise advection and precip-driven scene mutations.
+    pub synthesise_once: bool,
 }
 
 /// Detect `render <args...>` after the binary name. Returns `None`
@@ -67,10 +81,18 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
     let mut pitch_deg: f32 = 5.0;
     let mut seed: Option<u64> = None;
     let mut latitude_deg: Option<f64> = None;
+    let mut time_end_str: Option<String> = None;
+    let mut fps: f32 = 24.0;
+    let mut synthesise_once = false;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--scene" => scene = iter.next().map(PathBuf::from),
             "--time" => time_str = iter.next().cloned(),
+            "--time-end" => time_end_str = iter.next().cloned(),
+            "--fps" => {
+                fps = iter.next().and_then(|s| s.parse().ok()).unwrap_or(24.0)
+            }
+            "--synthesise-once" => synthesise_once = true,
             "--output" => output = iter.next().map(PathBuf::from),
             "--width" => {
                 width = iter.next().and_then(|s| s.parse().ok()).unwrap_or(1280)
@@ -108,6 +130,11 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
             })?,
         None => Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).single()?,
     };
+    let time_end = time_end_str.and_then(|s| {
+        DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
+    });
     Some(RenderArgs {
         scene,
         output,
@@ -118,6 +145,9 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
         pitch_deg,
         seed,
         latitude_deg,
+        time_end,
+        fps,
+        synthesise_once,
     })
 }
 
@@ -177,6 +207,16 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
         yaw: args.yaw_deg.to_radians(),
         ..FlyCamera::default()
     };
+
+    // Phase 13.7 — animation-sequence branch. When `time_end` is set
+    // the output is a numbered PNG (and EXR) sequence; the single-
+    // frame fall-through writes the original four documentation
+    // outputs.
+    if let Some(time_end) = args.time_end {
+        return run_sequence(&gpu, &mut app, &scene, &config, camera, args.time, time_end,
+                            args.fps, args.synthesise_once, &args.output, args.width,
+                            args.height);
+    }
 
     // Render via the scene-synthesis path so cloud layers, wind field
     // and density mask actually reach the GPU (matches ps-bless).
@@ -296,3 +336,143 @@ struct ParameterLog {
 /// Helper exposed so `main.rs` can hand the headless GPU pollster
 /// runtime over.
 pub fn use_gpu_context(_gpu: &GpuContext) {}
+
+/// Phase 13.7 — render a PNG/EXR sequence over `[start, end]` at
+/// `fps` frames per second. Single GPU init (re-uses the caller's
+/// `HeadlessApp`); each frame writes `<output>.NNNN.png` and the
+/// matching `.exr`. A single `parameter_log.toml` and
+/// `weather_dump.json` are written for the start frame (the
+/// animation's setup is the same across the sequence).
+#[allow(clippy::too_many_arguments)]
+fn run_sequence(
+    gpu: &GpuContext,
+    app: &mut HeadlessApp,
+    scene: &Scene,
+    config: &Config,
+    camera: FlyCamera,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    fps: f32,
+    synthesise_once: bool,
+    output_base: &Path,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    if end < start {
+        anyhow::bail!("--time-end must be at or after --time (got {start} → {end})");
+    }
+    if fps <= 0.0 {
+        anyhow::bail!("--fps must be positive (got {fps})");
+    }
+    let dt = 1.0 / fps as f64;
+    let total_secs = (end - start).num_milliseconds() as f64 / 1000.0;
+    let frame_count = (total_secs / dt).floor() as u32 + 1;
+    let pad = (frame_count - 1).max(1).to_string().len().max(4);
+
+    tracing::info!(
+        target: "ps_app::render",
+        frame_count, fps, synthesise_once,
+        start = %start, end = %end,
+        "rendering animation sequence"
+    );
+
+    // Pre-synthesise once when requested. The cached state holds GPU
+    // buffers (cloud layers, wind field, density mask) so the inner
+    // path skips re-creating them per frame.
+    let mut cached_weather: Option<ps_core::WeatherState> = if synthesise_once {
+        let world_start = WorldState::new(
+            start,
+            config.world.latitude_deg,
+            config.world.longitude_deg,
+            config.world.ground_elevation_m as f64,
+        );
+        Some(
+            ps_synthesis::synthesise(scene, config, &world_start, gpu)
+                .context("synthesise WeatherState (once)")?,
+        )
+    } else {
+        None
+    };
+
+    if let Some(dir) = output_base.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+
+    // Always write the documentation pair for frame 0; they describe
+    // the sequence's setup, not any single frame's appearance.
+    let world_start = WorldState::new(
+        start,
+        config.world.latitude_deg,
+        config.world.longitude_deg,
+        config.world.ground_elevation_m as f64,
+    );
+    let json_path = output_with_ext(output_base, "weather_dump.json");
+    let toml_path = output_with_ext(output_base, "parameter_log.toml");
+    let dump = WeatherDump::new(scene, &world_start);
+    std::fs::write(
+        &json_path,
+        serde_json::to_string_pretty(&dump).context("encode weather dump")?,
+    )
+    .with_context(|| format!("write {}", json_path.display()))?;
+    let log = ParameterLog {
+        config: config.clone(),
+        scene: scene.clone(),
+    };
+    std::fs::write(
+        &toml_path,
+        toml::to_string_pretty(&log).context("encode parameter log")?,
+    )
+    .with_context(|| format!("write {}", toml_path.display()))?;
+
+    for frame in 0..frame_count {
+        let secs_into = frame as f64 * dt;
+        let frame_time = start + chrono::Duration::milliseconds((secs_into * 1000.0) as i64);
+        let world = WorldState::new(
+            frame_time,
+            config.world.latitude_deg,
+            config.world.longitude_deg,
+            config.world.ground_elevation_m as f64,
+        );
+
+        let pixels = app.render_animation_frame(
+            gpu,
+            camera.clone(),
+            scene,
+            world,
+            secs_into as f32,
+            frame,
+            cached_weather.as_mut(),
+        );
+
+        let png_path = sequence_path(output_base, "png", frame, pad);
+        let exr_path = sequence_path(output_base, "exr", frame, pad);
+        ps_ui::screenshot::write_png(&png_path, width, height, &pixels)
+            .with_context(|| format!("write {}", png_path.display()))?;
+        let hdr_pixels = app.read_hdr_for_test(gpu);
+        ps_ui::screenshot::write_exr(&exr_path, width, height, &hdr_pixels)
+            .with_context(|| format!("write {}", exr_path.display()))?;
+        tracing::info!(
+            target: "ps_app::render",
+            frame, time = %frame_time, png = %png_path.display(),
+            "rendered animation frame"
+        );
+    }
+
+    tracing::info!(
+        target: "ps_app::render",
+        frame_count,
+        "animation sequence complete"
+    );
+    Ok(())
+}
+
+/// Build the per-frame output path: `<stem>.NNNN.<ext>` where the
+/// frame index is zero-padded to `pad` digits.
+fn sequence_path(base: &Path, ext: &str, frame: u32, pad: usize) -> PathBuf {
+    let parent = base.parent().unwrap_or(Path::new("."));
+    let stem = base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("render");
+    parent.join(format!("{stem}.{frame:0>pad$}.{ext}", pad = pad))
+}

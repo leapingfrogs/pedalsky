@@ -474,6 +474,178 @@ impl HeadlessApp {
         out
     }
 
+    /// Phase 13.7 — render one frame of an animation sequence with
+    /// an explicit `simulated_seconds` value and an optional cached
+    /// `WeatherState`. When `cached_weather` is `Some`, the call
+    /// **does not** re-run synthesis (the caller is responsible for
+    /// having created the cached state with `ps_synthesis::synthesise`
+    /// against the same `scene` + `config`). When `None`, this method
+    /// synthesises fresh each frame — slower, but advances any
+    /// state-dependent synthesised quantities (e.g. randomly seeded
+    /// per-frame elements).
+    ///
+    /// In both cases `world.sun_direction` / `toa_illuminance` are
+    /// updated each call so the wall clock animates correctly.
+    pub fn render_animation_frame(
+        &mut self,
+        gpu: &GpuContext,
+        camera: ps_core::camera::FlyCamera,
+        scene: &ps_core::Scene,
+        world: ps_core::WorldState,
+        simulated_seconds: f32,
+        frame_index: u32,
+        cached_weather: Option<&mut ps_core::WeatherState>,
+    ) -> Vec<u8> {
+        let (w, h) = self.setup.size;
+        let aspect = w as f32 / h as f32;
+        let view = camera.view_matrix();
+        let proj = camera.projection_matrix(aspect);
+
+        // Either reuse the cached WeatherState (synthesise-once) or
+        // build a fresh one (default — picks up per-frame changes in
+        // scene state). For the cached path we still refresh the sun
+        // direction / illuminance so the wall clock animates.
+        let mut owned: Option<ps_core::WeatherState> = None;
+        let weather: &mut ps_core::WeatherState = if let Some(w) = cached_weather {
+            w.sun_direction = world.sun_direction_world;
+            w.sun_illuminance = glam::Vec3::splat(world.toa_illuminance_lux);
+            w
+        } else {
+            let mut fresh = ps_synthesis::synthesise(scene, &self.last_config, &world, gpu)
+                .expect("synthesise WeatherState");
+            fresh.sun_direction = world.sun_direction_world;
+            fresh.sun_illuminance = glam::Vec3::splat(world.toa_illuminance_lux);
+            owned = Some(fresh);
+            owned.as_mut().expect("just-set")
+        };
+
+        let mut frame_uniforms = FrameUniforms {
+            camera_position_world: Vec4::new(
+                camera.position.x,
+                camera.position.y.max(0.1),
+                camera.position.z,
+                0.0,
+            ),
+            viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
+            time_seconds: simulated_seconds,
+            simulated_seconds,
+            frame_index,
+            ev100: self.ev100,
+            ..FrameUniforms::default()
+        };
+        frame_uniforms.set_matrices(view, proj);
+        frame_uniforms.set_sun(
+            world.sun_direction_world,
+            self.last_config
+                .render
+                .atmosphere
+                .sun_angular_radius_deg
+                .to_radians(),
+            glam::Vec3::splat(world.toa_illuminance_lux),
+            world.toa_illuminance_lux,
+        );
+        if let Some(publish) = &self.lightning_publish {
+            let snap = *publish.lock().expect("lightning publish lock");
+            frame_uniforms.lightning_illuminance = snap.illuminance;
+            frame_uniforms.lightning_origin_world = snap.origin_world;
+        }
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("animation-frame"),
+            });
+        crate::main_helpers::encode_frame_clear(
+            &mut encoder,
+            &self.setup.hdr,
+            !self.last_config.render.subsystems.backdrop,
+            self.last_config.render.clear_color,
+        );
+        self.setup
+            .bindings
+            .write(&gpu.queue, &frame_uniforms, &weather.atmosphere);
+        let luts_ref = self.atmosphere_luts.as_deref();
+        let luts_bind_group = luts_ref.map(|l| &l.bind_group);
+        self.tonemap_handle
+            .set_state(ps_postprocess::TonemapState {
+                ev100: self.ev100,
+                mode: self.tonemap_mode,
+                auto_exposure_enabled: false,
+            });
+        {
+            let mut prepare_ctx = PrepareContext {
+                device: &gpu.device,
+                queue: &gpu.queue,
+                world: &world,
+                weather,
+                frame_uniforms: &frame_uniforms,
+                atmosphere_luts: luts_ref,
+                dt_seconds: 1.0 / 60.0,
+            };
+            let render_ctx = RenderContext {
+                device: &gpu.device,
+                queue: &gpu.queue,
+                framebuffer: &self.setup.hdr,
+                frame_bind_group: &self.setup.bindings.frame_bind_group,
+                world_bind_group: &self.setup.bindings.world_bind_group,
+                luts_bind_group,
+                frame_uniforms: &frame_uniforms,
+                weather,
+                tonemap_target: Some(&self.setup.output_view),
+                tonemap_target_format: wgpu::TextureFormat::Rgba8Unorm,
+            };
+            self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
+        }
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.setup.output,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.setup.staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.setup.padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        let slice = self.setup.staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).ok();
+        });
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll");
+        rx.recv().expect("recv").expect("map");
+        let data = slice.get_mapped_range();
+        let bytes_per_row = w * 4;
+        let mut out = Vec::with_capacity((bytes_per_row * h) as usize);
+        for row in 0..h {
+            let start = (row * self.setup.padded_bytes_per_row) as usize;
+            let end = start + bytes_per_row as usize;
+            out.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        self.setup.staging.unmap();
+        // If we allocated a fresh WeatherState, dropping `owned` here
+        // frees the underlying GPU resources before the next frame
+        // re-allocates them. The cached path leaves the caller's
+        // WeatherState intact.
+        drop(owned);
+        out
+    }
+
     /// Full-fat variant for tests that need to override the world state
     /// (e.g. twilight tests that move the sun below the horizon).
     pub fn render_one_frame_full(
