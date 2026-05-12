@@ -29,4 +29,4 @@ exr.workspace          = true
 # platform integration (Win32 IFileDialog on Windows, GTK/Zenity on
 # Linux, AppKit on macOS). Plan §10.4 requires these buttons to
 # work; without rfd they were stubs returning hardcoded paths.
-rfd = "0.15"
+rfd = "0.17"
