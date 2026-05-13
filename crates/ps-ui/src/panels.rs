@@ -315,6 +315,94 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
         }
 
         ui.separator();
+        // Phase 16.B — type a place name, click a result to warp.
+        ui.horizontal(|ui| {
+            ui.label("Place");
+            let search_disabled = state.geocode.in_flight;
+            // The text input is bound to a persistent buffer on
+            // `state.geocode`. Pressing Enter inside the field is
+            // also a submit.
+            let response = ui.add_enabled(
+                !search_disabled,
+                egui::TextEdit::singleline(&mut state.geocode.input_buffer)
+                    .hint_text("e.g. Dunblane")
+                    .desired_width(160.0),
+            );
+            let submit = (response.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                || ui
+                    .add_enabled(
+                        !search_disabled && !state.geocode.input_buffer.trim().is_empty(),
+                        egui::Button::new(if search_disabled { "Searching…" } else { "Search" }),
+                    )
+                    .clicked();
+            if submit {
+                let q = state.geocode.input_buffer.trim().to_string();
+                if !q.is_empty() {
+                    state.pending.geocode_query =
+                        Some(crate::state::GeocodeRequest { query: q, count: 10 });
+                }
+            }
+        });
+        if let Some(err) = &state.geocode.last_error {
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
+        }
+        if !state.geocode.results.is_empty() {
+            // Result list — one button per match. Sorting by
+            // population (descending) so the most likely match
+            // surfaces first; ties retain upstream order.
+            // Clone into a local Vec so we can freely mutate
+            // `state.geocode.results` later (e.g. on selection).
+            let mut sorted: Vec<crate::state::GeocodeMatch> =
+                state.geocode.results.clone();
+            sorted.sort_by(|a, b| b.population.cmp(&a.population));
+            let last_query = state.geocode.last_query.clone();
+            ui.label(format!("Matches for \"{last_query}\":"));
+            let mut chosen: Option<(f64, f64, f32)> = None;
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for m in &sorted {
+                        // Build a one-line label: name, admin1,
+                        // country, coords. Skip blank admin1.
+                        let mut label = m.name.clone();
+                        if !m.admin1.is_empty() {
+                            label.push_str(", ");
+                            label.push_str(&m.admin1);
+                        }
+                        if !m.country.is_empty() {
+                            label.push_str(", ");
+                            label.push_str(&m.country);
+                        }
+                        label.push_str(&format!(
+                            "  ({:.3}°, {:.3}°)",
+                            m.latitude, m.longitude
+                        ));
+                        if ui.small_button(label).clicked() {
+                            chosen = Some((m.latitude, m.longitude, m.elevation));
+                        }
+                    }
+                });
+            if let Some((lat, lon, elev)) = chosen {
+                state.live_config.world.latitude_deg = lat;
+                state.live_config.world.longitude_deg = lon;
+                // Only adopt the elevation when upstream supplied a
+                // non-zero value — `0.0` could be a genuine
+                // sea-level coordinate but is also the missing-field
+                // default; rather than guess, leave the existing
+                // config value when in doubt.
+                if elev != 0.0 {
+                    state.live_config.world.ground_elevation_m = elev;
+                }
+                state.pending.set_lat_lon = Some((lat, lon));
+                state.pending.config_dirty = true;
+                // Clear the results so the dropdown collapses after
+                // the user has picked one.
+                state.geocode.results.clear();
+            }
+        }
+
+        ui.separator();
         ui.horizontal(|ui| {
             ui.label("Latitude");
             let mut lat = state.live_config.world.latitude_deg;

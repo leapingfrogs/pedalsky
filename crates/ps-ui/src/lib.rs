@@ -28,9 +28,8 @@ use ps_core::{
 };
 
 pub use state::{
-    CameraSettings, UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState,
-    WeatherFetchRequest, WeatherFetchStatus,
-    UiWorldReadout,
+    CameraSettings, GeocodeMatch, GeocodeRequest, GeocodeStatus, UiDebugSelection, UiFrameStats,
+    UiHandle, UiPending, UiState, WeatherFetchRequest, WeatherFetchStatus, UiWorldReadout,
 };
 
 /// Stable subsystem name.

@@ -261,6 +261,12 @@ struct RunState {
     /// `JoinHandle` is held only to keep the thread alive; we
     /// don't actually join — drop on RunState teardown is fine.
     weather_fetch_rx: Option<crossbeam_channel::Receiver<WeatherFetchResult>>,
+
+    /// Phase 16.B — receiver for in-flight geocoding searches.
+    /// Same gating as the weather fetch: only one in flight at a
+    /// time; the UI's "Searching…" button disables clicks while
+    /// `Some`.
+    geocode_rx: Option<crossbeam_channel::Receiver<GeocodeWorkerResult>>,
 }
 
 /// Result delivered from the weather-fetch worker thread.
@@ -270,6 +276,15 @@ struct WeatherFetchResult {
     /// A short summary string for the UI ("Open-Meteo, …" or the
     /// METAR station ICAO when enrichment fired). Empty on error.
     summary: String,
+}
+
+/// Result delivered from the geocoding worker thread.
+struct GeocodeWorkerResult {
+    /// The original query string — echoed back so the UI can label
+    /// the result list ("Matches for \"Dunblane\":").
+    query: String,
+    /// The result rows, or the error string.
+    outcome: Result<Vec<ps_weather_feed::GeocodeResult>, String>,
 }
 
 #[derive(Default)]
@@ -519,6 +534,7 @@ impl RunState {
             hot_reload,
             shader_hot_reload,
             weather_fetch_rx: None,
+            geocode_rx: None,
         })
     }
 
@@ -850,6 +866,100 @@ impl RunState {
                 h.weather_fetch.in_flight = false;
                 h.weather_fetch.last_error = Some(err_msg);
                 h.weather_fetch.last_summary = None;
+            }
+        }
+    }
+
+    /// Phase 16.B — spawn a background thread that runs a geocoding
+    /// search. Drops the new request if a previous search is still in
+    /// flight, matching the weather-fetch gating.
+    fn spawn_geocode(&mut self, req: ps_ui::GeocodeRequest) {
+        if self.geocode_rx.is_some() {
+            tracing::debug!(
+                target: "ps_app::geocode",
+                "search already in flight; ignoring new request"
+            );
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded::<GeocodeWorkerResult>(1);
+        self.geocode_rx = Some(rx);
+        {
+            let mut h = self.ui_handle.lock();
+            h.geocode.in_flight = true;
+            h.geocode.last_error = None;
+        }
+        let cache_dir = match workspace_root() {
+            Ok(p) => p.join("cache").join("weather"),
+            Err(_) => std::path::PathBuf::from("cache").join("weather"),
+        };
+        std::thread::Builder::new()
+            .name("ps-geocode".into())
+            .spawn(move || {
+                let outcome = ps_weather_feed::geocoding::search(
+                    &cache_dir,
+                    &req.query,
+                    req.count,
+                    ps_weather_feed::geocoding::DEFAULT_TTL,
+                )
+                .map_err(|e| format!("geocoding search failed: {e}"));
+                let _ = tx.send(GeocodeWorkerResult {
+                    query: req.query,
+                    outcome,
+                });
+            })
+            .expect("spawn geocode thread");
+    }
+
+    /// Phase 16.B — drain a completed geocoding search and push the
+    /// results into the shared UI state.
+    fn poll_geocode(&mut self) {
+        let Some(rx) = &self.geocode_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.geocode_rx = None;
+                let mut h = self.ui_handle.lock();
+                h.geocode.in_flight = false;
+                h.geocode.last_error =
+                    Some("geocode thread disconnected without result".into());
+                return;
+            }
+        };
+        self.geocode_rx = None;
+        let mut h = self.ui_handle.lock();
+        h.geocode.in_flight = false;
+        h.geocode.last_query = result.query;
+        match result.outcome {
+            Ok(rows) => {
+                h.geocode.last_error = None;
+                h.geocode.results = rows
+                    .into_iter()
+                    .map(|r| ps_ui::GeocodeMatch {
+                        id: r.id,
+                        name: r.name,
+                        admin1: r.admin1,
+                        country: r.country,
+                        latitude: r.latitude,
+                        longitude: r.longitude,
+                        elevation: r.elevation,
+                        timezone: r.timezone,
+                        population: r.population,
+                    })
+                    .collect();
+                info!(
+                    target: "ps_app",
+                    count = h.geocode.results.len(),
+                    query = %h.geocode.last_query,
+                    "geocoding search succeeded"
+                );
+            }
+            Err(err_msg) => {
+                warn!(target: "ps_app", error = %err_msg, "geocoding search failed");
+                h.geocode.last_error = Some(err_msg);
+                h.geocode.results.clear();
             }
         }
     }
@@ -1263,6 +1373,13 @@ impl RunState {
         // Poll the worker channel for completed fetches and
         // splice the result back into the scene path.
         self.poll_weather_fetch(scene, config);
+
+        // Phase 16.B — geocoding search request from the World
+        // panel's "Search" button (or Enter inside the text input).
+        if let Some(req) = pending.geocode_query {
+            self.spawn_geocode(req);
+        }
+        self.poll_geocode();
 
         // Push live mirrors into the UI for the next frame's panels.
         {

@@ -58,6 +58,14 @@ pub struct UiPending {
     /// the host stamps `UiState.weather_fetch.in_flight = true` so
     /// the button can render its "Fetching…" state.
     pub fetch_real_weather: Option<WeatherFetchRequest>,
+
+    /// Phase 16.B — user clicked "Search" in the World panel's
+    /// location box. Host issues an
+    /// `ps_weather_feed::geocoding::search` call on a background
+    /// thread and pushes the result list back via
+    /// `UiState.geocode.results`. While the search is in-flight,
+    /// `UiState.geocode.in_flight = true`.
+    pub geocode_query: Option<GeocodeRequest>,
 }
 
 /// One-shot weather fetch request. Sent from the UI to the host
@@ -97,6 +105,61 @@ pub struct WeatherFetchStatus {
     /// Most recent successful fetch's source description (e.g.
     /// "Open-Meteo + METAR EGPF, 0.4° away"). Cleared on error.
     pub last_summary: Option<String>,
+}
+
+/// Phase 16.B — one-shot geocoding request, sent from the UI to the
+/// host when the user clicks "Search" in the World panel.
+#[derive(Debug, Clone)]
+pub struct GeocodeRequest {
+    /// Free-form place name (e.g. `"Dunblane"`, `"Tromsø"`).
+    pub query: String,
+    /// Maximum number of result rows to surface in the dropdown.
+    /// Open-Meteo accepts up to 100; 10 is plenty for picking from
+    /// a UI list.
+    pub count: usize,
+}
+
+/// Lightweight UI mirror of `ps_weather_feed::GeocodeResult` — the
+/// host's worker thread converts to this so the UI crate doesn't
+/// re-export the feed types verbatim.
+#[derive(Default, Debug, Clone)]
+pub struct GeocodeMatch {
+    /// GeoNames id — useful as a stable dedup / list key.
+    pub id: u64,
+    /// Place name.
+    pub name: String,
+    /// First-level admin division (e.g. `"Scotland"`, `"Texas"`).
+    pub admin1: String,
+    /// Full country name.
+    pub country: String,
+    /// Latitude (degrees north).
+    pub latitude: f64,
+    /// Longitude (degrees east).
+    pub longitude: f64,
+    /// Surface elevation in metres AMSL.
+    pub elevation: f32,
+    /// IANA timezone, e.g. `"Europe/London"`.
+    pub timezone: String,
+    /// Resident population. `0` if upstream omits it.
+    pub population: u64,
+}
+
+/// Status of a geocoding search — host writes; UI reads.
+#[derive(Default, Debug, Clone)]
+pub struct GeocodeStatus {
+    /// True while the search is in flight (button disabled,
+    /// dropdown shows "Searching…").
+    pub in_flight: bool,
+    /// Last query the user issued — kept so the dropdown's header
+    /// can echo it.
+    pub last_query: String,
+    /// Most recent result list. Empty for no-match queries.
+    pub results: Vec<GeocodeMatch>,
+    /// Most recent error string, cleared on next successful search.
+    pub last_error: Option<String>,
+    /// Persistent text-input buffer so the field doesn't reset
+    /// every frame.
+    pub input_buffer: String,
 }
 
 /// Snapshot of the host's camera configuration that the World panel
@@ -190,6 +253,11 @@ pub struct UiState {
     /// attempt; UI reads to render the "Fetch real weather…"
     /// button's state and any error message.
     pub weather_fetch: WeatherFetchStatus,
+
+    /// Phase 16.B — geocoding search status. Host writes after each
+    /// search; UI reads to render the result dropdown and any
+    /// error.
+    pub geocode: GeocodeStatus,
 }
 
 /// Debug-panel toggles that don't belong in `Config`.
@@ -227,6 +295,7 @@ impl UiState {
             latest_atmosphere: None,
             latest_camera: None,
             weather_fetch: WeatherFetchStatus::default(),
+            geocode: GeocodeStatus::default(),
         }
     }
 }
