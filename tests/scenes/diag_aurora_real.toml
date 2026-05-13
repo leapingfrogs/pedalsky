@@ -1,0 +1,61 @@
+# tests/scenes/diag_aurora_real.toml
+#
+# Phase 15 diagnostic — high-latitude aurora setup for the
+# real-weather fetch path. Loads as a "no aurora" scene; clicking
+# the "Fetch real weather…" button populates `aurora.kp_index` from
+# NOAA SWPC's planetary Kp series (Phase 15.A) and may also set
+# `aurora.intensity_override` from the OVATION nowcast (Phase 15.B)
+# if there's significant activity at this lat/lon right now.
+#
+# Use with: set latitude_deg = 65 / longitude_deg = 25 (northern
+# Finland — a likely aurora visibility latitude). At the time of
+# writing the live Kp was ~2 and OVATION reported zero intensity
+# this far north of the magnetic equator, so the aurora subsystem
+# stays dark. During a G1+ storm (Kp ≥ 5) this scene will light
+# up.
+#
+# To use:
+#   1. Edit `pedalsky.toml`: set `[world] latitude_deg = 65.0`,
+#      `longitude_deg = 25.0`.
+#   2. `cargo run --bin ps-app -- --scene tests/scenes/diag_aurora_real.toml`
+#   3. Click "Fetch real weather…" in the World panel.
+#   4. Observe the new "Aurora (NOAA SWPC)" panel section showing
+#      the live Kp + OVATION intensity, and any visible curtains.
+#
+# A snapshot diag scene with hard-coded values for offline review
+# already exists at `tests/scenes/aurora_borealis.toml`.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 35000.0
+temperature_c  = -8.0
+dewpoint_c     = -14.0
+pressure_hpa   = 1015.0
+wind_dir_deg   = 0.0
+wind_speed_mps = 2.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.20
+
+[clouds]
+# No clouds in the diagnostic — keep the sky clean so the aurora
+# is unambiguous. A real fetch over this lat/lon will likely add
+# cloud layers; toggle the clouds subsystem off in the UI to
+# isolate the aurora effect.
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
+
+[aurora]
+# Default-off. The real-weather fetch overwrites both fields.
+kp_index           = 0.0
+intensity_override = -1.0      # derive from kp_index when no OVATION
+predominant_colour = "green"

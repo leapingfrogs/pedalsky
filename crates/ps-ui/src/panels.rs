@@ -232,6 +232,48 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             });
         }
 
+        // Phase 15.C — aurora read-out (Kp + OVATION). Show only
+        // when the scene's aurora block has been touched by a real
+        // fetch — `kp_index > 0` is the gate, matching the engine's
+        // own "skip when zero" rule. Synthetic scenes that leave
+        // `Aurora::default()` keep the panel uncluttered.
+        if let Some(scene) = state.latest_scene.as_ref() {
+            let a = &scene.aurora;
+            if a.kp_index > 0.0 || a.intensity_override >= 0.0 {
+                ui.separator();
+                ui.label("Aurora (NOAA SWPC)");
+                egui::Grid::new("aurora-readout").striped(true).show(ui, |ui| {
+                    ui.label("Kp index");
+                    ui.label(format!("{:.2}", a.kp_index));
+                    ui.end_row();
+                    if a.intensity_override >= 0.0 {
+                        ui.label("OVATION (local)");
+                        ui.label(format!("{:.2}", a.intensity_override));
+                        ui.end_row();
+                    } else {
+                        ui.label("OVATION (local)");
+                        ui.label("(derived from Kp)");
+                        ui.end_row();
+                    }
+                    // NOAA G-scale equivalent so the user can tell at
+                    // a glance whether they're looking at a quiet day
+                    // or a storm. Boundaries from
+                    // swpc.noaa.gov/noaa-scales-explanation.
+                    let g = match a.kp_index {
+                        k if k >= 9.0 => "G5 extreme",
+                        k if k >= 8.0 => "G4 severe",
+                        k if k >= 7.0 => "G3 strong",
+                        k if k >= 6.0 => "G2 moderate",
+                        k if k >= 5.0 => "G1 minor",
+                        _ => "below storm",
+                    };
+                    ui.label("Storm level");
+                    ui.label(g);
+                    ui.end_row();
+                });
+            }
+        }
+
         ui.separator();
         ui.label("Date / time (UTC)");
         let mut y = state.live_config.time.year;
