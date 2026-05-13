@@ -416,54 +416,34 @@ fn world_to_weather_uv(xz: vec2<f32>) -> vec2<f32> {
     return xz / max(params.weather_scale_m, 1.0) + vec2<f32>(0.5);
 }
 
-/// Phase 14.C — horizontal advection offset (metres) for the cloud
-/// noise lookup at world position `p` with precomputed altitude
-/// `p_alt`. Samples the synthesised wind_field volume (which already
-/// embeds the boundary-layer power law and either the ingested
-/// pressure-level winds or the procedural Ekman veer, depending on
-/// the scene) and scales by `simulated_seconds * wind_drift_strength`.
-/// Returns a `vec3` where `.y = 0` for the v1 horizontal-only
-/// advection — vertical advection is reserved for a follow-up phase
-/// once we settle on the cloud-build semantics.
+/// Phase 14.C/F — per-layer horizontal advection offset (metres XZ)
+/// for both the cloud noise lookups and the coverage / cloud-type
+/// grid lookups. Samples the wind field at the layer's mid-altitude
+/// over a fixed XZ position (world origin) — the wind field is
+/// approximately spatially uniform at the 32 km extent for a given
+/// altitude, so one sample per layer captures the bulk drift of
+/// that altitude sheet. This makes the cumulus layer drift at
+/// ~700 hPa wind while a cirrus layer above it drifts at ~300 hPa
+/// wind, producing the physical "cells move at the wind speed of
+/// their altitude band" behaviour.
 ///
-/// The returned offset is **subtracted** from the world-space sample
-/// position before noise lookups: a cloud structure that physically
-/// moves with the wind requires the texture coordinate to step
-/// backwards by the same amount, so the cloud appears anchored to
-/// the moving body rather than the fixed world.
-fn cloud_wind_offset(p: vec3<f32>, p_alt: f32) -> vec3<f32> {
-    let strength = params.wind_drift_strength * frame.simulated_seconds;
-    if (strength == 0.0) {
-        return vec3<f32>(0.0);
-    }
-    let half = WIND_FIELD_EXTENT_M * 0.5;
-    let u_x = (p.x + half) / WIND_FIELD_EXTENT_M;
-    let u_z = (p.z + half) / WIND_FIELD_EXTENT_M;
-    // Map the precomputed altitude to the wind field's Y axis. Clamp
-    // so samples above the top voxel hold the topmost wind rather
-    // than wrapping into the boundary layer.
-    let u_y = clamp(p_alt / WIND_FIELD_TOP_M, 0.0, 0.9999);
-    // Wind field uses (u east, v south, w up, turb). The U/V channels
-    // are world-space horizontal m/s.
-    let w_sample = textureSampleLevel(wind_field, noise_sampler, vec3<f32>(u_x, u_y, u_z), 0.0);
-    return vec3<f32>(w_sample.x * strength, 0.0, w_sample.y * strength);
-}
-
-/// Phase 14.D — per-layer horizontal advection offset (metres XZ)
-/// for the coverage / cloud-type grid lookups. Samples the wind
-/// field at the layer's mid-altitude over a fixed XZ position
-/// (world origin) — the wind field is approximately spatially
-/// uniform at the 32 km extent for a given altitude, so one sample
-/// per layer captures the bulk drift of that altitude sheet. This
-/// makes the cumulus layer's coverage advect at ~700 hPa wind while
-/// a cirrus layer above it advects at ~300 hPa wind, producing the
-/// physical "cells move at the wind speed of their altitude band"
-/// behaviour.
+/// **Per-layer, not per-sample.** Phase 14.C originally used a
+/// per-sample offset (sampling the wind at each ray step's `p_alt`),
+/// which produced visible streaking: the wind at a cloud's top is
+/// different from the wind at its base, so the noise lookup at the
+/// top read from a different XZ tile than the noise at the base.
+/// Over a few minutes the vertical XZ mismatch sheared cloud cells
+/// horizontally and the rendered density looked like long streaks
+/// instead of fluffy cells. Switching to one offset per layer keeps
+/// each cloud's vertical column coherent while preserving the
+/// inter-layer altitude shear. A separate "skew with height"
+/// technique (Schneider Nubis 2017) can layer on top of this when
+/// we want the visual lean of cumulus tops downwind of bases.
 ///
 /// The advected coverage / cloud-type readouts wrap modulo the
 /// texture extent (Repeat sampler / rem_euclid) so multi-hour
 /// `simulated_seconds` doesn't run off the end of the tile.
-fn layer_coverage_offset_m(layer: CloudLayerGpu) -> vec2<f32> {
+fn layer_wind_offset_m(layer: CloudLayerGpu) -> vec2<f32> {
     let strength = params.wind_drift_strength * frame.simulated_seconds;
     if (strength == 0.0) {
         return vec2<f32>(0.0);
@@ -511,21 +491,30 @@ fn effective_cloud_type(p_xz: vec2<f32>, layer: CloudLayerGpu) -> u32 {
 
 /// Schneider 2015/2017 cloud density at world position `p`.
 /// `p_alt` is the precomputed altitude (m) at `p`.
+///
+/// Phase 14.F — takes the per-layer wind advection offset (computed
+/// once by the caller at the layer's mid-altitude) and uses it for
+/// both the noise lookups and the cloud-type grid lookup. Using one
+/// offset per layer keeps a cloud cell's vertical column coherent;
+/// the earlier per-sample variant (14.C) produced visible streaks
+/// because the wind at a cell's top differs from the wind at its
+/// base, shearing the noise pattern horizontally over time.
 fn sample_density(
-    p: vec3<f32>, p_alt: f32, layer: CloudLayerGpu, weather: vec4<f32>,
+    p: vec3<f32>,
+    p_alt: f32,
+    layer: CloudLayerGpu,
+    weather: vec4<f32>,
+    wind_offset_xz: vec2<f32>,
 ) -> f32 {
     let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
     if (h < 0.0 || h > 1.0) { return 0.0; }
 
-    // Phase 14.C — subtract the wind advection offset so the noise
-    // lookups effectively trail the cloud body. Per-altitude wind
-    // shear emerges automatically because the offset depends on
-    // `p_alt`: cumulus tops at 3 km may see a different vector to
-    // their base at 1.5 km, leaning the cloud downwind exactly as
-    // physical clouds do. The coverage / cloud-type grids stay
-    // anchored to the original `p.xz` (advection of those textures
-    // is Phase 14.D).
-    let p_advected = p - cloud_wind_offset(p, p_alt);
+    // Phase 14.F — subtract the per-layer wind offset so the noise
+    // lookups effectively trail the cloud body. The offset is shared
+    // across all samples within this layer, which keeps each cloud
+    // cell coherent vertically; inter-layer altitude shear comes
+    // from different layers receiving different offsets.
+    let p_advected = p - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y);
 
     let base_uv = p_advected / max(params.base_scale_m, 1.0);
     let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);
@@ -541,12 +530,9 @@ fn sample_density(
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
     // Phase 12.1: per-pixel cloud type override (or layer default).
-    // Phase 14.D: subtract the per-layer coverage advection offset so
-    // the cloud-type grid drifts downwind at the layer's mid-altitude
-    // wind speed (cumulus cells move slowly with low-level wind,
-    // cirrus sheets stream with the jet).
-    let cov_offset = layer_coverage_offset_m(layer);
-    let cloud_type = effective_cloud_type(p.xz - cov_offset, layer);
+    // Phase 14.D/F: subtract the same per-layer wind offset so the
+    // cloud-type grid drifts in lock-step with the noise pattern.
+    let cloud_type = effective_cloud_type(p.xz - wind_offset_xz, layer);
     let profile = ndf(h, cloud_type, layer.anvil_bias);
     var cloud = base_cloud * profile;
 
@@ -557,10 +543,10 @@ fn sample_density(
 
     // Curl-perturbed detail erosion at the cloud boundary. Only erode
     // where there is already some density (saves the per-sample texture
-    // fetches in empty space). Phase 14.C — use the same advected
-    // position as the base lookup so the curl pattern drifts with
-    // the cloud body rather than the wind itself; otherwise the
-    // detail wisps would slide across a stationary cloud.
+    // fetches in empty space). Use the same advected position as the
+    // base lookup so the curl pattern drifts with the cloud body
+    // rather than the wind itself; otherwise the detail wisps would
+    // slide across a stationary cloud.
     if (cloud > 0.0) {
         let curl_uv = p_advected.xz / max(params.detail_scale_m, 1.0);
         let curl = textureSampleLevel(noise_curl, noise_sampler, curl_uv, 0.0).rg * 2.0
@@ -602,10 +588,9 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
     let cos_view = dot((pos - centre) / max(r0, 1.0), sun_dir);
     let h0 = r0 - world.planet_radius_m;
 
-    // Phase 14.D — per-layer coverage advection. Sampling the offset
-    // once outside the loop saves a wind_field fetch per light step;
-    // the offset is loop-invariant for a single light march.
-    let cov_offset = layer_coverage_offset_m(layer);
+    // Phase 14.D/F — one per-layer wind offset for noise + coverage,
+    // sampled outside the loop (loop-invariant for a single light march).
+    let wind_offset = layer_wind_offset_m(layer);
 
     for (var i = 0u; i < params.light_steps; i = i + 1u) {
         let t = (f32(i) + 0.5) * step;
@@ -613,9 +598,9 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
         let weather = textureSampleLevel(
             weather_map, noise_sampler,
-            world_to_weather_uv(pi.xz - cov_offset), 0.0,
+            world_to_weather_uv(pi.xz - wind_offset), 0.0,
         );
-        let local_density = sample_density(pi, alt, layer, weather);
+        let local_density = sample_density(pi, alt, layer, weather, wind_offset);
         od = od + local_density * step;
     }
     return od;
@@ -801,21 +786,20 @@ fn fs_main(in: VsOut) -> CloudOut {
         let cos_view = dot((ray.origin - centre) / max(r0, 1.0), ray.dir);
         let h0 = r0 - world.planet_radius_m;
 
-        // Phase 14.D — per-layer coverage advection offset. The
-        // sample below is loop-invariant within a single layer's
-        // march and the WGSL compiler hoists it; we keep it here
-        // (just inside the layer loop) so the code reads in the
-        // same order it executes.
-        let cov_offset_view = layer_coverage_offset_m(layer);
+        // Phase 14.D/F — one per-layer wind offset for noise +
+        // coverage. Loop-invariant within a single layer's march;
+        // declared just inside the layer loop so the code reads in
+        // the same order it executes.
+        let wind_offset_view = layer_wind_offset_m(layer);
 
         for (var s = 0u; s < params.cloud_steps; s = s + 1u) {
             let p = ray.origin + ray.dir * t;
             let alt = altitude_from_entry(p, r0, cos_view, h0, t);
             let weather_sample = textureSampleLevel(
                 weather_map, noise_sampler,
-                world_to_weather_uv(p.xz - cov_offset_view), 0.0,
+                world_to_weather_uv(p.xz - wind_offset_view), 0.0,
             );
-            let density = sample_density(p, alt, layer, weather_sample);
+            let density = sample_density(p, alt, layer, weather_sample, wind_offset_view);
 
             if (density > 1e-3) {
                 let od_to_sun = march_to_light(p, alt, sun_dir, layer);

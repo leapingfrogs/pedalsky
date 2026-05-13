@@ -187,7 +187,40 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             ui.label("Julian day");
             ui.label(format!("{:>14.5}", state.world_readout.julian_day));
             ui.end_row();
+            // Phase 14.F — surface wind (10 m AGL) summary. The
+            // compass-rose overlay shows direction visually; this
+            // line carries the exact numbers for debug / scene
+            // tuning.
+            ui.label("Surface wind");
+            ui.label(format!(
+                "{:>5.1} m/s @ {:>5.1}°",
+                state.world_readout.wind_speed_mps,
+                state.world_readout.wind_dir_deg,
+            ));
+            ui.end_row();
         });
+
+        // Phase 14.F — winds aloft. Skipped entirely when the scene
+        // carries no upper-air samples (synthetic / offline renders),
+        // so the panel stays compact for the common case.
+        if !state.world_readout.winds_aloft.is_empty() {
+            ui.separator();
+            ui.label("Winds aloft");
+            egui::Grid::new("winds-aloft-readout").striped(true).show(ui, |ui| {
+                ui.label("hPa");
+                ui.label("alt (m)");
+                ui.label("speed");
+                ui.label("dir");
+                ui.end_row();
+                for s in &state.world_readout.winds_aloft {
+                    ui.label(format!("{}", s.pressure_hpa));
+                    ui.label(format!("{:>6.0}", s.altitude_m));
+                    ui.label(format!("{:>5.1} m/s", s.speed_mps));
+                    ui.label(format!("{:>5.1}°", s.dir_deg));
+                    ui.end_row();
+                }
+            });
+        }
 
         ui.separator();
         ui.label("Date / time (UTC)");
