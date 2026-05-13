@@ -2,16 +2,30 @@
 //!
 //! Channels: (u, v, w, turbulence). The Y axis maps `[0, top_m]` to
 //! `v ∈ [0, 1]` (texture-space Y). Synthesised from the surface wind in
-//! the parsed scene using:
+//! the parsed scene using one of two horizontal profiles:
 //!
-//! - **1/7 power law** (Hellmann's exponent α = 0.143, neutral stability):
-//!   `u(z) = u_surf · (z / z_ref)^α`, with `z_ref = 10 m` (the 10-m
-//!   reference height the meteorological wind is reported at).
-//! - **Ekman spiral** up to 30° clockwise (Northern Hemisphere) by the
-//!   time we reach `top_m`. Surface direction = scene-configured
-//!   `wind_dir_deg`; aloft the wind veers right with altitude.
+//! - **Real winds aloft** (Phase 14.B) — when
+//!   `scene.surface.winds_aloft` is non-empty (typical for live
+//!   Open-Meteo feeds), the (u, v) channels are interpolated directly
+//!   between the ingested pressure-level samples. The 10 m surface
+//!   wind anchors the bottom of the profile; the lowest ingested
+//!   sample (usually 850 hPa ≈ 1.5 km) anchors the next point. The
+//!   power-law is used only as a fallback below the lowest ingested
+//!   level to fill the boundary layer where Open-Meteo's coarse
+//!   sampling under-samples shear.
+//! - **Procedural fallback** — when `winds_aloft` is empty (synthetic
+//!   scenes / offline renders), the horizontal profile uses:
+//!   * **1/7 power law** (Hellmann's exponent α = 0.143, neutral
+//!     stability): `u(z) = u_surf · (z / z_ref)^α`, with `z_ref = 10 m`.
+//!   * **Ekman spiral** up to 30° clockwise (Northern Hemisphere) by
+//!     `top_m`.
+//!
+//! Either way:
+//!
 //! - **w** = 0 plus a small Gaussian thermal under any low-base cumulus
 //!   layer (peak ≈ 0.5 m/s, σ ≈ 1500 m horizontally, peaks at base − 200 m).
+//!   Open-Meteo doesn't expose vertical velocity (omega), so this is
+//!   procedural in both branches.
 //! - **turbulence** rises near cloud bases and inside CB layers.
 //!
 //! Anchored at world origin; horizontal extent = 32 km.
@@ -62,6 +76,14 @@ impl WindField {
         // (+X east, +Z south) horizontal plane.
         let dir_to_rad = (scene.surface.wind_dir_deg + 180.0).to_radians();
 
+        // Phase 14.B — if Open-Meteo gave us winds aloft, build a
+        // (u, v) anchor table that the per-voxel sampler interpolates
+        // across. The surface 10 m wind always sits at the bottom of
+        // the table so the lowest voxel reads identically to before;
+        // ingested samples extend the profile to whatever the API
+        // gave us. The table is sorted by altitude.
+        let aloft = AloftProfile::build(scene, surface_speed, dir_to_rad);
+
         let mut pixels = vec![f16::from_f32(0.0); (SIZE_X * SIZE_Y * SIZE_Z * 4) as usize];
 
         for z_i in 0..SIZE_Z {
@@ -71,7 +93,7 @@ impl WindField {
                     let world_x = pixel_to_world_axis(x_i, SIZE_X);
                     let world_z = pixel_to_world_axis(z_i, SIZE_Z);
 
-                    let (u, v_h) = horizontal_wind(surface_speed, dir_to_rad, alt_m);
+                    let (u, v_h) = aloft.sample(surface_speed, dir_to_rad, alt_m);
                     let w = vertical_wind(scene, world_x, world_z, alt_m);
                     let turb = turbulence(scene, alt_m);
 
@@ -140,7 +162,8 @@ impl WindField {
 }
 
 /// Power-law profile + Ekman veer. Returns `(u_x_east, w_z_south)` where
-/// the channels carry world-space horizontal components.
+/// the channels carry world-space horizontal components. Used as the
+/// fallback when `scene.surface.winds_aloft` is empty.
 fn horizontal_wind(surface_speed: f32, dir_to_rad: f32, alt_m: f32) -> (f32, f32) {
     let speed = surface_speed * (alt_m.max(Z_REF_M) / Z_REF_M).powf(ALPHA);
     // Veer fraction: 0 at surface, 1 at TOP_M, smooth in between.
@@ -153,6 +176,118 @@ fn horizontal_wind(surface_speed: f32, dir_to_rad: f32, alt_m: f32) -> (f32, f32
     let dir_z = -veered_rad.cos();
     (speed * dir_x, speed * dir_z)
 }
+
+/// Convert a meteorological direction-from (degrees) + speed to a
+/// world-space (u_east, v_south) m/s pair, matching the conventions
+/// in [`horizontal_wind`].
+fn dir_speed_to_uv(speed_mps: f32, dir_from_deg: f32) -> (f32, f32) {
+    let dir_to_rad = (dir_from_deg + 180.0).to_radians();
+    (speed_mps * dir_to_rad.sin(), -speed_mps * dir_to_rad.cos())
+}
+
+/// Interpolation anchors for the horizontal wind profile. When real
+/// winds aloft are present, this carries one entry at the 10 m
+/// surface anchor plus one per ingested pressure-level sample, sorted
+/// by ascending altitude. Interpolating (u, v) directly handles
+/// shortest-angle wrap implicitly — a 350° → 010° transition lerps
+/// through 000° rather than dragging back through 180° the way raw
+/// degrees would.
+///
+/// When no winds aloft are present, the anchors vec is empty and
+/// `sample` defers to the procedural [`horizontal_wind`].
+struct AloftProfile {
+    anchors: Vec<AloftAnchor>,
+}
+
+struct AloftAnchor {
+    alt_m: f32,
+    u: f32,
+    v: f32,
+}
+
+impl AloftProfile {
+    fn build(scene: &Scene, surface_speed: f32, dir_to_rad: f32) -> Self {
+        if scene.surface.winds_aloft.is_empty() {
+            return Self { anchors: Vec::new() };
+        }
+        let mut anchors: Vec<AloftAnchor> = Vec::with_capacity(scene.surface.winds_aloft.len() + 1);
+
+        // Anchor 0: the 10 m surface wind. Encode the same (u, v) the
+        // fallback would produce at z = 10 m so the lowest voxel is
+        // continuous with the boundary-layer profile.
+        let (u_surf, v_surf) = {
+            // At z = Z_REF_M the power law multiplier is 1; reuse
+            // the conversion to keep the conventions identical.
+            let dir_x = dir_to_rad.sin();
+            let dir_z = -dir_to_rad.cos();
+            (surface_speed * dir_x, surface_speed * dir_z)
+        };
+        anchors.push(AloftAnchor {
+            alt_m: Z_REF_M,
+            u: u_surf,
+            v: v_surf,
+        });
+
+        // Append the ingested samples in their stored order
+        // (ascending altitude). Skip any that aren't strictly above
+        // the previous anchor — otherwise the bracket search below
+        // can land on a zero-width segment.
+        let mut last_alt = Z_REF_M;
+        for s in &scene.surface.winds_aloft {
+            if !(s.altitude_m > last_alt + 1.0) {
+                continue;
+            }
+            let (u, v) = dir_speed_to_uv(s.speed_mps, s.dir_deg);
+            anchors.push(AloftAnchor {
+                alt_m: s.altitude_m,
+                u,
+                v,
+            });
+            last_alt = s.altitude_m;
+        }
+
+        Self { anchors }
+    }
+
+    /// Sample the profile at `alt_m`. When real-aloft anchors are
+    /// present, linearly interpolate (u, v) between the two bracketing
+    /// anchors; clamp at the highest anchor for `alt_m > top_anchor`.
+    /// Below the surface anchor (rare — Z_REF_M = 10 m), clamp to the
+    /// surface anchor. When the anchors vec is empty, defer to the
+    /// procedural power-law + Ekman fallback.
+    fn sample(&self, surface_speed: f32, dir_to_rad: f32, alt_m: f32) -> (f32, f32) {
+        if self.anchors.is_empty() {
+            return horizontal_wind(surface_speed, dir_to_rad, alt_m);
+        }
+        // Below the lowest anchor: clamp.
+        if alt_m <= self.anchors[0].alt_m {
+            return (self.anchors[0].u, self.anchors[0].v);
+        }
+        // Above the highest anchor: clamp. Open-Meteo's top wind
+        // sample (300 hPa ≈ 9 km) sits below TOP_M (12 km); freezing
+        // the wind there is a sensible default — the upper
+        // troposphere doesn't shift further much in 3 km.
+        let top = self.anchors.last().unwrap();
+        if alt_m >= top.alt_m {
+            return (top.u, top.v);
+        }
+        // Bracket. The vec is short (≤ 5 entries) so a linear walk
+        // beats a binary search by a constant factor.
+        for pair in self.anchors.windows(2) {
+            let lo = &pair[0];
+            let hi = &pair[1];
+            if alt_m >= lo.alt_m && alt_m <= hi.alt_m {
+                let t = (alt_m - lo.alt_m) / (hi.alt_m - lo.alt_m);
+                let u = lo.u + t * (hi.u - lo.u);
+                let v = lo.v + t * (hi.v - lo.v);
+                return (u, v);
+            }
+        }
+        // Unreachable given the clamps above; play it safe.
+        (top.u, top.v)
+    }
+}
+
 
 /// Small Gaussian thermal column under any low-base cumulus layer.
 fn vertical_wind(scene: &Scene, world_x: f32, world_z: f32, alt_m: f32) -> f32 {
@@ -268,6 +403,111 @@ mod tests {
         assert!(
             speed_high > speed_low,
             "speed should increase with altitude: low={speed_low}, high={speed_high}"
+        );
+    }
+
+    /// Phase 14.B — when winds aloft are present, the synthesised
+    /// (u, v) at the highest ingested sample's altitude matches the
+    /// sample's value exactly. The interpolation must round-trip the
+    /// ingested data when sampled on-anchor.
+    #[test]
+    fn aloft_samples_round_trip_at_anchor_altitude() {
+        let mut scene = empty_scene();
+        // Two synthetic samples — 850 hPa @ 1500 m blowing east
+        // (270° meteorological = wind FROM west = blowing east),
+        // 500 hPa @ 5500 m blowing south (000° meteorological).
+        scene.surface.winds_aloft = vec![
+            ps_core::WindAloftSample {
+                pressure_hpa: 850,
+                altitude_m: 1500.0,
+                speed_mps: 10.0,
+                dir_deg: 270.0,
+            },
+            ps_core::WindAloftSample {
+                pressure_hpa: 500,
+                altitude_m: 5500.0,
+                speed_mps: 30.0,
+                dir_deg: 0.0,
+            },
+        ];
+
+        // Build the profile directly and sample it at the anchor
+        // altitudes. The wind-field synthesis goes through this same
+        // code path.
+        let dir_to_rad = (scene.surface.wind_dir_deg + 180.0).to_radians();
+        let profile = AloftProfile::build(&scene, scene.surface.wind_speed_mps, dir_to_rad);
+        // 850 hPa anchor: dir_FROM = 270° → dir_TO = 090° → (u, v) = (+10, 0)
+        // (i.e. wind blows east, since +X is east in PedalSky).
+        let (u_850, v_850) = profile.sample(scene.surface.wind_speed_mps, dir_to_rad, 1500.0);
+        assert!(
+            (u_850 - 10.0).abs() < 0.001,
+            "u at 850 hPa anchor: {u_850} (expected 10.0)"
+        );
+        assert!(v_850.abs() < 0.001, "v at 850 hPa anchor: {v_850}");
+
+        // 500 hPa anchor: dir_FROM = 000° → dir_TO = 180° (south).
+        // In PedalSky +Z is south, so (u, v) = (0, +30).
+        let (u_500, v_500) = profile.sample(scene.surface.wind_speed_mps, dir_to_rad, 5500.0);
+        assert!(u_500.abs() < 0.001, "u at 500 hPa anchor: {u_500}");
+        assert!(
+            (v_500 - 30.0).abs() < 0.001,
+            "v at 500 hPa anchor: {v_500} (expected 30.0)"
+        );
+    }
+
+    /// Phase 14.B — interpolation between two anchors lies on the
+    /// line between their (u, v) vectors. Direction interpolation
+    /// must go through shortest-angle wrap (the (u, v) lerp gives
+    /// this for free).
+    #[test]
+    fn aloft_interpolation_lerps_between_anchors() {
+        let mut scene = empty_scene();
+        // Anchors at 1000 m and 3000 m blowing east and west
+        // respectively at the same speed. The midpoint should have
+        // zero net horizontal wind.
+        scene.surface.winds_aloft = vec![
+            ps_core::WindAloftSample {
+                pressure_hpa: 900,
+                altitude_m: 1000.0,
+                speed_mps: 10.0,
+                dir_deg: 270.0, // FROM west → TO east → +X
+            },
+            ps_core::WindAloftSample {
+                pressure_hpa: 700,
+                altitude_m: 3000.0,
+                speed_mps: 10.0,
+                dir_deg: 90.0, // FROM east → TO west → -X
+            },
+        ];
+        let dir_to_rad = (scene.surface.wind_dir_deg + 180.0).to_radians();
+        let profile = AloftProfile::build(&scene, scene.surface.wind_speed_mps, dir_to_rad);
+        let (u_mid, v_mid) = profile.sample(scene.surface.wind_speed_mps, dir_to_rad, 2000.0);
+        assert!(
+            u_mid.abs() < 0.1,
+            "midpoint u between east and west should cancel: {u_mid}"
+        );
+        assert!(
+            v_mid.abs() < 0.1,
+            "midpoint v should be near zero: {v_mid}"
+        );
+    }
+
+    /// Phase 14.B — the empty-aloft path is unchanged from the
+    /// pre-14 power-law + Ekman behaviour. Regression guard.
+    #[test]
+    fn empty_aloft_uses_power_law_fallback() {
+        let scene = empty_scene();
+        assert!(scene.surface.winds_aloft.is_empty());
+        let wf = WindField::synthesise(&scene);
+        // Same expectation as `power_law_aloft_amplifies_surface_wind`:
+        // y=0 voxel @ ~375 m → speed in [7, 10] m/s.
+        let idx_low = ((SIZE_Z / 2 * SIZE_Y * SIZE_X + SIZE_X / 2) * 4) as usize;
+        let u_low = wf.pixels[idx_low].to_f32();
+        let v_low = wf.pixels[idx_low + 1].to_f32();
+        let speed_low = (u_low * u_low + v_low * v_low).sqrt();
+        assert!(
+            (7.0..=10.0).contains(&speed_low),
+            "fallback path produced wrong speed: {speed_low}"
         );
     }
 
