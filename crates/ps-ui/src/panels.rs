@@ -1047,6 +1047,24 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                  further. 0.0 disables.",
             )
             .changed();
+        // Phase 18 — diurnal modulation of convective cloud types'
+        // shape/detail biases. Sun-position driven, so the world
+        // clock pausing already freezes it.
+        tuning_changed |= ui
+            .add(
+                egui::Slider::new(&mut c.diurnal_strength, 0.0..=2.0)
+                    .text("Diurnal modulation"),
+            )
+            .on_hover_text(
+                "Scales the cumulus / Sc / Ac / Cb shape + detail \
+                 bias by solar altitude. At noon convective clouds \
+                 hit their full Phase-17 character (wispier edges \
+                 under high CAPE); at dawn / dusk they revert to a \
+                 smoother baseline. Non-convective types (stratus, \
+                 cirrus) ignore this. 0.0 locks biases at the \
+                 baseline (matches bless / golden determinism).",
+            )
+            .changed();
         if tuning_changed {
             state.pending.config_dirty = true;
         }

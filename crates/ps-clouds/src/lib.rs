@@ -209,6 +209,13 @@ impl CloudsSubsystem {
         // so paused screenshots don't continue to advect noise after
         // the user clicks pause.
         params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
+        // Phase 18 — diurnal modulation is sun-direction driven, not
+        // simulated_seconds driven, so freeze_time doesn't need to
+        // gate it (the world clock pausing already freezes the sun).
+        // Users wanting a documentation screenshot at full character
+        // regardless of time-of-day can set `diurnal_strength = 0`
+        // explicitly via the slider.
+        params.diurnal_strength = c.diurnal_strength;
         // Phase 14.H — skew with height is a spatial effect (not
         // time-driven), so it stays on while paused. Users who want
         // a "no lean" screenshot can set wind_skew_strength = 0
@@ -518,6 +525,9 @@ impl RenderSubsystem for CloudsSubsystem {
         self.params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
         // Phase 14.H — skew is spatial; not gated by freeze_time.
         self.params.wind_skew_strength = c.wind_skew_strength;
+        // Phase 18 — diurnal modulation; the world clock pausing
+        // already freezes the sun, so no freeze_time gate needed.
+        self.params.diurnal_strength = c.diurnal_strength;
         // freeze_time: latch a non-advancing simulated_seconds for the
         // cloud march. The shader reads frame.simulated_seconds; we
         // overwrite the cpu-side params if a future tunable drives it,

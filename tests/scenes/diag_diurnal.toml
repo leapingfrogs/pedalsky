@@ -1,0 +1,33 @@
+# Synthetic diag scene for Phase 18 — high baseline shape bias on a
+# cumulus layer so the diurnal modulation has something to scale.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 22.0
+dewpoint_c     = 14.0
+pressure_hpa   = 1013.0
+wind_dir_deg   = 240.0
+wind_speed_mps = 5.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2500.0
+coverage           = 0.5
+shape_octave_bias  = 0.4   # Phase-17-strength bias so diurnal modulation is visible
+detail_octave_bias = 0.05
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

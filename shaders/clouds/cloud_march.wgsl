@@ -493,6 +493,42 @@ fn layer_skew_xz(layer: CloudLayerGpu, h: f32) -> vec2<f32> {
     return dir * (h * thickness * strength);
 }
 
+/// Phase 18 — diurnal modulation factor for the per-layer
+/// `shape_bias` / `detail_bias`. Returns `[0, 1] * diurnal_strength`,
+/// peaking around midday for **convective** cloud types and zero
+/// for non-convective types (which have no diurnal signal — stratus
+/// is smooth all day, cirrus is jet-driven not turbulence-driven).
+///
+/// Rationale: real cumulus character grows through the day as the
+/// boundary layer warms and turbulence builds (peaks ~3 h after
+/// solar noon in reality, though we use a symmetric bell here for
+/// simplicity — asymmetric lag is a Phase 19 polish item if it
+/// turns out to matter visually). Phase 17 set the per-fetch
+/// baselines from CAPE / cover / shear; this scalar then animates
+/// them over the simulated day.
+///
+/// `sun_direction.y = sin(altitude)`. The smoothstep ramps from
+/// just below horizon (`-0.1`) to a moderately high sun (`0.4`,
+/// ≈ 24° altitude) and plateaus above. Dawn and dusk produce
+/// near-zero modulation; mid-morning to mid-afternoon produce the
+/// full Phase 17 character.
+fn diurnal_modulation(cloud_type: u32) -> f32 {
+    let strength = params.diurnal_strength;
+    if (strength == 0.0) {
+        return 0.0;
+    }
+    // CloudType ordinals: 0=Cu, 1=St, 2=Sc, 3=Ac, 4=As, 5=Ci, 6=Cs, 7=Cb.
+    // Match the convective set (Cu, Sc, Ac, Cb).
+    let is_convective =
+        cloud_type == 0u || cloud_type == 2u || cloud_type == 3u || cloud_type == 7u;
+    if (!is_convective) {
+        return 0.0;
+    }
+    let sin_alt = frame.sun_direction.y;
+    let bell = smoothstep(-0.1, 0.4, sin_alt);
+    return bell * strength;
+}
+
 /// Look up the effective cloud-type index for a sample position.
 /// Phase 12.1 — when the per-pixel grid has a non-sentinel value at
 /// this XZ, use it; otherwise fall back to the layer's default
@@ -566,13 +602,19 @@ fn sample_density(
 
     let base_uv = p_advected / max(params.base_scale_m, 1.0);
     let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);
+    // Phase 18 — diurnal modulation: convective types' bias scales
+    // up with solar altitude (peaks at midday, vanishes at night).
+    // Non-convective types ignore this. Loop-invariant within a
+    // single sample_density call; the compiler hoists it.
+    let diurnal = diurnal_modulation(layer.cloud_type);
+    let effective_shape_bias = layer.shape_bias * diurnal;
     // Schneider remap: low-frequency Worley FBM erodes the Perlin-Worley.
     // Phase 13 follow-up — per-layer `shape_bias` shifts the LF FBM
     // sum (clamped to a small range so the remap stays well-formed).
     // Positive → more Worley FBM dominance → wispier cauliflower
     // structure on the base shape; negative → smoother bulbous body.
     let lf_fbm = clamp(
-        base.g * 0.625 + base.b * 0.25 + base.a * 0.125 + layer.shape_bias * 0.5,
+        base.g * 0.625 + base.b * 0.25 + base.a * 0.125 + effective_shape_bias * 0.5,
         0.0, 1.0,
     );
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
@@ -613,7 +655,12 @@ fn sample_density(
         // Schneider 2015: detail erosion polarity flips with height -- wispy
         // top, fluffy base.
         let detail_mod = mix(hf_fbm, 1.0 - hf_fbm, clamp(h * 10.0, 0.0, 1.0));
-        let layer_detail = clamp(params.detail_strength + layer.detail_bias, 0.0, 1.0);
+        // Phase 18 — `detail_bias` takes the same diurnal modulation
+        // as `shape_bias` so cumulus edges erode more aggressively
+        // in the afternoon convective peak and revert to the smoother
+        // baseline at night.
+        let effective_detail_bias = layer.detail_bias * diurnal;
+        let layer_detail = clamp(params.detail_strength + effective_detail_bias, 0.0, 1.0);
         cloud = remap(cloud, detail_mod * layer_detail, 1.0, 0.0, 1.0);
     }
 

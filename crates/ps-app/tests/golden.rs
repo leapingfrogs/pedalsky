@@ -93,6 +93,13 @@ pub fn render_scene(
     // accidentally advanced simulated_seconds during a bless run
     // would silently shift every golden by minutes of cloud drift.
     config.render.clouds.wind_drift_strength = 0.0;
+    // Phase 18 — diurnal modulation is sun-position driven. Each
+    // golden scene specifies a fixed render time, so the sun
+    // position is deterministic, but the modulation would couple
+    // the rendered cloud character to the time-of-day in a way
+    // that's harder to reason about when reviewing diffs. Lock
+    // it off so goldens capture the raw Phase 17 baseline.
+    config.render.clouds.diurnal_strength = 0.0;
 
     let setup = TestSetup::new(gpu, &config, (RENDER_W, RENDER_H));
     let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");

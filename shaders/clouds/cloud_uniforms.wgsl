@@ -63,7 +63,12 @@ struct CloudParams {
     // downwind of their bases, producing visible cumulus lean and
     // anvil tilt under directional shear. 0.0 disables.
     wind_skew_strength: f32,
-    _pad_temporal_jitter_2: u32,
+    // Phase 18 — diurnal modulation of `shape_bias` / `detail_bias`
+    // for convective cloud types (Cu / Sc / Ac / Cb). Multiplied by
+    // a smoothstep on solar altitude so biases peak at noon and go
+    // to zero at night. 0.0 disables (biases lock at their Phase 17
+    // baseline). See `diurnal_modulation` helper in cloud_march.wgsl.
+    diurnal_strength: f32,
 };
 
 struct CloudLayerGpu {

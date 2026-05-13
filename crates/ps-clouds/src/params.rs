@@ -117,9 +117,19 @@ pub struct CloudParamsGpu {
     /// further. Lives in the slot that used to be
     /// `_pad_temporal_jitter_1`.
     pub wind_skew_strength: f32,
-    /// std140 pad — third trailing scalar; keeps the struct's tail on
-    /// a vec4 boundary.
-    pub _pad_temporal_jitter_2: u32,
+    /// Phase 18 — strength of the diurnal modulation applied to
+    /// convective cloud types' `shape_bias` / `detail_bias`. The
+    /// shader multiplies both per-layer biases by
+    /// `smoothstep(-0.1, 0.4, sin(sun_altitude)) * diurnal_strength`
+    /// for convective layers (Cumulus / Stratocumulus / Altocumulus
+    /// / Cumulonimbus) so cumulus visibly grows convective character
+    /// through the day and dissipates at night. `0.0` disables the
+    /// effect (locks biases at their Phase 17 baseline). Non-
+    /// convective cloud types ignore this scalar — stratus is
+    /// smooth all day, cirrus is shear-driven not turbulence-driven.
+    /// Lives in the slot that used to be `_pad_temporal_jitter_2`,
+    /// so the struct stays at 112 B.
+    pub diurnal_strength: f32,
 }
 
 impl Default for CloudParamsGpu {
@@ -187,7 +197,10 @@ impl Default for CloudParamsGpu {
             // giving cumulus a clearly-visible tilt without
             // collapsing the cell sideways. 0.0 disables the effect.
             wind_skew_strength: 0.5,
-            _pad_temporal_jitter_2: 0,
+            // Phase 18 — full strength by default so a windowed
+            // user sees diurnal evolution out of the box. Bless
+            // / golden runs zero this explicitly for determinism.
+            diurnal_strength: 1.0,
         }
     }
 }

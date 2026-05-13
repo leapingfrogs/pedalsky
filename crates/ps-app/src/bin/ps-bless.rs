@@ -90,6 +90,11 @@ fn render_one(
     // future bug that lets `simulated_seconds` advance during a
     // headless render.
     config.render.clouds.wind_drift_strength = 0.0;
+    // Phase 18 — likewise zero the diurnal modulation so the
+    // rendered cloud character isn't coupled to each scene's
+    // (deterministic but variable) render time. Goldens capture
+    // the Phase 17 baseline only.
+    config.render.clouds.diurnal_strength = 0.0;
 
     let setup = TestSetup::new(gpu, &config, (RENDER_W, RENDER_H));
     let mut app = HeadlessApp::new(gpu, &config, setup).context("HeadlessApp::new")?;

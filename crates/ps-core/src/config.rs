@@ -357,6 +357,15 @@ pub struct CloudsTuning {
     /// shader-side `layer_skew_xz` rationale.
     #[serde(default = "default_wind_skew_strength")]
     pub wind_skew_strength: f32,
+    /// Phase 18 — diurnal modulation of convective cloud types'
+    /// shape / detail biases. At 1.0 the biases scale up to their
+    /// Phase 17 baseline at midday and fade to zero at night, so
+    /// cumulus visibly grows convective character through the day.
+    /// 0.0 locks the biases at the Phase 17 baseline (no animation;
+    /// matches the bless / golden-determinism path). Non-convective
+    /// cloud types ignore this scalar.
+    #[serde(default = "default_diurnal_strength")]
+    pub diurnal_strength: f32,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
@@ -377,6 +386,13 @@ fn default_wind_skew_strength() -> f32 {
     0.5
 }
 
+/// Default value for `diurnal_strength` (Phase 18). Full strength
+/// so windowed users see clouds evolve from dawn through the
+/// convective peak to dusk out of the box.
+fn default_diurnal_strength() -> f32 {
+    1.0
+}
+
 impl Default for CloudsTuning {
     fn default() -> Self {
         Self {
@@ -391,6 +407,7 @@ impl Default for CloudsTuning {
             droplet_diameter_bias: 1.0,
             wind_drift_strength: 1.0,
             wind_skew_strength: 0.5,
+            diurnal_strength: 1.0,
         }
     }
 }
