@@ -44,7 +44,7 @@ pub use hot_reload::{
 pub use scene::{
     aurora_colour_bias, default_density_scale, default_droplet_diameter_um, Aurora,
     CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation,
-    Scene, SceneError, Surface, SurfaceMaterial, Water, Wetness,
+    Scene, SceneError, Surface, SurfaceMaterial, Water, Wetness, WindAloftSample,
 };
 pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
 pub use weather::{

@@ -24,11 +24,14 @@
 use chrono::{DateTime, Utc};
 use ps_core::{
     Aurora, CloudLayer, CloudType, Clouds, Lightning, PrecipKind, Precipitation, Scene, Surface,
-    SurfaceMaterial, Wetness,
+    SurfaceMaterial, Wetness, WindAloftSample,
 };
 
 use crate::metar::MetarRecord;
 use crate::open_meteo::{Hourly, OpenMeteoResponse};
+
+/// Conversion factor: km/h → m/s (one over 3.6, rounded).
+const KMH_TO_MPS: f32 = 0.277_778;
 
 /// Minimum cloud cover (%) for an altitude band to produce a
 /// `CloudLayer`. Bands below this are silently dropped — keeps
@@ -124,7 +127,17 @@ pub fn open_meteo_to_scene(resp: &OpenMeteoResponse, target: DateTime<Utc>) -> S
 
 fn surface_from_open_meteo(h: &Hourly, i: usize) -> Surface {
     let wind_speed_kmh = h.wind_speed_10m.get(i).copied().unwrap_or(0.0);
-    let wind_speed_mps = wind_speed_kmh * 0.277_778;
+    let wind_speed_mps = wind_speed_kmh * KMH_TO_MPS;
+    let winds_aloft: Vec<WindAloftSample> = h
+        .winds_aloft_by_level(i)
+        .into_iter()
+        .map(|(level, speed_kmh, dir_deg)| WindAloftSample {
+            pressure_hpa: level as u16,
+            altitude_m: pressure_to_altitude_m(level),
+            speed_mps: speed_kmh * KMH_TO_MPS,
+            dir_deg,
+        })
+        .collect();
 
     // Wetness — derived from recent rain. Open-Meteo gives an
     // hourly rate, but the ground stays wet for ~hours after; sum
@@ -161,6 +174,7 @@ fn surface_from_open_meteo(h: &Hourly, i: usize) -> Surface {
             snow_depth_m,
         },
         material: SurfaceMaterial::Grass,
+        winds_aloft,
     }
 }
 
@@ -381,6 +395,63 @@ mod tests {
         assert!((scene.surface.wind_speed_mps - 5.0).abs() < 0.1);
         assert_eq!(scene.surface.wind_dir_deg, 240.0);
         assert_eq!(scene.surface.visibility_m, 30000.0);
+        // The cumulus fixture omits winds_aloft, so the field is empty.
+        assert!(scene.surface.winds_aloft.is_empty());
+    }
+
+    #[test]
+    fn winds_aloft_populated_when_payload_carries_them() {
+        let resp: OpenMeteoResponse = serde_json::from_str(
+            r#"{
+                "latitude": 56.19, "longitude": -3.96, "elevation": 83.0,
+                "hourly": {
+                    "time": ["2026-05-12T13:00"],
+                    "temperature_2m": [14.0],
+                    "dew_point_2m": [9.0],
+                    "surface_pressure": [1015.0],
+                    "visibility": [30000.0],
+                    "wind_speed_10m": [18.0],
+                    "wind_direction_10m": [240.0],
+                    "precipitation": [0.0],
+                    "rain": [0.0],
+                    "snowfall": [0.0],
+                    "cloud_cover": [40.0],
+                    "cape": [100.0],
+                    "cloud_cover_1000hPa": [0.0],
+                    "cloud_cover_925hPa": [0.0],
+                    "cloud_cover_850hPa": [40.0],
+                    "cloud_cover_700hPa": [10.0],
+                    "cloud_cover_500hPa": [0.0],
+                    "cloud_cover_300hPa": [0.0],
+                    "wind_speed_850hPa": [36.0],
+                    "wind_speed_700hPa": [54.0],
+                    "wind_speed_500hPa": [90.0],
+                    "wind_speed_300hPa": [144.0],
+                    "wind_direction_850hPa": [240.0],
+                    "wind_direction_700hPa": [255.0],
+                    "wind_direction_500hPa": [270.0],
+                    "wind_direction_300hPa": [285.0]
+                }
+            }"#,
+        )
+        .unwrap();
+        let scene = open_meteo_to_scene(&resp, t());
+        let aloft = &scene.surface.winds_aloft;
+        assert_eq!(aloft.len(), 4);
+        // Sorted ascending by altitude (descending by pressure).
+        assert_eq!(aloft[0].pressure_hpa, 850);
+        assert_eq!(aloft[3].pressure_hpa, 300);
+        assert!(aloft[0].altitude_m < aloft[3].altitude_m);
+        // 36 km/h → 10 m/s (within rounding).
+        assert!((aloft[0].speed_mps - 10.0).abs() < 0.1);
+        // 144 km/h → 40 m/s.
+        assert!((aloft[3].speed_mps - 40.0).abs() < 0.2);
+        // Direction passed through unchanged.
+        assert_eq!(aloft[2].dir_deg, 270.0);
+        // 850 hPa is roughly 1.5 km AMSL.
+        assert!(aloft[0].altitude_m > 1200.0 && aloft[0].altitude_m < 1700.0);
+        // 300 hPa sits around 9 km.
+        assert!(aloft[3].altitude_m > 8000.0 && aloft[3].altitude_m < 10_000.0);
     }
 
     #[test]

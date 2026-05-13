@@ -196,6 +196,15 @@ pub struct Surface {
     /// Defaults to `Grass` so pre-13.4 scenes render unchanged.
     #[serde(default)]
     pub material: SurfaceMaterial,
+    /// Phase 14 — winds at pressure levels above the surface, sorted
+    /// by ascending altitude. Populated by the Open-Meteo feed at
+    /// 850 / 700 / 500 / 300 hPa; empty by default so synthetic /
+    /// scene-only renders keep using the procedural 1/7 power-law +
+    /// Ekman profile in `ps-synthesis`. When non-empty, the wind-field
+    /// synthesis interpolates these samples directly instead of
+    /// extrapolating from the surface scalar.
+    #[serde(default)]
+    pub winds_aloft: Vec<WindAloftSample>,
 }
 
 impl Default for Surface {
@@ -209,8 +218,34 @@ impl Default for Surface {
             wind_speed_mps: 5.0,
             wetness: Wetness::default(),
             material: SurfaceMaterial::default(),
+            winds_aloft: Vec::new(),
         }
     }
+}
+
+/// Phase 14 — one upper-air wind sample at a fixed pressure level.
+/// Open-Meteo exposes wind speed + direction at the standard
+/// pressure levels (1000 / 925 / 850 / 700 / 500 / 300 / 200 hPa);
+/// each sample is converted to the height of that pressure under the
+/// international standard atmosphere and the speed is normalised to
+/// m/s. Samples on `Surface.winds_aloft` are stored sorted by
+/// ascending `altitude_m` so the wind-field synthesis can binary-bracket
+/// without sorting per frame.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindAloftSample {
+    /// Pressure level (hPa). Kept for diagnostics / UI labelling;
+    /// not consumed by the synthesis itself which reads
+    /// `altitude_m` instead.
+    pub pressure_hpa: u16,
+    /// Standard-atmosphere height of `pressure_hpa` in metres AGL
+    /// (approximated against the surface elevation).
+    pub altitude_m: f32,
+    /// Wind speed in metres / second.
+    pub speed_mps: f32,
+    /// Meteorological wind direction in degrees (direction wind
+    /// comes from). Same convention as `Surface.wind_dir_deg`.
+    pub dir_deg: f32,
 }
 
 /// Phase 13.4 — discrete surface materials. Each variant maps to a

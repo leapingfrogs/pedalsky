@@ -47,6 +47,16 @@ const USER_AGENT: &str = "PedalSky-WeatherFeed/0.1 (https://github.com/anthropic
 /// PedalSky cloud layer in the mapping pass.
 pub const PRESSURE_LEVELS_HPA: &[u32] = &[1000, 925, 850, 700, 500, 300];
 
+/// Pressure levels (hPa) we fetch upper-air **wind** at. Drives the
+/// `Surface.winds_aloft` profile that the wind-field synthesis
+/// interpolates instead of the synthetic 1/7 power law. We skip
+/// 1000 (close to the 10 m surface anchor and noisy) and 925 (often
+/// inside the boundary layer where the power-law extrapolation is
+/// already adequate); 200 hPa sits in the stratosphere and doesn't
+/// influence troposphere clouds. The remaining four levels cover
+/// low / mid / high cloud altitudes (~1.5 / 3.0 / 5.5 / 9.0 km).
+pub const WIND_LEVELS_HPA: &[u32] = &[850, 700, 500, 300];
+
 /// One hour's worth of forecast values. Vec lengths all match the
 /// `time` array.
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +107,36 @@ pub struct Hourly {
     /// 300 hPa cloud cover (%). Cirrus / cirrostratus.
     #[serde(rename = "cloud_cover_300hPa")]
     pub cloud_cover_300hpa: Vec<f32>,
+
+    // Phase 14 — winds aloft. Each Vec matches the `time` array; the
+    // serde `default` makes the field tolerant of older cached
+    // responses (or APIs that drop a level), so cached payloads from
+    // before this commit deserialise to empty Vecs and degrade
+    // gracefully to the surface-only path.
+    /// 850 hPa wind speed (km/h).
+    #[serde(rename = "wind_speed_850hPa", default)]
+    pub wind_speed_850hpa: Vec<f32>,
+    /// 700 hPa wind speed (km/h).
+    #[serde(rename = "wind_speed_700hPa", default)]
+    pub wind_speed_700hpa: Vec<f32>,
+    /// 500 hPa wind speed (km/h).
+    #[serde(rename = "wind_speed_500hPa", default)]
+    pub wind_speed_500hpa: Vec<f32>,
+    /// 300 hPa wind speed (km/h).
+    #[serde(rename = "wind_speed_300hPa", default)]
+    pub wind_speed_300hpa: Vec<f32>,
+    /// 850 hPa wind direction (°, meteorological).
+    #[serde(rename = "wind_direction_850hPa", default)]
+    pub wind_direction_850hpa: Vec<f32>,
+    /// 700 hPa wind direction (°, meteorological).
+    #[serde(rename = "wind_direction_700hPa", default)]
+    pub wind_direction_700hpa: Vec<f32>,
+    /// 500 hPa wind direction (°, meteorological).
+    #[serde(rename = "wind_direction_500hPa", default)]
+    pub wind_direction_500hpa: Vec<f32>,
+    /// 300 hPa wind direction (°, meteorological).
+    #[serde(rename = "wind_direction_300hPa", default)]
+    pub wind_direction_300hpa: Vec<f32>,
 }
 
 impl Hourly {
@@ -132,6 +172,44 @@ impl Hourly {
             (925, self.cloud_cover_925hpa[i]),
             (1000, self.cloud_cover_1000hpa[i]),
         ]
+    }
+
+    /// Phase 14 — per-pressure-level winds at row `i` as
+    /// `(level_hpa, speed_kmh, dir_deg)` tuples. Levels are taken
+    /// from [`WIND_LEVELS_HPA`] and the result is sorted by pressure
+    /// **descending** (i.e. lowest altitude first), matching the
+    /// `Surface.winds_aloft` storage order. Missing or NaN samples
+    /// (e.g. when a cached response predates the wind-aloft
+    /// addition, or when a model hour drops a level) are filtered
+    /// out so the consumer sees a clean profile.
+    pub fn winds_aloft_by_level(&self, i: usize) -> Vec<(u32, f32, f32)> {
+        if i >= self.time.len() {
+            return Vec::new();
+        }
+        let mut out: Vec<(u32, f32, f32)> = Vec::with_capacity(WIND_LEVELS_HPA.len());
+        for &level in WIND_LEVELS_HPA {
+            let (speed_vec, dir_vec) = match level {
+                850 => (&self.wind_speed_850hpa, &self.wind_direction_850hpa),
+                700 => (&self.wind_speed_700hpa, &self.wind_direction_700hpa),
+                500 => (&self.wind_speed_500hpa, &self.wind_direction_500hpa),
+                300 => (&self.wind_speed_300hpa, &self.wind_direction_300hpa),
+                _ => continue,
+            };
+            // Either vec may be empty (older cached response) or
+            // shorter than `time` (rare API edge case) — guard both.
+            let Some(speed) = speed_vec.get(i).copied() else { continue };
+            let Some(dir) = dir_vec.get(i).copied() else { continue };
+            if !speed.is_finite() || !dir.is_finite() {
+                continue;
+            }
+            out.push((level, speed, dir));
+        }
+        // Lowest pressure (highest altitude) sits last so the caller
+        // can append in altitude order if it walks the vec
+        // forward. We use descending pressure here (≡ ascending
+        // altitude).
+        out.sort_by(|a, b| b.0.cmp(&a.0));
+        out
     }
 }
 
@@ -169,8 +247,18 @@ pub fn build_url(lat: f64, lon: f64) -> String {
         .iter()
         .map(|p| format!("cloud_cover_{p}hPa"))
         .collect();
+    let wind_level_vars: Vec<String> = WIND_LEVELS_HPA
+        .iter()
+        .flat_map(|p| {
+            [
+                format!("wind_speed_{p}hPa"),
+                format!("wind_direction_{p}hPa"),
+            ]
+        })
+        .collect();
     let mut hourly: Vec<String> = surface_vars.iter().map(|s| (*s).to_string()).collect();
     hourly.extend(level_vars);
+    hourly.extend(wind_level_vars);
     format!(
         "https://api.open-meteo.com/v1/forecast\
          ?latitude={lat:.4}&longitude={lon:.4}\
@@ -265,6 +353,16 @@ mod tests {
         for p in PRESSURE_LEVELS_HPA {
             assert!(url.contains(&format!("cloud_cover_{p}hPa")), "missing {p}");
         }
+        for p in WIND_LEVELS_HPA {
+            assert!(
+                url.contains(&format!("wind_speed_{p}hPa")),
+                "missing wind_speed_{p}hPa",
+            );
+            assert!(
+                url.contains(&format!("wind_direction_{p}hPa")),
+                "missing wind_direction_{p}hPa",
+            );
+        }
         assert!(url.contains("latitude=56.1922"));
         assert!(url.contains("longitude=-3.9645"));
         assert!(url.contains("timezone=UTC"));
@@ -334,5 +432,84 @@ mod tests {
         assert_eq!(levels, vec![300, 500, 700, 850, 925, 1000]);
         assert_eq!(cov[0].1, 15.0); // 300 hPa @ row 1
         assert_eq!(cov[5].1, 0.0);  // 1000 hPa @ row 1
+    }
+
+    /// Older cached responses (predating the wind-aloft addition)
+    /// must still deserialise: the rename-default attributes leave
+    /// `wind_*_<lvl>hpa` as empty Vecs, and `winds_aloft_by_level`
+    /// returns an empty slice rather than panicking.
+    #[test]
+    fn missing_winds_aloft_deserialises_clean() {
+        let resp: OpenMeteoResponse = serde_json::from_str(SAMPLE_RESPONSE).unwrap();
+        assert!(resp.hourly.wind_speed_850hpa.is_empty());
+        assert!(resp.hourly.winds_aloft_by_level(0).is_empty());
+    }
+
+    const SAMPLE_WITH_WINDS_ALOFT: &str = r#"{
+        "latitude": 56.19,
+        "longitude": -3.96,
+        "elevation": 83.0,
+        "hourly": {
+            "time": ["2026-05-12T13:00"],
+            "temperature_2m": [14.1],
+            "dew_point_2m": [9.2],
+            "surface_pressure": [1015.2],
+            "visibility": [30000.0],
+            "wind_speed_10m": [14.5],
+            "wind_direction_10m": [225.0],
+            "precipitation": [0.0],
+            "rain": [0.0],
+            "snowfall": [0.0],
+            "cloud_cover": [55.0],
+            "cape": [200.0],
+            "cloud_cover_1000hPa": [0.0],
+            "cloud_cover_925hPa": [15.0],
+            "cloud_cover_850hPa": [55.0],
+            "cloud_cover_700hPa": [35.0],
+            "cloud_cover_500hPa": [25.0],
+            "cloud_cover_300hPa": [15.0],
+            "wind_speed_850hPa": [25.0],
+            "wind_speed_700hPa": [45.0],
+            "wind_speed_500hPa": [80.0],
+            "wind_speed_300hPa": [130.0],
+            "wind_direction_850hPa": [230.0],
+            "wind_direction_700hPa": [245.0],
+            "wind_direction_500hPa": [260.0],
+            "wind_direction_300hPa": [275.0]
+        }
+    }"#;
+
+    #[test]
+    fn winds_aloft_by_level_sorted_low_altitude_first() {
+        let resp: OpenMeteoResponse = serde_json::from_str(SAMPLE_WITH_WINDS_ALOFT).unwrap();
+        let winds = resp.hourly.winds_aloft_by_level(0);
+        assert_eq!(winds.len(), 4);
+        // Sort order is descending pressure ⇔ ascending altitude.
+        assert_eq!(
+            winds.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
+            vec![850, 700, 500, 300],
+        );
+        // Speeds returned in source units (km/h) — the mapping pass
+        // does the m/s conversion.
+        assert_eq!(winds[0].1, 25.0);
+        assert_eq!(winds[3].1, 130.0);
+        // Directions kept as-supplied (meteorological).
+        assert_eq!(winds[2].2, 260.0);
+    }
+
+    #[test]
+    fn winds_aloft_filters_nan() {
+        // Force a NaN on one of the levels by editing the parsed
+        // struct — simulates an API row that drops a level.
+        let mut resp: OpenMeteoResponse = serde_json::from_str(SAMPLE_WITH_WINDS_ALOFT).unwrap();
+        resp.hourly.wind_speed_500hpa[0] = f32::NAN;
+        let winds = resp.hourly.winds_aloft_by_level(0);
+        // 500 hPa should be dropped; the remaining three levels keep
+        // their order.
+        assert_eq!(winds.len(), 3);
+        assert_eq!(
+            winds.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
+            vec![850, 700, 300],
+        );
     }
 }
