@@ -27,6 +27,7 @@
 #![deny(missing_docs)]
 
 pub mod cache;
+pub mod geocoding;
 pub mod kp_index;
 pub mod mapping;
 pub mod metar;
@@ -34,6 +35,7 @@ pub mod open_meteo;
 pub mod ovation;
 
 pub use cache::Cache;
+pub use geocoding::GeocodeResult;
 pub use kp_index::{KpRow, KpSeries};
 pub use mapping::{enrich_with_metar, open_meteo_to_scene};
 pub use metar::MetarRecord;

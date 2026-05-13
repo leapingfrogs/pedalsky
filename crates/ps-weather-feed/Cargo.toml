@@ -16,6 +16,7 @@ anyhow.workspace    = true
 thiserror.workspace = true
 tracing.workspace   = true
 ureq.workspace      = true
+urlencoding         = "2"
 
 [dev-dependencies]
 tempfile = "3"

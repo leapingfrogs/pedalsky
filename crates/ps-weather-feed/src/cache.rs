@@ -80,6 +80,15 @@ impl Cache {
         self.root.join(Self::key(source, lat, lon, time))
     }
 
+    /// Phase 16.A — companion to `path_for` for sources keyed on a
+    /// free-form string (e.g. geocoding queries) rather than a
+    /// (lat, lon, hour) tuple. Caller passes a `bucket` string that
+    /// it has already sanitised (lowercase, replace path separators
+    /// with `_`, etc.). The result lives under the same cache root.
+    fn path_for_key(&self, source: &str, bucket: &str) -> PathBuf {
+        self.root.join(format!("{source}-{bucket}.json"))
+    }
+
     /// Look up a cache entry. Returns `Fresh` if the file exists
     /// and its mtime is within `ttl`; `Stale` if it exists but is
     /// older; `Miss` if it doesn't exist.
@@ -137,6 +146,41 @@ impl Cache {
     ) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
         let path = self.path_for(source, lat, lon, time);
+        fs::write(&path, body)
+    }
+
+    /// Phase 16.A — read a string-keyed entry (e.g. geocoding
+    /// queries) and return it only if it is fresh. The `bucket`
+    /// string must be pre-sanitised by the caller (lowercase, replace
+    /// any path separators with `_`).
+    pub fn read_fresh_by_key(
+        &self,
+        source: &str,
+        bucket: &str,
+        ttl: Duration,
+    ) -> io::Result<Option<String>> {
+        let path = self.path_for_key(source, bucket);
+        let metadata = match fs::metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let age = metadata
+            .modified()
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .unwrap_or(Duration::MAX);
+        if age > ttl {
+            return Ok(None);
+        }
+        Ok(Some(fs::read_to_string(&path)?))
+    }
+
+    /// Phase 16.A — write a string-keyed entry. Creates the
+    /// directory tree on demand.
+    pub fn write_by_key(&self, source: &str, bucket: &str, body: &str) -> io::Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.path_for_key(source, bucket);
         fs::write(&path, body)
     }
 }
