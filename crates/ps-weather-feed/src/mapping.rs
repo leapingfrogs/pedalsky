@@ -220,12 +220,83 @@ fn lightning_from_open_meteo(h: &Hourly, i: usize) -> Lightning {
     }
 }
 
+/// Phase 17 — pick the base-shape octave bias for a layer based on
+/// cloud type, CAPE, and (for high-altitude ice clouds) the
+/// upper-level wind speed at 300 hPa.
+///
+/// `shape_octave_bias` shifts the cloud-march's LF Worley-FBM
+/// weighting in the Schneider remap. Positive values produce
+/// wispier cauliflower edges; negative values produce smoother
+/// bulbous bodies. The shader doc notes the useful range is ~±0.5;
+/// outside that the remap saturates.
+///
+/// Mapping rationale (from the design discussion in Phase 17):
+///
+/// - **Cumulus / Stratocumulus** scale with CAPE. Low CAPE → fair-
+///   weather cumulus humilis (smooth, bulbous). High CAPE (>2 kJ/kg)
+///   → vigorous convection with shredded edges. We bias up to +0.4
+///   at 2 kJ/kg.
+/// - **Cumulonimbus** are convectively vigorous by definition; CAPE
+///   drives even larger bias up to +0.5.
+/// - **Altocumulus** has weaker convective signal — half the cumulus
+///   coefficient.
+/// - **Cirrus / Cirrostratus** are ice clouds shaped by the jet
+///   stream rather than convection. The 300 hPa wind speed drives
+///   the bias: calm cirrus reads as smooth sheets, jet-stream
+///   cirrus as streaky / wispy. Bias up to +0.3 at 50 m/s.
+/// - **Stratus / Altostratus** are smooth featureless sheets by
+///   definition; bias stays at 0.
+fn shape_bias_for(cloud_type: CloudType, cape_j_per_kg: f32, upper_wind_kmh: f32) -> f32 {
+    let cape_factor = (cape_j_per_kg / 2000.0).clamp(0.0, 1.0);
+    let upper_wind_mps = upper_wind_kmh * KMH_TO_MPS;
+    let wind_factor = (upper_wind_mps / 50.0).clamp(0.0, 1.0);
+    match cloud_type {
+        CloudType::Cumulus | CloudType::Stratocumulus => 0.4 * cape_factor,
+        CloudType::Cumulonimbus => 0.5 * cape_factor.max(0.5),
+        CloudType::Altocumulus => 0.2 * cape_factor,
+        CloudType::Cirrus | CloudType::Cirrostratus => 0.3 * wind_factor,
+        CloudType::Stratus | CloudType::Altostratus => 0.0,
+    }
+}
+
+/// Phase 17 — pick the high-frequency detail-erosion bias for a
+/// layer based on how *broken* its coverage is.
+///
+/// `detail_octave_bias` adds to the global `params.detail_strength`
+/// inside the cloud march; the shader comment warns its useful
+/// range is small (~±0.1) — beyond that the remap collapses
+/// densities entirely.
+///
+/// Rationale: continuous overcast skies read as smooth sheets, so
+/// we shave erosion slightly. Broken / scattered skies have
+/// well-defined cell boundaries, so we bump erosion a touch. The
+/// curve crosses zero at ~50 % cover.
+fn detail_bias_for(cover_pct: f32) -> f32 {
+    let normalised = cover_pct / 100.0;
+    // 1.0 cover → -0.02 (smooth sheet)
+    //  0.5      →  0.0  (mixed)
+    //  0.1 cover → +0.04 (scattered, sharper edges)
+    let signed = 0.5 - normalised; // [-0.5, +0.5]
+    signed * 0.08
+}
+
 fn clouds_from_open_meteo(h: &Hourly, i: usize) -> Clouds {
     // Walk pressure levels from highest altitude (300 hPa) to
     // surface, emitting a CloudLayer per band that exceeds the
     // coverage threshold. Layer altitudes use the barometric
     // formula; we keep layers vertically disjoint by using the
     // band thickness as the layer span.
+    //
+    // Phase 17 — `shape_octave_bias` and `detail_octave_bias`
+    // are now derived from the live weather rather than left at
+    // zero. See `shape_bias_for` / `detail_bias_for` for the per-
+    // type mapping.
+    let cape_j_per_kg = h.cape.get(i).copied().unwrap_or(0.0);
+    // 300 hPa wind drives cirrus shredding. Older cached responses
+    // (predating Phase 14.A) leave the vec empty — `get(i)` then
+    // returns `None` and we treat it as calm.
+    let upper_wind_kmh = h.wind_speed_300hpa.get(i).copied().unwrap_or(0.0);
+
     let mut layers: Vec<CloudLayer> = Vec::new();
     let mut last_top_m: f32 = -1.0;
     for (pressure, cover_pct) in h.cloud_cover_by_level(i).iter().rev() {
@@ -248,6 +319,8 @@ fn clouds_from_open_meteo(h: &Hourly, i: usize) -> Clouds {
             base_m: base,
             top_m: top,
             coverage: (*cover_pct / 100.0).clamp(0.0, 1.0),
+            shape_octave_bias: shape_bias_for(cloud_type, cape_j_per_kg, upper_wind_kmh),
+            detail_octave_bias: detail_bias_for(*cover_pct),
             ..CloudLayer::default()
         });
     }
@@ -519,6 +592,119 @@ mod tests {
             );
         }
         scene.validate().expect("scene must validate");
+    }
+
+    /// Phase 17 — `shape_bias_for` should respect cloud type and
+    /// CAPE / wind drivers per the design table.
+    #[test]
+    fn shape_bias_responds_to_cape_for_convective_types() {
+        // Calm + zero CAPE → all biases zero.
+        assert_eq!(shape_bias_for(CloudType::Cumulus, 0.0, 0.0), 0.0);
+        assert_eq!(shape_bias_for(CloudType::Stratus, 0.0, 0.0), 0.0);
+        assert_eq!(shape_bias_for(CloudType::Altostratus, 0.0, 0.0), 0.0);
+
+        // High CAPE → cumulus / cumulonimbus / Sc trend toward
+        // wispier edges.
+        let cu = shape_bias_for(CloudType::Cumulus, 2000.0, 0.0);
+        assert!((cu - 0.4).abs() < 1e-4, "cumulus @ CAPE 2 kJ/kg: {cu}");
+        let cb = shape_bias_for(CloudType::Cumulonimbus, 2000.0, 0.0);
+        assert!((cb - 0.5).abs() < 1e-4, "Cb @ CAPE 2 kJ/kg: {cb}");
+        // Cb floors at 0.25 even with zero CAPE (anvils are wispy
+        // by definition).
+        let cb_calm = shape_bias_for(CloudType::Cumulonimbus, 0.0, 0.0);
+        assert!(cb_calm >= 0.24, "Cb without CAPE: {cb_calm}");
+
+        // Cirrus is wind-driven, not CAPE-driven.
+        let ci_calm = shape_bias_for(CloudType::Cirrus, 2000.0, 0.0);
+        assert_eq!(ci_calm, 0.0, "cirrus ignores CAPE");
+        // 180 km/h = 50 m/s → 0.3 bias.
+        let ci_jet = shape_bias_for(CloudType::Cirrus, 0.0, 180.0);
+        assert!((ci_jet - 0.3).abs() < 1e-2, "cirrus in jet: {ci_jet}");
+
+        // Stratus / Altostratus remain at zero regardless.
+        assert_eq!(shape_bias_for(CloudType::Stratus, 5000.0, 200.0), 0.0);
+        assert_eq!(shape_bias_for(CloudType::Altostratus, 5000.0, 200.0), 0.0);
+    }
+
+    /// Phase 17 — `detail_bias_for` should cross zero at 50 % cover,
+    /// turn slightly negative for overcast, slightly positive for
+    /// scattered.
+    #[test]
+    fn detail_bias_curve_crosses_zero_at_half_cover() {
+        let smooth = detail_bias_for(95.0);
+        let neutral = detail_bias_for(50.0);
+        let scattered = detail_bias_for(10.0);
+        assert!(smooth < 0.0, "overcast should bias negative: {smooth}");
+        assert!(neutral.abs() < 1e-4, "50% cover should be neutral: {neutral}");
+        assert!(scattered > 0.0, "scattered should bias positive: {scattered}");
+        // Magnitude clamps inside the shader's safe ~±0.1 range.
+        assert!(smooth.abs() < 0.1);
+        assert!(scattered.abs() < 0.1);
+    }
+
+    /// Phase 17 — end-to-end: a real-shaped payload with CAPE +
+    /// jet-stream wind produces cumulus and cirrus layers with the
+    /// expected non-zero biases.
+    #[test]
+    fn weather_drives_layer_biases_end_to_end() {
+        let resp: OpenMeteoResponse = serde_json::from_str(
+            r#"{
+                "latitude": 56.0, "longitude": -3.0, "elevation": 50.0,
+                "hourly": {
+                    "time": ["2026-05-12T13:00"],
+                    "temperature_2m": [22.0],
+                    "dew_point_2m": [16.0],
+                    "surface_pressure": [1012.0],
+                    "visibility": [30000.0],
+                    "wind_speed_10m": [12.0],
+                    "wind_direction_10m": [220.0],
+                    "precipitation": [0.0],
+                    "rain": [0.0],
+                    "snowfall": [0.0],
+                    "cloud_cover": [40.0],
+                    "cape": [1500.0],
+                    "cloud_cover_1000hPa": [0.0],
+                    "cloud_cover_925hPa": [0.0],
+                    "cloud_cover_850hPa": [40.0],
+                    "cloud_cover_700hPa": [0.0],
+                    "cloud_cover_500hPa": [0.0],
+                    "cloud_cover_300hPa": [30.0],
+                    "wind_speed_850hPa": [40.0],
+                    "wind_speed_700hPa": [60.0],
+                    "wind_speed_500hPa": [100.0],
+                    "wind_speed_300hPa": [180.0],
+                    "wind_direction_850hPa": [230.0],
+                    "wind_direction_700hPa": [240.0],
+                    "wind_direction_500hPa": [250.0],
+                    "wind_direction_300hPa": [260.0]
+                }
+            }"#,
+        )
+        .unwrap();
+        let scene = open_meteo_to_scene(&resp, t());
+        assert_eq!(scene.clouds.layers.len(), 2);
+        // Layers ordered low-to-high. [0] = cumulus @ 850, [1] = cirrus @ 300.
+        let cu = &scene.clouds.layers[0];
+        let ci = &scene.clouds.layers[1];
+        assert_eq!(cu.cloud_type, CloudType::Cumulus);
+        assert_eq!(ci.cloud_type, CloudType::Cirrus);
+        // Cumulus shape bias should reflect 1500 J/kg CAPE → 0.75
+        // of 0.4 ≈ 0.3.
+        assert!(
+            (cu.shape_octave_bias - 0.3).abs() < 1e-2,
+            "cumulus shape: {}",
+            cu.shape_octave_bias,
+        );
+        // Cirrus shape bias reflects 180 km/h = 50 m/s → 0.3.
+        assert!(
+            (ci.shape_octave_bias - 0.3).abs() < 1e-2,
+            "cirrus shape: {}",
+            ci.shape_octave_bias,
+        );
+        // Detail bias: cumulus at 40% cover → slightly positive.
+        // Cirrus at 30% → slightly positive (more so).
+        assert!(cu.detail_octave_bias > 0.0);
+        assert!(ci.detail_octave_bias > cu.detail_octave_bias);
     }
 
     #[test]
