@@ -138,6 +138,10 @@ fn cloud_params_layout_matches_wgsl() {
                 "wind_drift_strength",
                 std::mem::offset_of!(CloudParamsGpu, wind_drift_strength) as u32,
             ),
+            (
+                "wind_skew_strength",
+                std::mem::offset_of!(CloudParamsGpu, wind_skew_strength) as u32,
+            ),
         ],
     );
 }

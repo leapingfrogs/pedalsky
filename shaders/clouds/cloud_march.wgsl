@@ -448,13 +448,49 @@ fn layer_wind_offset_m(layer: CloudLayerGpu) -> vec2<f32> {
     if (strength == 0.0) {
         return vec2<f32>(0.0);
     }
+    let wind_xz = layer_wind_mps(layer);
+    return wind_xz * strength;
+}
+
+/// Phase 14.H — raw wind vector (m/s, world XZ) at the layer's
+/// mid-altitude. Returned without any `simulated_seconds` scaling so
+/// callers can use the *direction* independently of the time-based
+/// drift (the skew-with-height term wants direction at t=0 too).
+fn layer_wind_mps(layer: CloudLayerGpu) -> vec2<f32> {
     let mid_alt = (layer.base_m + layer.top_m) * 0.5;
     let u_y = clamp(mid_alt / WIND_FIELD_TOP_M, 0.0, 0.9999);
-    // Sample at the texture centre (u = v_z = 0.5 ⇔ world origin).
     let w_sample = textureSampleLevel(
         wind_field, noise_sampler, vec3<f32>(0.5, u_y, 0.5), 0.0,
     );
-    return vec2<f32>(w_sample.x * strength, w_sample.y * strength);
+    return vec2<f32>(w_sample.x, w_sample.y);
+}
+
+/// Phase 14.H — Schneider Nubis 2017 "skew with height". Returns an
+/// additional XZ offset (metres) to apply to the noise lookup that
+/// scales linearly with height-within-layer `h ∈ [0, 1]`. At `h = 0`
+/// the offset is zero (cloud bases stay anchored); at `h = 1` the
+/// top sits `layer_thickness * params.wind_skew_strength` downwind of
+/// the base, producing the visible lean / anvil tilt that real
+/// clouds show under directional shear.
+///
+/// The skew uses only the wind **direction** (unit vector), not the
+/// magnitude — leaning a cloud further than its own thickness when
+/// the wind is strong is unrealistic (real clouds get shredded by
+/// detail erosion instead). Calm wind ⇒ zero skew (the unit-vector
+/// is well-defined only when speed > epsilon).
+fn layer_skew_xz(layer: CloudLayerGpu, h: f32) -> vec2<f32> {
+    let strength = params.wind_skew_strength;
+    if (strength == 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let wind_xz = layer_wind_mps(layer);
+    let speed = length(wind_xz);
+    if (speed < 0.1) {
+        return vec2<f32>(0.0);
+    }
+    let dir = wind_xz / speed;
+    let thickness = max(layer.top_m - layer.base_m, 1.0);
+    return dir * (h * thickness * strength);
 }
 
 /// Look up the effective cloud-type index for a sample position.
@@ -514,7 +550,19 @@ fn sample_density(
     // across all samples within this layer, which keeps each cloud
     // cell coherent vertically; inter-layer altitude shear comes
     // from different layers receiving different offsets.
-    let p_advected = p - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y);
+    //
+    // Phase 14.H — additionally skew the lookup XZ by a linear
+    // function of `h` (height within the layer). The skew is in
+    // the wind's direction at the layer mid-altitude. At `h = 0`
+    // skew is zero (cloud bases stay anchored); at `h = 1` the top
+    // is offset by `layer_thickness * wind_skew_strength` downwind,
+    // which is what gives cumulus its characteristic downwind lean
+    // and anvil shapes their tilt. Independent of wind speed — see
+    // `layer_skew_xz` for the rationale.
+    let skew = layer_skew_xz(layer, h);
+    let p_advected = p
+        - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y)
+        - vec3<f32>(skew.x, 0.0, skew.y);
 
     let base_uv = p_advected / max(params.base_scale_m, 1.0);
     let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);

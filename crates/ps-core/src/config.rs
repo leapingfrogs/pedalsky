@@ -349,6 +349,14 @@ pub struct CloudsTuning {
     /// `temporal_jitter` is.
     #[serde(default = "default_wind_drift_strength")]
     pub wind_drift_strength: f32,
+    /// Phase 14.H — Schneider Nubis 2017 "skew with height". Higher
+    /// values lean cloud tops further downwind from their bases,
+    /// producing visible cumulus tilt and anvil shapes under
+    /// directional shear. Default 0.5 (half a layer-thickness lean);
+    /// 0.0 disables. Independent of wind speed by design — see the
+    /// shader-side `layer_skew_xz` rationale.
+    #[serde(default = "default_wind_skew_strength")]
+    pub wind_skew_strength: f32,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
@@ -361,6 +369,12 @@ fn default_droplet_diameter_bias() -> f32 {
 /// free function so `#[serde(default = "...")]` can reference it.
 fn default_wind_drift_strength() -> f32 {
     1.0
+}
+
+/// Default value for `wind_skew_strength` (Phase 14.H). Half a
+/// layer-thickness of lean — clearly visible but not extreme.
+fn default_wind_skew_strength() -> f32 {
+    0.5
 }
 
 impl Default for CloudsTuning {
@@ -376,6 +390,7 @@ impl Default for CloudsTuning {
             temporal_jitter: false,
             droplet_diameter_bias: 1.0,
             wind_drift_strength: 1.0,
+            wind_skew_strength: 0.5,
         }
     }
 }

@@ -106,9 +106,17 @@ pub struct CloudParamsGpu {
     /// the std140 slot that used to be `_pad_temporal_jitter_0`; the
     /// struct size is unchanged.
     pub wind_drift_strength: f32,
-    /// std140 pad — second of two remaining trailing scalars (the
-    /// third was repurposed for `wind_drift_strength`).
-    pub _pad_temporal_jitter_1: u32,
+    /// Phase 14.H — strength of the Schneider Nubis 2017 "skew with
+    /// height" effect. The cloud march offsets noise lookups by
+    /// `h * layer_thickness * wind_direction * wind_skew_strength`,
+    /// so at `1.0` the top of a layer reads from one layer-thickness
+    /// downwind of the base, giving visible cumulus lean / anvil
+    /// tilt under directional shear. `0.0` disables the effect.
+    /// Uses wind *direction* only — magnitude doesn't scale the lean
+    /// because real clouds in strong wind shred rather than lean
+    /// further. Lives in the slot that used to be
+    /// `_pad_temporal_jitter_1`.
+    pub wind_skew_strength: f32,
     /// std140 pad — third trailing scalar; keeps the struct's tail on
     /// a vec4 boundary.
     pub _pad_temporal_jitter_2: u32,
@@ -174,7 +182,11 @@ impl Default for CloudParamsGpu {
             // when `simulated_seconds` is zero (golden bless runs) and
             // when `freeze_time` latches the clock.
             wind_drift_strength: 1.0,
-            _pad_temporal_jitter_1: 0,
+            // Phase 14.H — moderate default lean. At 0.5 the cloud
+            // top sits half a layer-thickness downwind of its base,
+            // giving cumulus a clearly-visible tilt without
+            // collapsing the cell sideways. 0.0 disables the effect.
+            wind_skew_strength: 0.5,
             _pad_temporal_jitter_2: 0,
         }
     }

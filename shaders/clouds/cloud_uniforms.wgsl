@@ -57,7 +57,12 @@ struct CloudParams {
     // bless / paused screenshot path). Lives in the slot that used
     // to be `_pad_temporal_jitter_0`; struct size unchanged.
     wind_drift_strength: f32,
-    _pad_temporal_jitter_1: u32,
+    // Phase 14.H — Schneider Nubis 2017 "skew with height". Offsets
+    // the noise lookup by `h * layer_thickness * wind_dir *
+    // wind_skew_strength` so cloud tops read from a position
+    // downwind of their bases, producing visible cumulus lean and
+    // anvil tilt under directional shear. 0.0 disables.
+    wind_skew_strength: f32,
     _pad_temporal_jitter_2: u32,
 };
 

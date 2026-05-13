@@ -209,6 +209,11 @@ impl CloudsSubsystem {
         // so paused screenshots don't continue to advect noise after
         // the user clicks pause.
         params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
+        // Phase 14.H — skew with height is a spatial effect (not
+        // time-driven), so it stays on while paused. Users who want
+        // a "no lean" screenshot can set wind_skew_strength = 0
+        // explicitly.
+        params.wind_skew_strength = c.wind_skew_strength;
         let mut cpu_layers = [CloudLayerGpu::zeroed(); MAX_CLOUD_LAYERS as usize];
         // Default to a single demonstration cumulus layer so the subsystem
         // produces visible output before WeatherState is wired in.
@@ -511,6 +516,8 @@ impl RenderSubsystem for CloudsSubsystem {
         self.params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
         // Phase 14.C — wind drift mirrors the temporal_jitter gating.
         self.params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
+        // Phase 14.H — skew is spatial; not gated by freeze_time.
+        self.params.wind_skew_strength = c.wind_skew_strength;
         // freeze_time: latch a non-advancing simulated_seconds for the
         // cloud march. The shader reads frame.simulated_seconds; we
         // overwrite the cpu-side params if a future tunable drives it,

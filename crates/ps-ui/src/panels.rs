@@ -891,6 +891,22 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 )
                 .changed();
         });
+        // Phase 14.H — skew is a spatial effect, not time-driven,
+        // so it stays editable while paused.
+        tuning_changed |= ui
+            .add(
+                egui::Slider::new(&mut c.wind_skew_strength, 0.0..=2.0)
+                    .text("Wind skew (lean with height)"),
+            )
+            .on_hover_text(
+                "Schneider Nubis 2017 'skew with height'. At 1.0 the \
+                 top of a cloud layer reads from one layer-thickness \
+                 downwind of the base, giving visible cumulus lean \
+                 and anvil tilt. Independent of wind speed by design \
+                 — strong wind shreds clouds, it doesn't lean them \
+                 further. 0.0 disables.",
+            )
+            .changed();
         if tuning_changed {
             state.pending.config_dirty = true;
         }
