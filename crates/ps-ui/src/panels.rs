@@ -1667,6 +1667,47 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
                 painter.line_segment([toward_centre, tip_a], egui::Stroke::new(1.5, blue));
                 painter.line_segment([toward_centre, tip_b], egui::Stroke::new(1.5, blue));
             }
+
+            // Phase 14.E — winds-aloft barbs. Each ingested pressure
+            // level gets a smaller, slightly inboard barb. The colour
+            // ramps from the surface blue toward a warm tone for the
+            // highest level so the user can read the vertical
+            // stacking at a glance. Empty when the scene carries no
+            // upper-air samples.
+            let aloft = &r.winds_aloft;
+            if !aloft.is_empty() {
+                let n = aloft.len() as f32;
+                for (i, s) in aloft.iter().enumerate() {
+                    if s.speed_mps <= 0.5 {
+                        continue;
+                    }
+                    // Step each level slightly further inboard so
+                    // barbs don't overlap the surface barb. 4 px
+                    // per step keeps a 4-level stack legible inside
+                    // a 150 px canvas.
+                    let inset = 12.0 + (i as f32) * 4.0;
+                    let len = (s.speed_mps / 60.0).clamp(0.15, 0.95) * (radius - 10.0);
+                    let from_rim = polar_point(centre, radius - inset, s.dir_deg);
+                    let toward_centre =
+                        polar_point(centre, radius - inset - len, s.dir_deg);
+                    // Lerp colour from surface blue (RGB ≈ 120,180,240)
+                    // toward a warm amber for the topmost sample.
+                    let t = (i as f32 + 1.0) / (n + 1.0);
+                    let rcol = (120.0 + (240.0 - 120.0) * t) as u8;
+                    let gcol = (180.0 + (160.0 - 180.0) * t) as u8;
+                    let bcol = (240.0 + (60.0 - 240.0) * t) as u8;
+                    let col = Color32::from_rgb(rcol, gcol, bcol);
+                    painter.line_segment(
+                        [from_rim, toward_centre],
+                        egui::Stroke::new(1.2, col),
+                    );
+                    let perp_az = s.dir_deg + 90.0;
+                    let tip_a = polar_offset(toward_centre, 4.0, perp_az);
+                    let tip_b = polar_offset(toward_centre, -4.0, perp_az);
+                    painter.line_segment([toward_centre, tip_a], egui::Stroke::new(1.0, col));
+                    painter.line_segment([toward_centre, tip_b], egui::Stroke::new(1.0, col));
+                }
+            }
         });
 }
 

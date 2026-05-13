@@ -1,0 +1,46 @@
+# tests/scenes/diag_thermal_advection.toml
+#
+# Phase 14.E diagnostic — vertical updrafts under calm horizontal
+# wind. Tests the procedural thermal column in ps-synthesis: cumulus
+# bases sit at 1.2 km with no horizontal drift (surface wind = 0.5
+# m/s), so the visible cloud movement over a long-running animation
+# is dominated by the procedural Gaussian thermals under each
+# cumulus / Cb layer. Use this to verify cells build in place rather
+# than streaming across the sky.
+#
+# Use with: `ps-app render --scene tests/scenes/diag_thermal_advection.toml
+# --output out/diag_thermal_advection --time-end ... --fps 4`.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 35000.0
+temperature_c  = 24.0
+dewpoint_c     = 17.0
+pressure_hpa   = 1013.0
+wind_dir_deg   = 180.0
+wind_speed_mps = 0.5     # almost calm — drift comes from the thermals
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+# Intentionally no winds_aloft block — exercises the procedural
+# power-law / Ekman fallback alongside the thermals.
+
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1200.0
+top_m              = 2500.0
+coverage           = 0.55
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0

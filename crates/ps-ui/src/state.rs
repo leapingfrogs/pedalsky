@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
-use ps_core::{AtmosphereParams, Config, Scene};
+use ps_core::{AtmosphereParams, Config, Scene, WindAloftSample};
 
 /// Side-channel state populated by panel logic and drained by the host.
 #[derive(Default)]
@@ -116,7 +116,11 @@ pub struct UiFrameStats {
 }
 
 /// World read-out the host pushes each frame for the World panel.
-#[derive(Default, Clone, Copy, Debug)]
+///
+/// Phase 14.E — gained a `Vec<WindAloftSample>` field, so this is no
+/// longer `Copy`. The compass-rose panel reads it by reference; no
+/// other consumer needs the previous `Copy` semantics.
+#[derive(Default, Clone, Debug)]
 pub struct UiWorldReadout {
     /// Sun altitude above the local horizon, degrees.
     pub sun_alt_deg: f64,
@@ -138,6 +142,12 @@ pub struct UiWorldReadout {
     pub wind_dir_deg: f32,
     /// Phase 13.6 — wind speed in m/s.
     pub wind_speed_mps: f32,
+    /// Phase 14.E — winds aloft mirrored from `Scene.surface.winds_aloft`
+    /// so the compass rose can overlay extra barbs at the standard
+    /// pressure levels (850 / 700 / 500 / 300 hPa). Empty when no
+    /// upper-air samples are present (synthetic scenes); the compass
+    /// rose falls back to the surface-only barb.
+    pub winds_aloft: Vec<WindAloftSample>,
 }
 
 /// The full shared state cell.

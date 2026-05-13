@@ -1049,6 +1049,11 @@ impl RunState {
                 camera_yaw_deg: f64::from(self.camera.yaw).to_degrees(),
                 wind_dir_deg: self.weather.surface.wind_dir_deg,
                 wind_speed_mps: self.weather.surface.wind_speed_mps,
+                // Phase 14.E — mirror the parsed scene's winds aloft
+                // into the readout so the compass-rose overlay can draw
+                // per-level barbs. Cloned each frame; the vec is at
+                // most ~4 entries so the allocation is negligible.
+                winds_aloft: scene.surface.winds_aloft.clone(),
             };
         }
         self.ui_bridge.build_ui_frame(&self.window);

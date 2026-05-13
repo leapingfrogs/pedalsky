@@ -1,0 +1,81 @@
+# tests/scenes/diag_winds_aloft.toml
+#
+# Phase 14.E diagnostic — strong vertical wind shear.
+#
+# Surface wind blows from the SW at 5 m/s (typical Atlantic
+# afternoon). Aloft the wind veers all the way round through W → NW →
+# N, ending up coming straight from the north at 300 hPa where the jet
+# punches 50 m/s. A cumulus base at 1.5 km + a cirrus sheet at 9 km
+# spans this shear, so the rendered scene should show:
+#
+#  - cumulus cells drifting roughly NE (away from SW)
+#  - cirrus streaming SE (away from N at the jet altitude)
+#  - the compass rose stacking four colour-graded barbs
+#
+# Use with: `ps-app render --scene tests/scenes/diag_winds_aloft.toml
+# --output out/diag_winds_aloft --time-end ... --fps 6` to see the
+# altitude-banded drift over a multi-minute simulation.
+
+schema_version = 1
+
+[surface]
+visibility_m   = 35000.0
+temperature_c  = 18.0
+dewpoint_c     = 9.0
+pressure_hpa   = 1014.0
+wind_dir_deg   = 225.0   # FROM south-west
+wind_speed_mps = 5.0
+
+[surface.wetness]
+ground_wetness  = 0.0
+puddle_coverage = 0.0
+puddle_start    = 0.6
+snow_depth_m    = 0.0
+
+# Phase 14.A winds aloft — strong veer through the column.
+[[surface.winds_aloft]]
+pressure_hpa = 850
+altitude_m   = 1500.0
+speed_mps    = 12.0
+dir_deg      = 260.0    # FROM W-SW
+
+[[surface.winds_aloft]]
+pressure_hpa = 700
+altitude_m   = 3000.0
+speed_mps    = 22.0
+dir_deg      = 300.0    # FROM NW
+
+[[surface.winds_aloft]]
+pressure_hpa = 500
+altitude_m   = 5500.0
+speed_mps    = 35.0
+dir_deg      = 340.0    # FROM NNW
+
+[[surface.winds_aloft]]
+pressure_hpa = 300
+altitude_m   = 9000.0
+speed_mps    = 50.0
+dir_deg      = 10.0     # FROM N (jet stream)
+
+[[clouds.layers]]
+type               = "Cumulus"
+base_m             = 1500.0
+top_m              = 2700.0
+coverage           = 0.45
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[[clouds.layers]]
+type               = "Cirrus"
+base_m             = 8500.0
+top_m              = 10000.0
+coverage           = 0.35
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "None"
+intensity_mm_per_h = 0.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.0
