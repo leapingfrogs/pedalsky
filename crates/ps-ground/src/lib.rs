@@ -371,6 +371,18 @@ impl RenderSubsystem for GroundSubsystem {
         }]
     }
 
+    /// Phase 19.A — refresh runtime-tunable flags so the UI
+    /// subsystem checkboxes actually take effect mid-session.
+    /// Previously `wet_surface_enabled` was snapshotted at
+    /// construction and never updated, so toggling the
+    /// `wet_surface` subsystem off / on at runtime had no effect
+    /// (the ground subsystem kept zeroing or kept passing through
+    /// based on whatever the config said at app startup).
+    fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
+        self.wet_surface_enabled = config.render.subsystems.wet_surface;
+        Ok(())
+    }
+
     fn enabled(&self) -> bool {
         self.enabled
     }
