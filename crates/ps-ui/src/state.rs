@@ -79,6 +79,10 @@ pub struct WeatherFetchRequest {
     /// Best-effort; the aurora subsystem stays dark if the fetch
     /// fails.
     pub fetch_kp_index: bool,
+    /// Phase 15.B — if true, the host also fetches the SWPC OVATION
+    /// nowcast and samples it at `(lon, lat)` for a per-location
+    /// aurora-intensity override. Best-effort.
+    pub fetch_ovation: bool,
 }
 
 /// Status of a weather fetch — host writes; UI reads.

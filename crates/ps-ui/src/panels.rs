@@ -117,6 +117,10 @@ fn top_bar(ctx: &egui::Context, state: &mut UiState) {
                             // the aurora subsystem its only path to
                             // real geomagnetic data.
                             fetch_kp_index: true,
+                            // Phase 15.B — OVATION is the
+                            // per-location intensity nowcast. Same
+                            // free-and-cheap deal, 5-minute cache.
+                            fetch_ovation: true,
                         });
                 }
             });

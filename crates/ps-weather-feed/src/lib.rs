@@ -31,12 +31,14 @@ pub mod kp_index;
 pub mod mapping;
 pub mod metar;
 pub mod open_meteo;
+pub mod ovation;
 
 pub use cache::Cache;
 pub use kp_index::{KpRow, KpSeries};
 pub use mapping::{enrich_with_metar, open_meteo_to_scene};
 pub use metar::MetarRecord;
 pub use open_meteo::OpenMeteoResponse;
+pub use ovation::OvationGrid;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -63,13 +65,23 @@ pub struct FetchOptions {
     /// back to leaving `kp_index = 0`, which is the pre-Phase-15
     /// default and disables the aurora subsystem.
     pub fetch_kp_index: bool,
+    /// Phase 15.B — if true, also fetch the NOAA SWPC OVATION
+    /// aurora nowcast and sample it at `(lon, lat)`. The result
+    /// drives `scene.aurora.intensity_override`, giving the aurora
+    /// subsystem a physically-grounded "how bright at this exact
+    /// location" answer that respects the auroral-oval shape (it's
+    /// offset toward the magnetic pole and rotates with UTC).
+    /// Best-effort: failures leave the override at `-1.0` (the
+    /// "derive from Kp" sentinel).
+    pub fetch_ovation: bool,
     /// Cache directory. Created on demand.
     pub cache_dir: PathBuf,
 }
 
 impl FetchOptions {
     /// Defaults: Dunblane, Scotland, the current UTC hour,
-    /// METAR enrichment on, Kp fetched, cache under `./cache/weather`.
+    /// METAR enrichment on, Kp + OVATION fetched, cache under
+    /// `./cache/weather`.
     pub fn dunblane_now() -> Self {
         Self {
             lat: 56.1922,
@@ -77,6 +89,7 @@ impl FetchOptions {
             time: Utc::now(),
             enrich_with_metar: true,
             fetch_kp_index: true,
+            fetch_ovation: true,
             cache_dir: PathBuf::from("cache").join("weather"),
         }
     }
@@ -179,6 +192,48 @@ pub fn fetch_scene(opts: &FetchOptions) -> Result<Scene, FetchError> {
                     target: "ps_weather_feed",
                     error = %e,
                     "SWPC Kp fetch failed — aurora left at default kp_index = 0"
+                );
+            }
+        }
+    }
+
+    if opts.fetch_ovation {
+        // Phase 15.B — OVATION fetch is best-effort. The 30-minute
+        // nowcast is only useful near `opts.time = now`; for
+        // historical or far-future renders the data is irrelevant
+        // (it's a measurement, not a forecast), so we still fetch
+        // it but the result is just "what the aurora oval looks
+        // like *right now*" overlaid on a possibly-different
+        // simulated time. Users wanting future-projected aurora
+        // need the Kp forecast path (Phase 15.A) which derives
+        // intensity from the global scalar.
+        match ovation::fetch(&opts.cache_dir, opts.time, ovation::DEFAULT_TTL) {
+            Ok(grid) => {
+                let intensity = grid.intensity_at(opts.lon, opts.lat);
+                tracing::info!(
+                    target: "ps_weather_feed",
+                    intensity,
+                    lon = opts.lon,
+                    lat = opts.lat,
+                    obs_time = %grid.observation_time,
+                    "applying SWPC OVATION intensity"
+                );
+                // The aurora subsystem treats `intensity_override`
+                // values >= 0 as "use this directly"; negative
+                // values mean "derive from Kp". So we only set the
+                // override when OVATION reports non-zero — a 0
+                // intensity here is meaningful (no aurora) but the
+                // Kp-derived path may still have something to say
+                // for very weak storms. The threshold is loose.
+                if intensity > 0.02 {
+                    scene.aurora.intensity_override = intensity;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "ps_weather_feed",
+                    error = %e,
+                    "SWPC OVATION fetch failed — using Kp-derived intensity"
                 );
             }
         }
