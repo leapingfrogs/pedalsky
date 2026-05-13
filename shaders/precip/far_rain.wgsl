@@ -83,8 +83,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let world_p = world_h.xyz / world_h.w;
     let mask_uv = world_p.xz / MASK_EXTENT_M + vec2<f32>(0.5);
     let cloud_mask = textureSampleLevel(top_down_density_mask, density_sampler, mask_uv, 0.0).r;
+    // Phase 19.B — smoothstep gate so stratus / thin cloud columns
+    // (mask ≈ 0.02) still register as "cloud overhead" rather than
+    // being effectively zero. See particle_render.wgsl for rationale.
+    let cloud_gate = smoothstep(0.005, 0.05, cloud_mask);
     let intensity = clamp(precip.intensity_mm_per_h / 50.0, 0.0, 1.0);
-    if (cloud_mask * intensity * layer.intensity_scale < 0.001) {
+    if (cloud_gate * intensity * layer.intensity_scale < 0.001) {
         discard;
     }
 
@@ -125,7 +129,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let len_alpha = clamp(1.0 - y_dist / len_y, 0.0, 1.0);
     let streak = line_alpha * len_alpha;
 
-    let alpha = cloud_mask * intensity * layer.intensity_scale * streak * 0.5;
+    let alpha = cloud_gate * intensity * layer.intensity_scale * streak * 0.5;
     if (alpha <= 0.001) { discard; }
     let tint = vec3<f32>(0.55, 0.6, 0.7);
     return vec4<f32>(tint * alpha, alpha);

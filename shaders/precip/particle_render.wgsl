@@ -147,9 +147,18 @@ fn vs_main(
     out.uv = local;
 
     // Cloud occlusion: read the top-down density mask at the particle's
-    // XZ position. mask=0 → no clouds above → no precipitation.
+    // XZ position. The mask is a vertically-integrated column density
+    // normalised by /10 in `density_mask.rs`, so even Cb columns top
+    // out around 0.5 and thin layers like stratus sit near 0.02. We
+    // want this to act as a **gate** (is there cloud overhead?) rather
+    // than a linear opacity multiplier, so a smoothstep ramps from
+    // "no cloud" to "fully clouded" across a low column-density range.
+    // Phase 19.B — previously this was `alpha = cloud_mask * ...`
+    // which made stratus rain effectively invisible (mask ≈ 0.02 →
+    // alpha ≤ 0.02 → fragment discard).
     let mask_uv = world_to_mask_uv(p.position.xz);
     let cloud_mask = textureSampleLevel(top_down_density_mask, density_sampler, mask_uv, 0.0).r;
+    let cloud_gate = smoothstep(0.005, 0.05, cloud_mask);
 
     // Marshall-Palmer drop count per m^3 vs our pool density gives the
     // per-particle alpha: higher real-world density -> each particle
@@ -157,7 +166,7 @@ fn vs_main(
     // very heavy rain doesn't oversaturate the integrator.
     let drops_per_m3 = mp.x;
     let alpha_density = clamp(drops_per_m3 / max(POOL_DENSITY_PER_M3, 1e-3) / 65000.0, 0.0, 1.0);
-    let alpha = cloud_mask * alpha_density;
+    let alpha = cloud_gate * alpha_density;
 
     if (p.kind == 0u) {
         // Rain: cool grey-blue.

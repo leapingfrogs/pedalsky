@@ -1,0 +1,25 @@
+schema_version = 1
+[surface]
+visibility_m   = 30000.0
+temperature_c  = 15.0
+dewpoint_c     = 12.0
+pressure_hpa   = 1010.0
+wind_dir_deg   = 240.0
+wind_speed_mps = 5.0
+[surface.wetness]
+ground_wetness  = 0.5
+puddle_coverage = 0.3
+puddle_start    = 0.4
+snow_depth_m    = 0.0
+[[clouds.layers]]
+type               = "Stratus"
+base_m             = 500.0
+top_m              = 1200.0
+coverage           = 0.7
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+[precipitation]
+type               = "Rain"
+intensity_mm_per_h = 8.0
+[lightning]
+strikes_per_min_per_km2 = 0.0
