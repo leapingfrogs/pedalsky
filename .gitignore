@@ -5,6 +5,9 @@
 *.tmp
 .DS_Store
 /out_test
+# Phase 14 — `target/release/ps-app render` writes PNG / EXR /
+# weather_dump.json / parameter_log.toml diagnostic outputs here.
+/out
 /tests/golden-diffs
 /scenes/saved*
 output.log
