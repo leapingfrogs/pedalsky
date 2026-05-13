@@ -16,6 +16,10 @@
 //!   `aviationweather.gov/api/data/metar`) — optional enrichment.
 //!   Real observations at nearby airports correct the surface
 //!   conditions when an authoritative datapoint exists.
+//! - **NOAA SWPC** (`services.swpc.noaa.gov`, Phase 15) — planetary
+//!   Kp index for the aurora subsystem. See `kp_index.rs` (3-hourly
+//!   observed + 3-day forecast) and `ovation.rs` (per-location
+//!   aurora intensity from the 30-minute OVATION nowcast).
 //!
 //! Every response is cached on disk so repeated fetches at the
 //! same place + hour don't hit the upstream APIs. See `cache.rs`.
@@ -23,11 +27,13 @@
 #![deny(missing_docs)]
 
 pub mod cache;
+pub mod kp_index;
 pub mod mapping;
 pub mod metar;
 pub mod open_meteo;
 
 pub use cache::Cache;
+pub use kp_index::{KpRow, KpSeries};
 pub use mapping::{enrich_with_metar, open_meteo_to_scene};
 pub use metar::MetarRecord;
 pub use open_meteo::OpenMeteoResponse;
@@ -51,19 +57,26 @@ pub struct FetchOptions {
     /// If true, also fetch the nearest METAR station and apply
     /// any surface / present-weather enrichment.
     pub enrich_with_metar: bool,
+    /// Phase 15.A — if true, also fetch the NOAA SWPC planetary Kp
+    /// index and write it onto `scene.aurora.kp_index`. Cheap (one
+    /// global file, cached hourly) and best-effort: failures fall
+    /// back to leaving `kp_index = 0`, which is the pre-Phase-15
+    /// default and disables the aurora subsystem.
+    pub fetch_kp_index: bool,
     /// Cache directory. Created on demand.
     pub cache_dir: PathBuf,
 }
 
 impl FetchOptions {
     /// Defaults: Dunblane, Scotland, the current UTC hour,
-    /// METAR enrichment on, cache under `./cache/weather`.
+    /// METAR enrichment on, Kp fetched, cache under `./cache/weather`.
     pub fn dunblane_now() -> Self {
         Self {
             lat: 56.1922,
             lon: -3.9645,
             time: Utc::now(),
             enrich_with_metar: true,
+            fetch_kp_index: true,
             cache_dir: PathBuf::from("cache").join("weather"),
         }
     }
@@ -133,6 +146,39 @@ pub fn fetch_scene(opts: &FetchOptions) -> Result<Scene, FetchError> {
                     target: "ps_weather_feed",
                     error = %e,
                     "METAR fetch failed — skipping enrichment"
+                );
+            }
+        }
+    }
+
+    if opts.fetch_kp_index {
+        // Phase 15.A — Kp fetch is best-effort. On failure we leave
+        // `scene.aurora.kp_index = 0` and the aurora subsystem stays
+        // dark, matching the pre-15 behaviour.
+        match kp_index::fetch(&opts.cache_dir, opts.time, kp_index::DEFAULT_TTL) {
+            Ok(series) => match series.nearest(opts.time) {
+                Some(row) => {
+                    tracing::info!(
+                        target: "ps_weather_feed",
+                        kp = row.kp,
+                        observed = %row.observed,
+                        time_tag = %row.time_tag,
+                        "applying SWPC Kp index"
+                    );
+                    scene.aurora.kp_index = row.kp;
+                }
+                None => {
+                    tracing::warn!(
+                        target: "ps_weather_feed",
+                        "SWPC Kp series empty — aurora disabled"
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "ps_weather_feed",
+                    error = %e,
+                    "SWPC Kp fetch failed — aurora left at default kp_index = 0"
                 );
             }
         }

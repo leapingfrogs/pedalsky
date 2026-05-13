@@ -111,6 +111,12 @@ fn top_bar(ctx: &egui::Context, state: &mut UiState) {
                             lon: state.live_config.world.longitude_deg,
                             time: now,
                             enrich_with_metar: true,
+                            // Phase 15.A — always fetch Kp on the
+                            // same button click. The endpoint is
+                            // free, cached for an hour, and gives
+                            // the aurora subsystem its only path to
+                            // real geomagnetic data.
+                            fetch_kp_index: true,
                         });
                 }
             });

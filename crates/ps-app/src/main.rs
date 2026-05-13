@@ -779,6 +779,7 @@ impl RunState {
             lon: req.lon,
             time: req.time,
             enrich_with_metar: req.enrich_with_metar,
+            fetch_kp_index: req.fetch_kp_index,
             cache_dir,
         };
         std::thread::Builder::new()

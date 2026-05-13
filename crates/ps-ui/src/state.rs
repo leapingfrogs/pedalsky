@@ -74,6 +74,11 @@ pub struct WeatherFetchRequest {
     /// If true, the host fetches the nearest METAR station and
     /// applies surface + present-weather enrichment.
     pub enrich_with_metar: bool,
+    /// Phase 15.A — if true, the host fetches the NOAA SWPC
+    /// planetary Kp index and writes it onto `scene.aurora.kp_index`.
+    /// Best-effort; the aurora subsystem stays dark if the fetch
+    /// fails.
+    pub fetch_kp_index: bool,
 }
 
 /// Status of a weather fetch — host writes; UI reads.
