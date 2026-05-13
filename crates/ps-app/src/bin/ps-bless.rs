@@ -85,6 +85,11 @@ fn render_one(
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
     config.render.ev100 = ev100;
+    // Phase 14.I — must match the golden test (`tests/golden.rs`).
+    // Zero the wind drift so the bless run isn't sensitive to a
+    // future bug that lets `simulated_seconds` advance during a
+    // headless render.
+    config.render.clouds.wind_drift_strength = 0.0;
 
     let setup = TestSetup::new(gpu, &config, (RENDER_W, RENDER_H));
     let mut app = HeadlessApp::new(gpu, &config, setup).context("HeadlessApp::new")?;

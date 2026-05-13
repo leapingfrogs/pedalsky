@@ -85,6 +85,14 @@ pub fn render_scene(
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
     config.render.ev100 = ev100;
+    // Phase 14.I — explicitly zero the wind drift so the determinism
+    // contract isn't quietly load-bearing on `simulated_seconds = 0`
+    // in the test harness. Belt-and-braces: drift = wind ·
+    // simulated_seconds · wind_drift_strength, so zeroing either
+    // factor produces stationary clouds, but a future bug that
+    // accidentally advanced simulated_seconds during a bless run
+    // would silently shift every golden by minutes of cloud drift.
+    config.render.clouds.wind_drift_strength = 0.0;
 
     let setup = TestSetup::new(gpu, &config, (RENDER_W, RENDER_H));
     let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");
