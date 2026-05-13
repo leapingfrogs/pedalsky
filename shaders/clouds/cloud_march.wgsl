@@ -449,23 +449,59 @@ fn cloud_wind_offset(p: vec3<f32>, p_alt: f32) -> vec3<f32> {
     return vec3<f32>(w_sample.x * strength, 0.0, w_sample.y * strength);
 }
 
+/// Phase 14.D — per-layer horizontal advection offset (metres XZ)
+/// for the coverage / cloud-type grid lookups. Samples the wind
+/// field at the layer's mid-altitude over a fixed XZ position
+/// (world origin) — the wind field is approximately spatially
+/// uniform at the 32 km extent for a given altitude, so one sample
+/// per layer captures the bulk drift of that altitude sheet. This
+/// makes the cumulus layer's coverage advect at ~700 hPa wind while
+/// a cirrus layer above it advects at ~300 hPa wind, producing the
+/// physical "cells move at the wind speed of their altitude band"
+/// behaviour.
+///
+/// The advected coverage / cloud-type readouts wrap modulo the
+/// texture extent (Repeat sampler / rem_euclid) so multi-hour
+/// `simulated_seconds` doesn't run off the end of the tile.
+fn layer_coverage_offset_m(layer: CloudLayerGpu) -> vec2<f32> {
+    let strength = params.wind_drift_strength * frame.simulated_seconds;
+    if (strength == 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let mid_alt = (layer.base_m + layer.top_m) * 0.5;
+    let u_y = clamp(mid_alt / WIND_FIELD_TOP_M, 0.0, 0.9999);
+    // Sample at the texture centre (u = v_z = 0.5 ⇔ world origin).
+    let w_sample = textureSampleLevel(
+        wind_field, noise_sampler, vec3<f32>(0.5, u_y, 0.5), 0.0,
+    );
+    return vec2<f32>(w_sample.x * strength, w_sample.y * strength);
+}
+
 /// Look up the effective cloud-type index for a sample position.
 /// Phase 12.1 — when the per-pixel grid has a non-sentinel value at
 /// this XZ, use it; otherwise fall back to the layer's default
 /// `cloud_type`. The grid is sampled with `textureLoad` because
 /// interpolating type indices is meaningless (you can't be "halfway
 /// between cumulus and stratus" — you need a discrete value).
+///
+/// Phase 14.D — `p_xz` is expected to be **already offset** by the
+/// caller via `layer_coverage_offset_m(layer)`, so advected cloud
+/// cells migrate downwind. The texel index wraps modulo grid size
+/// so samples that drift off the tile re-enter from the opposite
+/// edge (cells aren't lost from the upwind boundary).
 fn effective_cloud_type(p_xz: vec2<f32>, layer: CloudLayerGpu) -> u32 {
     // World XZ → texel coordinate in the 128×128 grid covering
     // [-CLOUD_TYPE_GRID_EXTENT_M/2, +/2] on each axis.
     let half = CLOUD_TYPE_GRID_EXTENT_M * 0.5;
     let u = (p_xz.x + half) / CLOUD_TYPE_GRID_EXTENT_M;
     let v = (p_xz.y + half) / CLOUD_TYPE_GRID_EXTENT_M;
-    // Clamp to texel range so out-of-extent samples read the edge.
-    let tx = clamp(i32(u * f32(CLOUD_TYPE_GRID_SIZE)),
-                   0, CLOUD_TYPE_GRID_SIZE - 1);
-    let ty = clamp(i32(v * f32(CLOUD_TYPE_GRID_SIZE)),
-                   0, CLOUD_TYPE_GRID_SIZE - 1);
+    // Wrap into [0, SIZE). The double-mod handles negative inputs
+    // (WGSL `%` follows truncated-division semantics, so a naive
+    // single `%` leaves -1 as -1, not SIZE-1).
+    let tx_raw = i32(floor(u * f32(CLOUD_TYPE_GRID_SIZE)));
+    let ty_raw = i32(floor(v * f32(CLOUD_TYPE_GRID_SIZE)));
+    let tx = ((tx_raw % CLOUD_TYPE_GRID_SIZE) + CLOUD_TYPE_GRID_SIZE) % CLOUD_TYPE_GRID_SIZE;
+    let ty = ((ty_raw % CLOUD_TYPE_GRID_SIZE) + CLOUD_TYPE_GRID_SIZE) % CLOUD_TYPE_GRID_SIZE;
     let t = textureLoad(cloud_type_grid, vec2<i32>(tx, ty), 0).r;
     if (t == CLOUD_TYPE_SENTINEL) {
         return layer.cloud_type;
@@ -505,7 +541,12 @@ fn sample_density(
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
     // Phase 12.1: per-pixel cloud type override (or layer default).
-    let cloud_type = effective_cloud_type(p.xz, layer);
+    // Phase 14.D: subtract the per-layer coverage advection offset so
+    // the cloud-type grid drifts downwind at the layer's mid-altitude
+    // wind speed (cumulus cells move slowly with low-level wind,
+    // cirrus sheets stream with the jet).
+    let cov_offset = layer_coverage_offset_m(layer);
+    let cloud_type = effective_cloud_type(p.xz - cov_offset, layer);
     let profile = ndf(h, cloud_type, layer.anvil_bias);
     var cloud = base_cloud * profile;
 
@@ -561,13 +602,18 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
     let cos_view = dot((pos - centre) / max(r0, 1.0), sun_dir);
     let h0 = r0 - world.planet_radius_m;
 
+    // Phase 14.D — per-layer coverage advection. Sampling the offset
+    // once outside the loop saves a wind_field fetch per light step;
+    // the offset is loop-invariant for a single light march.
+    let cov_offset = layer_coverage_offset_m(layer);
+
     for (var i = 0u; i < params.light_steps; i = i + 1u) {
         let t = (f32(i) + 0.5) * step;
         let pi = p + sun_dir * t;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
         let weather = textureSampleLevel(
             weather_map, noise_sampler,
-            world_to_weather_uv(pi.xz), 0.0,
+            world_to_weather_uv(pi.xz - cov_offset), 0.0,
         );
         let local_density = sample_density(pi, alt, layer, weather);
         od = od + local_density * step;
@@ -755,12 +801,19 @@ fn fs_main(in: VsOut) -> CloudOut {
         let cos_view = dot((ray.origin - centre) / max(r0, 1.0), ray.dir);
         let h0 = r0 - world.planet_radius_m;
 
+        // Phase 14.D — per-layer coverage advection offset. The
+        // sample below is loop-invariant within a single layer's
+        // march and the WGSL compiler hoists it; we keep it here
+        // (just inside the layer loop) so the code reads in the
+        // same order it executes.
+        let cov_offset_view = layer_coverage_offset_m(layer);
+
         for (var s = 0u; s < params.cloud_steps; s = s + 1u) {
             let p = ray.origin + ray.dir * t;
             let alt = altitude_from_entry(p, r0, cos_view, h0, t);
             let weather_sample = textureSampleLevel(
                 weather_map, noise_sampler,
-                world_to_weather_uv(p.xz), 0.0,
+                world_to_weather_uv(p.xz - cov_offset_view), 0.0,
             );
             let density = sample_density(p, alt, layer, weather_sample);
 
