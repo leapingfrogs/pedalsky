@@ -427,31 +427,40 @@ mod tests {
                     "wind_speed_700hPa": [54.0],
                     "wind_speed_500hPa": [90.0],
                     "wind_speed_300hPa": [144.0],
+                    "wind_speed_200hPa": [180.0],
                     "wind_direction_850hPa": [240.0],
                     "wind_direction_700hPa": [255.0],
                     "wind_direction_500hPa": [270.0],
-                    "wind_direction_300hPa": [285.0]
+                    "wind_direction_300hPa": [285.0],
+                    "wind_direction_200hPa": [290.0]
                 }
             }"#,
         )
         .unwrap();
         let scene = open_meteo_to_scene(&resp, t());
         let aloft = &scene.surface.winds_aloft;
-        assert_eq!(aloft.len(), 4);
+        // Phase 14.J — 5 levels now (850/700/500/300/200).
+        assert_eq!(aloft.len(), 5);
         // Sorted ascending by altitude (descending by pressure).
         assert_eq!(aloft[0].pressure_hpa, 850);
-        assert_eq!(aloft[3].pressure_hpa, 300);
-        assert!(aloft[0].altitude_m < aloft[3].altitude_m);
+        assert_eq!(aloft[4].pressure_hpa, 200);
+        assert!(aloft[0].altitude_m < aloft[4].altitude_m);
         // 36 km/h → 10 m/s (within rounding).
         assert!((aloft[0].speed_mps - 10.0).abs() < 0.1);
         // 144 km/h → 40 m/s.
         assert!((aloft[3].speed_mps - 40.0).abs() < 0.2);
+        // 180 km/h → 50 m/s.
+        assert!((aloft[4].speed_mps - 50.0).abs() < 0.2);
         // Direction passed through unchanged.
         assert_eq!(aloft[2].dir_deg, 270.0);
         // 850 hPa is roughly 1.5 km AMSL.
         assert!(aloft[0].altitude_m > 1200.0 && aloft[0].altitude_m < 1700.0);
         // 300 hPa sits around 9 km.
         assert!(aloft[3].altitude_m > 8000.0 && aloft[3].altitude_m < 10_000.0);
+        // 200 hPa sits around 12 km — covering the top of the
+        // synthesised wind-field volume so cirrus reads real data
+        // instead of clamped 300 hPa.
+        assert!(aloft[4].altitude_m > 11_000.0 && aloft[4].altitude_m < 13_000.0);
     }
 
     #[test]

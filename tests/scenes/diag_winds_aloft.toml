@@ -57,6 +57,12 @@ altitude_m   = 9000.0
 speed_mps    = 50.0
 dir_deg      = 10.0     # FROM N (jet stream)
 
+[[surface.winds_aloft]]
+pressure_hpa = 200
+altitude_m   = 12000.0
+speed_mps    = 60.0
+dir_deg      = 20.0     # FROM NNE — upper-tropospheric jet core
+
 [[clouds.layers]]
 type               = "Cumulus"
 base_m             = 1500.0

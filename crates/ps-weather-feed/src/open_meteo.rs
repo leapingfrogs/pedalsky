@@ -52,10 +52,12 @@ pub const PRESSURE_LEVELS_HPA: &[u32] = &[1000, 925, 850, 700, 500, 300];
 /// interpolates instead of the synthetic 1/7 power law. We skip
 /// 1000 (close to the 10 m surface anchor and noisy) and 925 (often
 /// inside the boundary layer where the power-law extrapolation is
-/// already adequate); 200 hPa sits in the stratosphere and doesn't
-/// influence troposphere clouds. The remaining four levels cover
-/// low / mid / high cloud altitudes (~1.5 / 3.0 / 5.5 / 9.0 km).
-pub const WIND_LEVELS_HPA: &[u32] = &[850, 700, 500, 300];
+/// already adequate). The 200 hPa level (~12 km AMSL ≈ the top of
+/// the synthesised wind-field volume) was added in Phase 14.J so
+/// cirrus / high-altitude scenes see the real upper-tropospheric
+/// jet rather than the clamped 300 hPa value. Five levels cover
+/// low / mid / high cloud altitudes (~1.5 / 3.0 / 5.5 / 9.0 / 12 km).
+pub const WIND_LEVELS_HPA: &[u32] = &[850, 700, 500, 300, 200];
 
 /// One hour's worth of forecast values. Vec lengths all match the
 /// `time` array.
@@ -125,6 +127,10 @@ pub struct Hourly {
     /// 300 hPa wind speed (km/h).
     #[serde(rename = "wind_speed_300hPa", default)]
     pub wind_speed_300hpa: Vec<f32>,
+    /// 200 hPa wind speed (km/h). Phase 14.J — added so cirrus at
+    /// ~12 km sees the real upper-tropospheric jet.
+    #[serde(rename = "wind_speed_200hPa", default)]
+    pub wind_speed_200hpa: Vec<f32>,
     /// 850 hPa wind direction (°, meteorological).
     #[serde(rename = "wind_direction_850hPa", default)]
     pub wind_direction_850hpa: Vec<f32>,
@@ -137,6 +143,9 @@ pub struct Hourly {
     /// 300 hPa wind direction (°, meteorological).
     #[serde(rename = "wind_direction_300hPa", default)]
     pub wind_direction_300hpa: Vec<f32>,
+    /// 200 hPa wind direction (°, meteorological). Phase 14.J.
+    #[serde(rename = "wind_direction_200hPa", default)]
+    pub wind_direction_200hpa: Vec<f32>,
 }
 
 impl Hourly {
@@ -193,6 +202,7 @@ impl Hourly {
                 700 => (&self.wind_speed_700hpa, &self.wind_direction_700hpa),
                 500 => (&self.wind_speed_500hpa, &self.wind_direction_500hpa),
                 300 => (&self.wind_speed_300hpa, &self.wind_direction_300hpa),
+                200 => (&self.wind_speed_200hpa, &self.wind_direction_200hpa),
                 _ => continue,
             };
             // Either vec may be empty (older cached response) or
@@ -472,10 +482,12 @@ mod tests {
             "wind_speed_700hPa": [45.0],
             "wind_speed_500hPa": [80.0],
             "wind_speed_300hPa": [130.0],
+            "wind_speed_200hPa": [165.0],
             "wind_direction_850hPa": [230.0],
             "wind_direction_700hPa": [245.0],
             "wind_direction_500hPa": [260.0],
-            "wind_direction_300hPa": [275.0]
+            "wind_direction_300hPa": [275.0],
+            "wind_direction_200hPa": [280.0]
         }
     }"#;
 
@@ -483,16 +495,17 @@ mod tests {
     fn winds_aloft_by_level_sorted_low_altitude_first() {
         let resp: OpenMeteoResponse = serde_json::from_str(SAMPLE_WITH_WINDS_ALOFT).unwrap();
         let winds = resp.hourly.winds_aloft_by_level(0);
-        assert_eq!(winds.len(), 4);
+        assert_eq!(winds.len(), 5);
         // Sort order is descending pressure ⇔ ascending altitude.
         assert_eq!(
             winds.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
-            vec![850, 700, 500, 300],
+            vec![850, 700, 500, 300, 200],
         );
         // Speeds returned in source units (km/h) — the mapping pass
         // does the m/s conversion.
         assert_eq!(winds[0].1, 25.0);
         assert_eq!(winds[3].1, 130.0);
+        assert_eq!(winds[4].1, 165.0); // 200 hPa @ ~46 m/s — typical jet
         // Directions kept as-supplied (meteorological).
         assert_eq!(winds[2].2, 260.0);
     }
@@ -504,12 +517,12 @@ mod tests {
         let mut resp: OpenMeteoResponse = serde_json::from_str(SAMPLE_WITH_WINDS_ALOFT).unwrap();
         resp.hourly.wind_speed_500hpa[0] = f32::NAN;
         let winds = resp.hourly.winds_aloft_by_level(0);
-        // 500 hPa should be dropped; the remaining three levels keep
+        // 500 hPa should be dropped; the remaining four levels keep
         // their order.
-        assert_eq!(winds.len(), 3);
+        assert_eq!(winds.len(), 4);
         assert_eq!(
             winds.iter().map(|(p, _, _)| *p).collect::<Vec<_>>(),
-            vec![850, 700, 300],
+            vec![850, 700, 300, 200],
         );
     }
 }
