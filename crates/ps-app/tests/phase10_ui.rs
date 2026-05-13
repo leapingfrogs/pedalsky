@@ -114,6 +114,7 @@ fn config_surfaces_every_phase5_to_9_tunable() {
     let _ = &mut c.render.clouds.powder_strength;
     let _ = &mut c.render.clouds.freeze_time;
     let _ = &mut c.render.clouds.reprojection;
+    let _ = &mut c.render.clouds.wind_drift_strength;
 
     // Phase 8 precipitation.
     let _ = &mut c.render.precip.near_particle_count;

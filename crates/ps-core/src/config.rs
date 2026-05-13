@@ -340,11 +340,26 @@ pub struct CloudsTuning {
     /// (5–50 µm).
     #[serde(default = "default_droplet_diameter_bias")]
     pub droplet_diameter_bias: f32,
+    /// Phase 14.C — multiplier on the wind-driven cloud advection
+    /// offset (`wind(altitude) * simulated_seconds * wind_drift`).
+    /// Default 1.0 produces full physical drift; 0.0 freezes the
+    /// cloud world-space lookup, useful for bless-time stability or
+    /// for users who want pinned framing without pausing the clock.
+    /// Auto-zeroed when `freeze_time = true` for the same reason
+    /// `temporal_jitter` is.
+    #[serde(default = "default_wind_drift_strength")]
+    pub wind_drift_strength: f32,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
 /// function so `#[serde(default = "...")]` can reference it.
 fn default_droplet_diameter_bias() -> f32 {
+    1.0
+}
+
+/// Default value for `wind_drift_strength` (Phase 14.C). Kept as a
+/// free function so `#[serde(default = "...")]` can reference it.
+fn default_wind_drift_strength() -> f32 {
     1.0
 }
 
@@ -360,6 +375,7 @@ impl Default for CloudsTuning {
             freeze_time: false,
             temporal_jitter: false,
             droplet_diameter_bias: 1.0,
+            wind_drift_strength: 1.0,
         }
     }
 }

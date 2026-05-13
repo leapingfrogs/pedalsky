@@ -840,6 +840,23 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                      screenshots stay deterministic.",
                 )
                 .changed();
+            // Phase 14.C — wind-driven cloud advection. The slider
+            // exposes the same path: 1.0 = clouds drift at physical
+            // wind speed, 0.0 = stationary. Auto-zeroed engine-side
+            // while paused (matching temporal jitter).
+            tuning_changed |= ui
+                .add(
+                    egui::Slider::new(&mut c.wind_drift_strength, 0.0..=2.0)
+                        .text("Wind drift × time"),
+                )
+                .on_hover_text(
+                    "Scale on the cloud-march wind advection. 1.0 = \
+                     clouds drift at the synthesised wind speed \
+                     (altitude-sheared from winds_aloft when present, \
+                     otherwise 1/7 power law + Ekman); 0.0 = clouds \
+                     pinned in world space. Auto-zeroed while paused.",
+                )
+                .changed();
         });
         if tuning_changed {
             state.pending.config_dirty = true;

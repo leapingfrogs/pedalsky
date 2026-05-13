@@ -97,11 +97,20 @@ pub struct CloudParamsGpu {
     /// rotation). Default `0`. Off when `freeze_time` so paused
     /// screenshots stay deterministic.
     pub temporal_jitter: u32,
-    /// std140 pad — keeps the struct's tail on a vec4 boundary.
-    pub _pad_temporal_jitter_0: u32,
-    /// std140 pad — second of three trailing scalars.
+    /// Phase 14.C — multiplier on the wind-driven cloud advection
+    /// offset (`wind(altitude) * simulated_seconds * wind_drift_strength`).
+    /// Default `1.0` makes clouds drift at full physical speed; `0.0`
+    /// freezes the cloud world-space lookup (used by bless-time
+    /// golden renders so test scenes stay deterministic and by the
+    /// freeze-time toggle so paused screenshots are stable). Lives in
+    /// the std140 slot that used to be `_pad_temporal_jitter_0`; the
+    /// struct size is unchanged.
+    pub wind_drift_strength: f32,
+    /// std140 pad — second of two remaining trailing scalars (the
+    /// third was repurposed for `wind_drift_strength`).
     pub _pad_temporal_jitter_1: u32,
-    /// std140 pad — third of three trailing scalars.
+    /// std140 pad — third trailing scalar; keeps the struct's tail on
+    /// a vec4 boundary.
     pub _pad_temporal_jitter_2: u32,
 }
 
@@ -159,7 +168,12 @@ impl Default for CloudParamsGpu {
             cloud_layer_count: 0,
 
             temporal_jitter: 0,
-            _pad_temporal_jitter_0: 0,
+            // Drift defaults on at full strength so the cloud march
+            // animates clouds with the synthesised wind field as soon
+            // as the subsystem is enabled. The shader auto-disables
+            // when `simulated_seconds` is zero (golden bless runs) and
+            // when `freeze_time` latches the clock.
+            wind_drift_strength: 1.0,
             _pad_temporal_jitter_1: 0,
             _pad_temporal_jitter_2: 0,
         }

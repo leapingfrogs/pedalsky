@@ -48,10 +48,15 @@ struct CloudParams {
 
     // Phase 13.9 — optional per-frame temporal rotation of the
     // spatial blue-noise lookup (16-frame cycle). 0 = off, 1 = on.
-    // The next three slots are std140 padding so the struct keeps
-    // its 16-byte tail alignment.
     temporal_jitter: u32,
-    _pad_temporal_jitter_0: u32,
+    // Phase 14.C — global scalar that multiplies the wind-driven
+    // cloud advection offset (the cloud march samples wind_field at
+    // each step and offsets the noise lookup by
+    // `wind(altitude) * frame.simulated_seconds * wind_drift_strength`).
+    // 1.0 = full physical drift; 0.0 = stationary clouds (golden
+    // bless / paused screenshot path). Lives in the slot that used
+    // to be `_pad_temporal_jitter_0`; struct size unchanged.
+    wind_drift_strength: f32,
     _pad_temporal_jitter_1: u32,
     _pad_temporal_jitter_2: u32,
 };

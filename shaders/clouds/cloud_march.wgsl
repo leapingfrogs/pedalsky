@@ -41,6 +41,25 @@
 // cloud type for this pixel regardless of the layer's default.
 @group(2) @binding(10) var cloud_type_grid: texture_2d<u32>;
 
+// Phase 14.C: 3D wind-field volume synthesised by ps-synthesis. The
+// RGBA16Float texture covers the same 32 km × 32 km horizontal
+// footprint as the weather map and spans 0..WIND_FIELD_TOP_M
+// vertically. Channels: (u east m/s, v south m/s, w up m/s,
+// turbulence). The march samples this at each step to advect the
+// cloud noise lookup by `wind(altitude) * simulated_seconds *
+// wind_drift_strength`. The vertical and turbulence channels are
+// reserved for follow-up phases.
+@group(2) @binding(11) var wind_field: texture_3d<f32>;
+
+/// Spatial extent (metres) the wind field covers — matches the
+/// weather map's 32 km tile. Mirrors `EXTENT_M` in
+/// `crates/ps-synthesis/src/wind_field.rs`.
+const WIND_FIELD_EXTENT_M: f32 = 32000.0;
+/// Top altitude (m AGL) the wind field spans on its Y axis — mirrors
+/// `TOP_M` in `crates/ps-synthesis/src/wind_field.rs`. Samples at
+/// altitudes above this clamp to the topmost voxel.
+const WIND_FIELD_TOP_M: f32 = 12000.0;
+
 /// Sentinel value in the cloud_type_grid meaning "use the per-layer
 /// cloud_type rather than a per-pixel override". Mirrors the Rust
 /// constant `ps_synthesis::cloud_type_grid::SENTINEL`.
@@ -397,6 +416,39 @@ fn world_to_weather_uv(xz: vec2<f32>) -> vec2<f32> {
     return xz / max(params.weather_scale_m, 1.0) + vec2<f32>(0.5);
 }
 
+/// Phase 14.C — horizontal advection offset (metres) for the cloud
+/// noise lookup at world position `p` with precomputed altitude
+/// `p_alt`. Samples the synthesised wind_field volume (which already
+/// embeds the boundary-layer power law and either the ingested
+/// pressure-level winds or the procedural Ekman veer, depending on
+/// the scene) and scales by `simulated_seconds * wind_drift_strength`.
+/// Returns a `vec3` where `.y = 0` for the v1 horizontal-only
+/// advection — vertical advection is reserved for a follow-up phase
+/// once we settle on the cloud-build semantics.
+///
+/// The returned offset is **subtracted** from the world-space sample
+/// position before noise lookups: a cloud structure that physically
+/// moves with the wind requires the texture coordinate to step
+/// backwards by the same amount, so the cloud appears anchored to
+/// the moving body rather than the fixed world.
+fn cloud_wind_offset(p: vec3<f32>, p_alt: f32) -> vec3<f32> {
+    let strength = params.wind_drift_strength * frame.simulated_seconds;
+    if (strength == 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let half = WIND_FIELD_EXTENT_M * 0.5;
+    let u_x = (p.x + half) / WIND_FIELD_EXTENT_M;
+    let u_z = (p.z + half) / WIND_FIELD_EXTENT_M;
+    // Map the precomputed altitude to the wind field's Y axis. Clamp
+    // so samples above the top voxel hold the topmost wind rather
+    // than wrapping into the boundary layer.
+    let u_y = clamp(p_alt / WIND_FIELD_TOP_M, 0.0, 0.9999);
+    // Wind field uses (u east, v south, w up, turb). The U/V channels
+    // are world-space horizontal m/s.
+    let w_sample = textureSampleLevel(wind_field, noise_sampler, vec3<f32>(u_x, u_y, u_z), 0.0);
+    return vec3<f32>(w_sample.x * strength, 0.0, w_sample.y * strength);
+}
+
 /// Look up the effective cloud-type index for a sample position.
 /// Phase 12.1 — when the per-pixel grid has a non-sentinel value at
 /// this XZ, use it; otherwise fall back to the layer's default
@@ -429,7 +481,17 @@ fn sample_density(
     let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
     if (h < 0.0 || h > 1.0) { return 0.0; }
 
-    let base_uv = p / max(params.base_scale_m, 1.0);
+    // Phase 14.C — subtract the wind advection offset so the noise
+    // lookups effectively trail the cloud body. Per-altitude wind
+    // shear emerges automatically because the offset depends on
+    // `p_alt`: cumulus tops at 3 km may see a different vector to
+    // their base at 1.5 km, leaning the cloud downwind exactly as
+    // physical clouds do. The coverage / cloud-type grids stay
+    // anchored to the original `p.xz` (advection of those textures
+    // is Phase 14.D).
+    let p_advected = p - cloud_wind_offset(p, p_alt);
+
+    let base_uv = p_advected / max(params.base_scale_m, 1.0);
     let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);
     // Schneider remap: low-frequency Worley FBM erodes the Perlin-Worley.
     // Phase 13 follow-up — per-layer `shape_bias` shifts the LF FBM
@@ -454,12 +516,15 @@ fn sample_density(
 
     // Curl-perturbed detail erosion at the cloud boundary. Only erode
     // where there is already some density (saves the per-sample texture
-    // fetches in empty space).
+    // fetches in empty space). Phase 14.C — use the same advected
+    // position as the base lookup so the curl pattern drifts with
+    // the cloud body rather than the wind itself; otherwise the
+    // detail wisps would slide across a stationary cloud.
     if (cloud > 0.0) {
-        let curl_uv = p.xz / max(params.detail_scale_m, 1.0);
+        let curl_uv = p_advected.xz / max(params.detail_scale_m, 1.0);
         let curl = textureSampleLevel(noise_curl, noise_sampler, curl_uv, 0.0).rg * 2.0
                  - vec2<f32>(1.0);
-        let detail_p = p + vec3<f32>(curl.x, 0.0, curl.y) * params.curl_strength
+        let detail_p = p_advected + vec3<f32>(curl.x, 0.0, curl.y) * params.curl_strength
                                      * params.detail_scale_m;
         let detail_uv = detail_p / max(params.detail_scale_m, 1.0);
         let detail = textureSampleLevel(noise_detail, noise_sampler, detail_uv, 0.0);

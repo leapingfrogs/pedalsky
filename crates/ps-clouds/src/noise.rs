@@ -479,6 +479,24 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            // Phase 14.C binding 11: 3D wind-field volume (RGBA16Float,
+            // channels = u, v, w, turbulence) covering 32 km × 32 km
+            // horizontally and 0..TOP_M vertically. Sampled with the
+            // existing `noise_sampler` (linear-repeat) — repeat is the
+            // safe wrap mode since the wind field is roughly uniform
+            // in real-world conditions at the volume's spatial scale.
+            // Read at each march step to advect the cloud noise lookup
+            // by `wind(altitude) * simulated_seconds * wind_drift`.
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ],
     })
 }
