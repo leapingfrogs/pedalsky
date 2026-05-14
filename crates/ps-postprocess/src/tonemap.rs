@@ -8,43 +8,10 @@ use std::sync::Mutex;
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::HdrFramebuffer;
+pub use ps_core::TonemapMode;
 
 const SHADER_BAKED: &str = include_str!("../../../shaders/postprocess/tonemap.wgsl");
 const SHADER_REL: &str = "postprocess/tonemap.wgsl";
-
-/// Tone-map curve choice.
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub enum TonemapMode {
-    /// ACES Filmic (Narkowicz 2015 fit).
-    #[default]
-    AcesFilmic,
-    /// Linear passthrough with `clamp(0, 1)` — useful for shader debugging.
-    Passthrough,
-}
-
-impl TonemapMode {
-    /// Map the human-readable string from `pedalsky.toml` into a mode.
-    pub fn from_config(s: &str) -> Self {
-        match s {
-            "ACESFilmic" | "AcesFilmic" | "aces" => Self::AcesFilmic,
-            "Passthrough" | "passthrough" | "Reinhard" => Self::Passthrough,
-            other => {
-                tracing::warn!(
-                    value = other,
-                    "unknown tone_mapper — defaulting to ACESFilmic"
-                );
-                Self::AcesFilmic
-            }
-        }
-    }
-
-    fn as_u32(self) -> u32 {
-        match self {
-            Self::AcesFilmic => 0,
-            Self::Passthrough => 1,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable, Debug)]

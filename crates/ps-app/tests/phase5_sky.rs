@@ -36,7 +36,7 @@ fn sky_pass_produces_non_black_output_at_midday() {
     let mut config = Config::load(&path).expect("workspace config");
     config.validate_with_base(Some(&workspace_root())).unwrap();
     config.render.ev100 = 15.0;
-    config.render.tone_mapper = "ACESFilmic".into();
+    config.render.tone_mapper = ps_core::TonemapMode::AcesFilmic;
     config.render.subsystems.atmosphere = true;
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
@@ -79,7 +79,7 @@ fn ground_bounce_lifts_downward_sky_above_zero() {
     let Some(gpu) = gpu() else { return };
     let mut config = Config::default();
     config.render.ev100 = 15.0;
-    config.render.tone_mapper = "ACESFilmic".into();
+    config.render.tone_mapper = ps_core::TonemapMode::AcesFilmic;
     config.render.subsystems.atmosphere = true;
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;

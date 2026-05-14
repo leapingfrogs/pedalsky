@@ -35,7 +35,7 @@ struct PrecipUniforms {
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<storage, read> particles: Particles;
 @group(1) @binding(1) var<uniform> precip: PrecipUniforms;
-@group(1) @binding(2) var top_down_density_mask: texture_2d<f32>;
+@group(1) @binding(2) var overcast_field: texture_2d<f32>;
 @group(1) @binding(3) var density_sampler: sampler;
 
 const MASK_EXTENT_M: f32 = 32000.0;
@@ -157,7 +157,7 @@ fn vs_main(
     // which made stratus rain effectively invisible (mask ≈ 0.02 →
     // alpha ≤ 0.02 → fragment discard).
     let mask_uv = world_to_mask_uv(p.position.xz);
-    let cloud_mask = textureSampleLevel(top_down_density_mask, density_sampler, mask_uv, 0.0).r;
+    let cloud_mask = textureSampleLevel(overcast_field, density_sampler, mask_uv, 0.0).r;
     let cloud_gate = smoothstep(0.005, 0.05, cloud_mask);
 
     // Marshall-Palmer drop count per m^3 vs our pool density gives the

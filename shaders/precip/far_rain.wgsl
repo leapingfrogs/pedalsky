@@ -32,7 +32,7 @@ struct LayerUniform {
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<uniform> precip: PrecipUniforms;
-@group(1) @binding(1) var top_down_density_mask: texture_2d<f32>;
+@group(1) @binding(1) var overcast_field: texture_2d<f32>;
 @group(1) @binding(2) var density_sampler: sampler;
 @group(1) @binding(3) var<uniform> layer: LayerUniform;
 
@@ -82,7 +82,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let world_h = inv * clip;
     let world_p = world_h.xyz / world_h.w;
     let mask_uv = world_p.xz / MASK_EXTENT_M + vec2<f32>(0.5);
-    let cloud_mask = textureSampleLevel(top_down_density_mask, density_sampler, mask_uv, 0.0).r;
+    let cloud_mask = textureSampleLevel(overcast_field, density_sampler, mask_uv, 0.0).r;
     // Phase 19.B — smoothstep gate so stratus / thin cloud columns
     // (mask ≈ 0.02) still register as "cloud overhead" rather than
     // being effectively zero. See particle_render.wgsl for rationale.

@@ -156,8 +156,8 @@ pub fn synthesise(
             weather_map_view: wm_view,
             wind_field: wf_tex,
             wind_field_view: wf_view,
-            top_down_density_mask: m_tex,
-            top_down_density_mask_view: m_view,
+            overcast_field: m_tex,
+            overcast_field_view: m_view,
             cloud_type_grid: ct_tex,
             cloud_type_grid_view: ct_view,
         },
@@ -167,10 +167,14 @@ pub fn synthesise(
         scene_aurora_kp: scene.aurora.kp_index,
         scene_aurora_intensity_override: scene.aurora.intensity_override,
         scene_aurora_colour_bias: {
-            let bias = ps_core::aurora_colour_bias(&scene.aurora.predominant_colour);
+            let bias = scene.aurora.predominant_colour.bias();
             [bias[0], bias[1], bias[2], 0.0]
         },
         scene_water: scene.water.clone(),
+        // Synthesis assumes clouds are rendered; the host downgrades
+        // this in `WeatherState` for the executor when
+        // `[render.subsystems].clouds = false`. Audit §3.2.
+        cloud_render_active: true,
         revision: SYNTHESIS_REVISION.fetch_add(1, Ordering::Relaxed),
     })
 }

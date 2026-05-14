@@ -34,7 +34,7 @@ fn workspace_root() -> PathBuf {
 fn config_with_ev0_passthrough() -> Config {
     let mut c = Config::default();
     c.render.ev100 = 0.0;
-    c.render.tone_mapper = "Passthrough".into();
+    c.render.tone_mapper = ps_core::TonemapMode::Passthrough;
     // Disable subsystems whose register_passes() is currently a no-op
     // (atmosphere, clouds, precipitation are Phase 5/6/8 stubs). Leaving
     // them enabled is harmless but logs irrelevant constructions.
@@ -171,7 +171,7 @@ fn pedalsky_toml_at_workspace_root_boots_the_app() {
     config.render.subsystems.precipitation = false;
     config.render.subsystems.wet_surface = false;
     // Force passthrough + EV0 so the output is meaningful at this size.
-    config.render.tone_mapper = "Passthrough".into();
+    config.render.tone_mapper = ps_core::TonemapMode::Passthrough;
     config.render.ev100 = 0.0;
 
     let setup = TestSetup::new(gpu, &config, (64, 64));

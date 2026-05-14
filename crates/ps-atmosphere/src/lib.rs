@@ -603,7 +603,7 @@ impl RenderSubsystem for AtmosphereSubsystem {
                                     wgpu::BindGroupEntry {
                                         binding: 0,
                                         resource: wgpu::BindingResource::TextureView(
-                                            &ctx.weather.textures.top_down_density_mask_view,
+                                            &ctx.weather.textures.overcast_field_view,
                                         ),
                                     },
                                     wgpu::BindGroupEntry {

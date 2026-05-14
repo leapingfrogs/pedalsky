@@ -571,9 +571,38 @@ pub struct Aurora {
     pub intensity_override: f32,
     /// Predominant emission colour. Real auroras are line-spectrum
     /// emission so the engine internally mixes three line colours;
-    /// this string biases the mix.
-    /// Accepted: "green", "red", "purple", "mixed".
-    pub predominant_colour: String,
+    /// this enum biases the mix.
+    pub predominant_colour: AuroraColour,
+}
+
+/// Predominant aurora emission colour. Matches the historical TOML
+/// strings (`"green"`, `"red"`, `"purple"`, `"mixed"`) so existing
+/// scene files round-trip without edits.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuroraColour {
+    /// Canonical 557.7 nm O₂ green-dominant aurora.
+    #[default]
+    Green,
+    /// Red-dominant (high-altitude N₂ band) aurora.
+    Red,
+    /// Purple-dominant aurora.
+    Purple,
+    /// Balanced mix of green/red/purple emission lines.
+    Mixed,
+}
+
+impl AuroraColour {
+    /// Normalised RGB bias used inside the aurora shader to weight the
+    /// three emission lines.
+    pub fn bias(self) -> [f32; 3] {
+        match self {
+            Self::Red => [0.30, 0.20, 0.50],
+            Self::Purple => [0.20, 0.30, 0.55],
+            Self::Mixed => [0.55, 0.20, 0.25],
+            Self::Green => [0.10, 0.85, 0.05],
+        }
+    }
 }
 
 impl Default for Aurora {
@@ -581,22 +610,8 @@ impl Default for Aurora {
         Self {
             kp_index: 0.0,
             intensity_override: -1.0, // sentinel "no override"
-            predominant_colour: "green".into(),
+            predominant_colour: AuroraColour::Green,
         }
-    }
-}
-
-/// Map a `predominant_colour` string to a normalised RGB bias used
-/// inside the aurora shader to weight the three emission lines.
-/// Returns the green-weighted default when the string is unrecognised.
-pub fn aurora_colour_bias(name: &str) -> [f32; 3] {
-    match name {
-        "red" => [0.30, 0.20, 0.50],
-        "purple" => [0.20, 0.30, 0.55],
-        "mixed" => [0.55, 0.20, 0.25],
-        // "green" or anything else falls back to the canonical
-        // 557.7 nm O₂ green-dominant aurora.
-        _ => [0.10, 0.85, 0.05],
     }
 }
 

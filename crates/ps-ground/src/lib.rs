@@ -306,7 +306,7 @@ impl RenderSubsystem for GroundSubsystem {
                         wgpu::BindGroupEntry {
                             binding: 1,
                             resource: wgpu::BindingResource::TextureView(
-                                &ctx.weather.textures.top_down_density_mask_view,
+                                &ctx.weather.textures.overcast_field_view,
                             ),
                         },
                         wgpu::BindGroupEntry {

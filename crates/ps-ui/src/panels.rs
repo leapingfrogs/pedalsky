@@ -660,17 +660,25 @@ fn render_panel(ui: &mut egui::Ui, state: &mut UiState) {
             state.pending.config_dirty = true;
         }
         ui.horizontal(|ui| {
+            use ps_core::TonemapMode;
             ui.label("Tone mapper");
-            let mut current = state.live_config.render.tone_mapper.clone();
+            let mut current = state.live_config.render.tone_mapper;
+            let label = match current {
+                TonemapMode::AcesFilmic => "ACESFilmic",
+                TonemapMode::Passthrough => "Passthrough",
+            };
             ComboBox::from_id_salt("ps-ui-tonemap")
-                .selected_text(&current)
+                .selected_text(label)
                 .show_ui(ui, |ui| {
-                    for opt in ["ACESFilmic", "Passthrough"] {
+                    for (opt_label, opt) in [
+                        ("ACESFilmic", TonemapMode::AcesFilmic),
+                        ("Passthrough", TonemapMode::Passthrough),
+                    ] {
                         if ui
-                            .selectable_label(current == opt, opt)
+                            .selectable_label(current == opt, opt_label)
                             .clicked()
                         {
-                            current = opt.to_string();
+                            current = opt;
                         }
                     }
                 });
@@ -1597,11 +1605,17 @@ fn aurora_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .changed();
 
             ui.horizontal(|ui| {
+                use ps_core::AuroraColour;
                 ui.label("predominant_colour");
-                for option in ["green", "red", "purple", "mixed"] {
-                    let selected = new_scene.aurora.predominant_colour == option;
-                    if ui.selectable_label(selected, option).clicked() {
-                        new_scene.aurora.predominant_colour = option.into();
+                for (label, value) in [
+                    ("green", AuroraColour::Green),
+                    ("red", AuroraColour::Red),
+                    ("purple", AuroraColour::Purple),
+                    ("mixed", AuroraColour::Mixed),
+                ] {
+                    let selected = new_scene.aurora.predominant_colour == value;
+                    if ui.selectable_label(selected, label).clicked() {
+                        new_scene.aurora.predominant_colour = value;
                         scene_changed = true;
                     }
                 }

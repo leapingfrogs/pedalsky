@@ -579,7 +579,7 @@ impl RunState {
             cursor_grabbed: false,
             mouse_delta: (0.0, 0.0),
             ev100: config.render.ev100,
-            tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
+            tonemap_mode: config.render.tone_mapper,
             world,
             weather,
             atmosphere_luts,
@@ -779,7 +779,7 @@ impl RunState {
                         Ok(new_config) => {
                             self.ev100 = new_config.render.ev100;
                             self.tonemap_mode =
-                                TonemapMode::from_config(&new_config.render.tone_mapper);
+                                new_config.render.tone_mapper;
                             if let Err(e) =
                                 self.app.reconfigure(&new_config, &self.windowed_gpu.gpu)
                             {
@@ -1177,6 +1177,15 @@ impl RunState {
             config.render.clear_color,
         );
 
+        // Audit §3.2 — propagate the cloud-subsystem on/off into the
+        // WeatherState so the overcast modulation in sky/ground sees a
+        // zeroed field when clouds aren't rendered. Without this, a
+        // synthesised overcast deck still drives a pale-grey sky after
+        // the user toggles the clouds subsystem off.
+        self.weather.cloud_render_active = config.render.subsystems.clouds;
+        self.weather
+            .refresh_overcast_field_visibility(&self.windowed_gpu.gpu.queue);
+
         // Drive the App.
         let luts_ref = self.atmosphere_luts.as_deref();
         let luts_bind_group = luts_ref.map(|l| &l.bind_group);
@@ -1362,7 +1371,7 @@ impl RunState {
             }
             *config = new_config.clone();
             self.ev100 = new_config.render.ev100;
-            self.tonemap_mode = TonemapMode::from_config(&new_config.render.tone_mapper);
+            self.tonemap_mode = new_config.render.tone_mapper;
             self.app
                 .reconfigure(&new_config, &self.windowed_gpu.gpu)
                 .context("App::reconfigure (ui)")?;
@@ -1560,7 +1569,15 @@ impl RunState {
             .device
             .poll(wgpu::PollType::wait_indefinitely())
             .ok();
-        rx.recv().ok().and_then(|r| r.ok());
+        // Audit §3.5 — propagate the `map_async` callback's Result so a
+        // failed mapping returns an error instead of panicking in
+        // `get_mapped_range`. The screenshot button is user-triggered;
+        // a panic here would crash the app on a transient mapping
+        // failure (out of memory, device lost, etc.).
+        let map_result = rx
+            .recv()
+            .map_err(|e| anyhow::anyhow!("HDR screenshot: map_async channel closed: {e}"))?;
+        map_result.map_err(|e| anyhow::anyhow!("HDR screenshot: map_async failed: {e}"))?;
         let bytes = slice.get_mapped_range().to_vec();
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
@@ -1627,7 +1644,11 @@ impl RunState {
             let _ = tx.send(r);
         });
         device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        rx.recv().ok().and_then(|r| r.ok());
+        // Audit §3.5 — see `read_hdr_into_*` for the rationale.
+        let map_result = rx
+            .recv()
+            .map_err(|e| anyhow::anyhow!("LDR screenshot: map_async channel closed: {e}"))?;
+        map_result.map_err(|e| anyhow::anyhow!("LDR screenshot: map_async failed: {e}"))?;
         let bytes = slice.get_mapped_range().to_vec();
         let mut out = Vec::with_capacity((w * h * bytes_per_pixel) as usize);
         for y in 0..h {
@@ -1727,7 +1748,7 @@ fn build_app(
         auto_exposure,
         ps_postprocess::TonemapState {
             ev100: config.render.ev100,
-            mode: ps_postprocess::TonemapMode::from_config(&config.render.tone_mapper),
+            mode: config.render.tone_mapper,
             auto_exposure_enabled: config.debug.auto_exposure,
         },
     );

@@ -22,14 +22,14 @@
 //   group 0 binding 0      FrameUniforms (frame)
 //   group 1 binding 0      WorldUniforms (world)
 //   group 2 binding 0      SurfaceParamsGpu (surface)
-//   group 2 binding 1      top_down_density_mask (R8Unorm 2D)
+//   group 2 binding 1      overcast_field (R8Unorm 2D)
 //   group 2 binding 2      density_mask_sampler (linear-clamp)
 //   group 3 binding {0..4} atmosphere LUTs
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<uniform> world: WorldUniforms;
 @group(2) @binding(0) var<uniform> surface: SurfaceParams;
-@group(2) @binding(1) var top_down_density_mask: texture_2d<f32>;
+@group(2) @binding(1) var overcast_field: texture_2d<f32>;
 @group(2) @binding(2) var density_mask_sampler: sampler;
 
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
@@ -394,7 +394,7 @@ fn mask_uv_from_world(p_xz: vec2<f32>) -> vec2<f32> {
 fn overcast_blocking(p_xz: vec2<f32>) -> f32 {
     let uv = mask_uv_from_world(p_xz);
     let mask = textureSampleLevel(
-        top_down_density_mask, density_mask_sampler, uv, 0.0,
+        overcast_field, density_mask_sampler, uv, 0.0,
     ).r;
     let transmittance = exp(-10.0 * mask);
     return 1.0 - transmittance;

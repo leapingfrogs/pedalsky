@@ -137,7 +137,7 @@ impl HeadlessApp {
             setup.auto_exposure.clone(),
             ps_postprocess::TonemapState {
                 ev100: config.render.ev100,
-                mode: TonemapMode::from_config(&config.render.tone_mapper),
+                mode: config.render.tone_mapper,
                 auto_exposure_enabled: config.debug.auto_exposure,
             },
         );
@@ -169,7 +169,7 @@ impl HeadlessApp {
             setup,
             app,
             ev100: config.render.ev100,
-            tonemap_mode: TonemapMode::from_config(&config.render.tone_mapper),
+            tonemap_mode: config.render.tone_mapper,
             last_config: config.clone(),
             atmosphere_luts,
             lightning_publish,
@@ -267,7 +267,7 @@ impl HeadlessApp {
             .reconfigure(config, gpu)
             .context("App::reconfigure")?;
         self.ev100 = config.render.ev100;
-        self.tonemap_mode = TonemapMode::from_config(&config.render.tone_mapper);
+        self.tonemap_mode = config.render.tone_mapper;
         self.last_config = config.clone();
         Ok(())
     }
@@ -347,6 +347,11 @@ impl HeadlessApp {
             .expect("synthesise WeatherState");
         weather.sun_direction = world.sun_direction_world;
         weather.sun_illuminance = glam::Vec3::splat(world.toa_illuminance_lux);
+        // Audit §3.2 — mirror config.render.subsystems.clouds into
+        // WeatherState so the overcast modulation in sky/ground turns
+        // off when the cloud subsystem is disabled.
+        weather.cloud_render_active = self.last_config.render.subsystems.clouds;
+        weather.refresh_overcast_field_visibility(&gpu.queue);
 
         let mut frame_uniforms = FrameUniforms {
             camera_position_world: Vec4::new(
@@ -524,6 +529,9 @@ impl HeadlessApp {
             owned = Some(fresh);
             owned.as_mut().expect("just-set")
         };
+        // Audit §3.2 — mirror config flag for overcast modulation.
+        weather.cloud_render_active = self.last_config.render.subsystems.clouds;
+        weather.refresh_overcast_field_visibility(&gpu.queue);
 
         let mut frame_uniforms = FrameUniforms {
             camera_position_world: Vec4::new(
@@ -688,7 +696,7 @@ impl HeadlessApp {
             let v = (mask_value.clamp(0.0, 1.0) * 255.0).round() as u8;
             gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &weather.textures.top_down_density_mask,
+                    texture: &weather.textures.overcast_field,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,

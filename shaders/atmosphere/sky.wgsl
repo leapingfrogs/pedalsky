@@ -22,7 +22,7 @@
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
 @group(1) @binding(0) var<uniform> world: WorldUniforms;
-@group(2) @binding(0) var top_down_density_mask: texture_2d<f32>;
+@group(2) @binding(0) var overcast_field: texture_2d<f32>;
 @group(2) @binding(1) var density_mask_sampler: sampler;
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut: texture_2d<f32>;
@@ -126,7 +126,7 @@ fn sample_overcast_at_view(view_dir: vec3<f32>) -> f32 {
         sample_xz = cam_world.xz + view_dir.xz * t;
     }
     let mask = textureSampleLevel(
-        top_down_density_mask, density_mask_sampler,
+        overcast_field, density_mask_sampler,
         mask_uv_from_world(sample_xz), 0.0,
     ).r;
     // Beer-Lambert mapping shared with the ground pass — keeps the

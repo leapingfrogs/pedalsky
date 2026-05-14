@@ -234,10 +234,16 @@ pub struct WeatherTextures {
     pub wind_field: wgpu::Texture,
     /// Default view onto `wind_field`.
     pub wind_field_view: wgpu::TextureView,
-    /// 2D R8Unorm top-down density mask matching weather-map extent.
-    pub top_down_density_mask: wgpu::Texture,
-    /// Default view onto `top_down_density_mask`.
-    pub top_down_density_mask_view: wgpu::TextureView,
+    /// 2D R8Unorm top-down overcast field matching weather-map extent.
+    /// Synthesis-owned: describes how much cloud column is overhead at
+    /// each XZ tile (the "world is overcast" descriptor), independent
+    /// of whether the cloud subsystem is currently rendering. Audit
+    /// §3.2 renamed this from `top_down_density_mask` to clarify the
+    /// intent; consumers (sky, ground, precip) gate their use of it
+    /// through `WeatherState::cloud_render_active`.
+    pub overcast_field: wgpu::Texture,
+    /// Default view onto `overcast_field`.
+    pub overcast_field_view: wgpu::TextureView,
     /// Phase 12.1 — 128×128 R8Uint per-pixel cloud-type override
     /// grid. Pixel value 0..7 selects a cloud type (matching
     /// [`crate::CloudType`]); value 255 is the sentinel "use the
@@ -292,6 +298,14 @@ pub struct WeatherState {
     /// Phase 13.5 — water plane params, or `None` when the scene
     /// has no `[water]` block. ps-water reads this via `ctx.weather`.
     pub scene_water: Option<crate::scene::Water>,
+    /// Audit §3.2 — `true` when the cloud subsystem will be running
+    /// this frame (mirrors `[render.subsystems].clouds`). Sky and
+    /// ground gate their overcast-modulation reads of
+    /// `WeatherTextures::overcast_field` on this so a no-clouds scene
+    /// stops producing pale-grey sky. The flag belongs to the
+    /// render-graph state, not to synthesis; the host sets it before
+    /// each frame.
+    pub cloud_render_active: bool,
     /// Monotonic counter bumped each time `ps-synthesis::synthesise`
     /// produces a fresh `WeatherState`. Subsystems can cache
     /// bind groups keyed on this value and rebuild only when it
@@ -303,6 +317,38 @@ pub struct WeatherState {
 }
 
 impl WeatherState {
+    /// Audit §3.2 — zero the overcast field texture when the cloud
+    /// subsystem isn't rendering this frame, so sky/ground passes that
+    /// sample it for overcast modulation see no overhead cloud cover.
+    ///
+    /// Idempotent and cheap (~16 KB texture upload at the 128×128 R8
+    /// default). The host calls this once per frame after setting
+    /// [`Self::cloud_render_active`]; if the flag is true, this is a
+    /// no-op.
+    pub fn refresh_overcast_field_visibility(&self, queue: &wgpu::Queue) {
+        if self.cloud_render_active {
+            return;
+        }
+        let size = self.textures.overcast_field.size();
+        let bytes_per_row = size.width;
+        let zeros = vec![0u8; (bytes_per_row * size.height) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.textures.overcast_field,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &zeros,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(size.height),
+            },
+            size,
+        );
+    }
+
     /// Construct a minimal `WeatherState` with 1×1×1 zeroed textures
     /// and an empty cloud-layer buffer. Used by `ps-core` integration
     /// tests that need a borrow-able `&WeatherState` without dragging
@@ -451,8 +497,8 @@ impl WeatherState {
                 weather_map_view,
                 wind_field,
                 wind_field_view,
-                top_down_density_mask,
-                top_down_density_mask_view,
+                overcast_field: top_down_density_mask,
+                overcast_field_view: top_down_density_mask_view,
                 cloud_type_grid,
                 cloud_type_grid_view,
             },
@@ -463,6 +509,7 @@ impl WeatherState {
             scene_aurora_intensity_override: -1.0,
             scene_aurora_colour_bias: [0.10, 0.85, 0.05, 0.0],
             scene_water: None,
+            cloud_render_active: true,
             revision: 0,
         }
     }

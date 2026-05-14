@@ -152,6 +152,48 @@ impl Default for TimeConfig {
     }
 }
 
+/// Tone-map curve choice. The serde variant names match the historical
+/// TOML strings (`ACESFilmic`, `Passthrough`) so existing
+/// `pedalsky.toml` files round-trip without edits.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TonemapMode {
+    /// ACES Filmic (Narkowicz 2015 fit).
+    #[default]
+    #[serde(rename = "ACESFilmic")]
+    AcesFilmic,
+    /// Linear passthrough with `clamp(0, 1)` — useful for shader debugging.
+    #[serde(rename = "Passthrough")]
+    Passthrough,
+}
+
+impl TonemapMode {
+    /// Integer code matching the WGSL `TonemapUniforms.mode` field.
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::AcesFilmic => 0,
+            Self::Passthrough => 1,
+        }
+    }
+}
+
+/// Cloud-march reprojection mode. Only `Off` is implemented in v1;
+/// the other variants are reserved by the existing TOML surface
+/// (`pedalsky.toml`: `off | checker_2x2 | quad_4x4`) for future
+/// support and currently fail `Config::validate`.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReprojectionMode {
+    /// No reprojection (the v1 default).
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    /// 2×2 checkerboard reprojection (reserved).
+    #[serde(rename = "checker_2x2")]
+    Checker2x2,
+    /// 4×4 quad reprojection (reserved).
+    #[serde(rename = "quad_4x4")]
+    Quad4x4,
+}
+
 /// Render configuration block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -162,8 +204,8 @@ pub struct RenderConfig {
     pub depth_format: String,
     /// Photographic EV at ISO 100.
     pub ev100: f32,
-    /// Tone mapper choice: `ACESFilmic`, `Reinhard`, or `Passthrough`.
-    pub tone_mapper: String,
+    /// Tone mapper choice.
+    pub tone_mapper: TonemapMode,
     /// Linear-sRGB clear colour (ignored if any subsystem owns the SkyBackdrop stage).
     pub clear_color: [f32; 4],
 
@@ -199,7 +241,7 @@ impl Default for RenderConfig {
             hdr_format: "Rgba16Float".into(),
             depth_format: "Depth32Float".into(),
             ev100: 14.0,
-            tone_mapper: "ACESFilmic".into(),
+            tone_mapper: TonemapMode::AcesFilmic,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             subsystems: SubsystemFlags::default(),
             atmosphere: AtmosphereTuning::default(),
@@ -318,8 +360,8 @@ pub struct CloudsTuning {
     pub detail_strength: f32,
     /// Beer-Powder lerp factor.
     pub powder_strength: f32,
-    /// Reprojection mode (only `"off"` is supported in v1).
-    pub reprojection: String,
+    /// Reprojection mode (only `Off` is supported in v1).
+    pub reprojection: ReprojectionMode,
     /// Pause `simulated_seconds` advancing for screenshot framing.
     pub freeze_time: bool,
     /// Phase 13.9 — optional per-frame temporal rotation of the cloud
@@ -442,7 +484,7 @@ impl Default for CloudsTuning {
             multi_scatter_octaves: 4,
             detail_strength: 0.35,
             powder_strength: 1.0,
-            reprojection: "off".into(),
+            reprojection: ReprojectionMode::Off,
             freeze_time: false,
             temporal_jitter: false,
             droplet_diameter_bias: 1.0,
@@ -831,9 +873,9 @@ impl Config {
                 self.window.width, self.window.height
             )));
         }
-        if self.render.clouds.reprojection != "off" {
+        if self.render.clouds.reprojection != ReprojectionMode::Off {
             return Err(ConfigError::Invalid(format!(
-                "render.clouds.reprojection = {:?} — only \"off\" is supported in v1",
+                "render.clouds.reprojection = {:?} — only `off` is supported in v1",
                 self.render.clouds.reprojection
             )));
         }

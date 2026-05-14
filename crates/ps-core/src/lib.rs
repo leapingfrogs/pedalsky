@@ -37,7 +37,7 @@ pub use atmosphere_luts::{
 pub use bind_group_cache::BindGroupCache;
 pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
 pub use pipelined_readback::PipelinedReadback;
-pub use config::{Config, ConfigError};
+pub use config::{Config, ConfigError, ReprojectionMode, TonemapMode};
 pub use contexts::{
     FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
 };
@@ -46,9 +46,9 @@ pub use hot_reload::{
     HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE,
 };
 pub use scene::{
-    aurora_colour_bias, default_density_scale, default_droplet_diameter_um, Aurora,
-    CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation,
-    Scene, SceneError, Surface, SurfaceMaterial, Water, Wetness, WindAloftSample,
+    default_density_scale, default_droplet_diameter_um, Aurora, AuroraColour, CloudLayer,
+    CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation, Scene, SceneError,
+    Surface, SurfaceMaterial, Water, Wetness, WindAloftSample,
 };
 pub use subsystem::{PassDescriptor, PassId, PassStage, RenderSubsystem};
 pub use weather::{

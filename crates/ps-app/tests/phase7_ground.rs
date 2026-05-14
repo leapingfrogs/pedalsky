@@ -26,7 +26,7 @@ fn gpu() -> Option<&'static GpuContext> {
 fn baseline_config() -> Config {
     let mut config = Config::default();
     config.render.ev100 = 15.0;
-    config.render.tone_mapper = "ACESFilmic".into();
+    config.render.tone_mapper = ps_core::TonemapMode::AcesFilmic;
     config.render.subsystems.atmosphere = true;
     config.render.subsystems.ground = true;
     config.render.subsystems.clouds = false;

@@ -76,7 +76,7 @@ pub fn run(workspace_root: &Path, out_dir: &Path) -> Result<()> {
     let wind_field_pixels =
         read_back_3d_rgba16f(&gpu, &weather.textures.wind_field, WIND_FIELD_SIZE)?;
     let top_down_pixels =
-        read_back_2d_r8(&gpu, &weather.textures.top_down_density_mask, TOP_DOWN_SIZE)?;
+        read_back_2d_r8(&gpu, &weather.textures.overcast_field, TOP_DOWN_SIZE)?;
 
     write_weather_map_png(&out_dir.join("weather_map.png"), &weather_map_pixels)?;
     write_wind_field_png(

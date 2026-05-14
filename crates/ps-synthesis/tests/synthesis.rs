@@ -101,8 +101,8 @@ fn weather_state_textures_have_expected_dimensions() {
     assert_eq!(weather.textures.wind_field.size().width, 32);
     assert_eq!(weather.textures.wind_field.size().height, 16);
     assert_eq!(weather.textures.wind_field.size().depth_or_array_layers, 32);
-    assert_eq!(weather.textures.top_down_density_mask.size().width, 128);
-    assert_eq!(weather.textures.top_down_density_mask.size().height, 128);
+    assert_eq!(weather.textures.overcast_field.size().width, 128);
+    assert_eq!(weather.textures.overcast_field.size().height, 128);
 }
 
 #[test]

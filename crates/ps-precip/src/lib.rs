@@ -9,7 +9,7 @@
 //!
 //! All passes early-return when:
 //! - intensity_mm_per_h == 0 (no precipitation), or
-//! - the scene has zero clouds (top_down_density_mask is uniformly 0 →
+//! - the scene has zero clouds (overcast_field is uniformly 0 →
 //!   shader-side `cloud_mask * intensity` collapses to 0).
 //!
 //! `[render.subsystems].precipitation` is the master toggle — when off
@@ -683,7 +683,7 @@ impl RenderSubsystem for PrecipSubsystem {
         // Rebuild bind groups against the live texture views from
         // WeatherState (density mask for render + far, wind_field for
         // compute). Both views may have been replaced by hot-reload.
-        let mask_view = &ctx.weather.textures.top_down_density_mask_view;
+        let mask_view = &ctx.weather.textures.overcast_field_view;
         let wind_view = &ctx.weather.textures.wind_field_view;
         let active_pool: &ParticlePool = match kind {
             2 => &self.snow_pool,
