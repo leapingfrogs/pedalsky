@@ -255,7 +255,7 @@ fn gpu_timestamps_drain_returns_per_pass_durations() {
     let _ = app.render_one_frame(gpu);
     // Second frame's drain reads the previous frame's timings.
     let _ = app.render_one_frame(gpu);
-    let timings = app.app_for_test().drain_gpu_timings(gpu);
+    let timings = app.app_for_test_mut().drain_gpu_timings(gpu);
     eprintln!("gpu timings = {timings:?}");
     if !timings.is_empty() {
         // Names must be the registered pass names; durations should be

@@ -9,6 +9,7 @@
 //! frame state (EV100, tonemap mode, auto-exposure enabled) is updated
 //! by the host via [`TonemapHandle::set_state`] before each frame.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ps_core::{
@@ -17,6 +18,11 @@ use ps_core::{
 };
 
 use crate::{auto_exposure::AutoExposure, tonemap::Tonemap, tonemap::TonemapMode};
+
+/// Sentinel bit-pattern for `auto_ev100_bits` meaning "no successful
+/// readback yet". Using `u32::MAX` (the bit-pattern of a quiet NaN with
+/// every payload bit set) means a real `f32` EV-100 will never collide.
+const AUTO_EV100_NONE: u32 = u32::MAX;
 
 const PASS_TONEMAP: PassId = 0;
 
@@ -45,13 +51,24 @@ impl Default for TonemapState {
 /// Shared inner state of the tonemap subsystem. Held behind an `Arc`
 /// so both the executor (via `RenderSubsystem`) and the host (via
 /// `TonemapHandle`) can mutate without exclusive ownership.
+///
+/// Audit §M1 — `TonemapState` is decomposed into three atomics so the
+/// per-pass read and the host-side `set_state` write are both
+/// lock-free. Same for the auto-exposure EV100 cache (`AtomicU32`
+/// bit-cast of the `f32`, with `u32::MAX` as the "None" sentinel).
 struct TonemapShared {
     tonemap: Arc<Tonemap>,
     auto_exposure: Arc<AutoExposure>,
-    state: Mutex<TonemapState>,
+    /// `f32::to_bits()` of the user-configured EV-100.
+    ev100_bits: AtomicU32,
+    /// `TonemapMode::as_u32()` of the selected curve.
+    mode: AtomicU32,
+    /// Mirror of the host's auto-exposure toggle.
+    auto_exposure_enabled: AtomicBool,
     /// Cached EV100 derived by the previous frame's auto-exposure
-    /// read-back. `None` until the first read completes.
-    auto_ev100: Mutex<Option<f32>>,
+    /// read-back. `AUTO_EV100_NONE` (= `u32::MAX`) means "no value
+    /// yet"; any other value is the bit-pattern of a valid `f32`.
+    auto_ev100_bits: AtomicU32,
 }
 
 /// Phase 9.1 tone-map subsystem.
@@ -69,10 +86,21 @@ impl TonemapSubsystem {
             inner: Arc::new(TonemapShared {
                 tonemap,
                 auto_exposure,
-                state: Mutex::new(initial_state),
-                auto_ev100: Mutex::new(None),
+                ev100_bits: AtomicU32::new(initial_state.ev100.to_bits()),
+                mode: AtomicU32::new(initial_state.mode.as_u32()),
+                auto_exposure_enabled: AtomicBool::new(initial_state.auto_exposure_enabled),
+                auto_ev100_bits: AtomicU32::new(AUTO_EV100_NONE),
             }),
         }
+    }
+}
+
+/// Helper — turn `mode.as_u32()` back into a `TonemapMode`. Mirrors the
+/// 1-to-1 mapping inside [`TonemapMode::as_u32`].
+fn tonemap_mode_from_u32(v: u32) -> TonemapMode {
+    match v {
+        1 => TonemapMode::Passthrough,
+        _ => TonemapMode::AcesFilmic,
     }
 }
 
@@ -100,20 +128,23 @@ impl RenderSubsystem for TonemapSubsystem {
         let Some(target) = ctx.tonemap_target else {
             return;
         };
-        let st = *self.inner.state.lock().expect("tonemap state lock");
-        let ev = if st.auto_exposure_enabled {
-            self.inner.auto_exposure.dispatch(encoder);
-            self.inner
-                .auto_ev100
-                .lock()
-                .expect("auto ev lock")
-                .unwrap_or(st.ev100)
+        // Audit §M1 — lock-free reads via atomics.
+        let inner = &self.inner;
+        let user_ev = f32::from_bits(inner.ev100_bits.load(Ordering::Relaxed));
+        let mode = tonemap_mode_from_u32(inner.mode.load(Ordering::Relaxed));
+        let auto_enabled = inner.auto_exposure_enabled.load(Ordering::Relaxed);
+        let ev = if auto_enabled {
+            inner.auto_exposure.dispatch(encoder);
+            let bits = inner.auto_ev100_bits.load(Ordering::Relaxed);
+            if bits == AUTO_EV100_NONE {
+                user_ev
+            } else {
+                f32::from_bits(bits)
+            }
         } else {
-            st.ev100
+            user_ev
         };
-        self.inner
-            .tonemap
-            .render(encoder, ctx.queue, target, ev, st.mode);
+        inner.tonemap.render(encoder, ctx.queue, target, ev, mode);
     }
 }
 
@@ -152,31 +183,29 @@ impl TonemapHandle {
         });
     }
 
-    /// Update the per-frame state. Cheap (mutex lock + small struct copy).
+    /// Update the per-frame state. Lock-free atomics after audit §M1.
     pub fn set_state(&self, state: TonemapState) {
         if let Some(inner) = self.inner.lock().expect("tonemap inner lock").as_ref() {
-            *inner.state.lock().expect("tonemap state lock") = state;
+            inner.ev100_bits.store(state.ev100.to_bits(), Ordering::Relaxed);
+            inner.mode.store(state.mode.as_u32(), Ordering::Relaxed);
+            inner
+                .auto_exposure_enabled
+                .store(state.auto_exposure_enabled, Ordering::Relaxed);
         }
     }
 
     /// Drain the staging buffer. Call after `queue.submit(...)` so the
     /// previous frame's auto-exposure result is available for the next
-    /// frame's tonemap. Blocks on `device.poll(WaitIndefinitely)`. No-op
-    /// when auto-exposure is off.
+    /// frame's tonemap. No-op when auto-exposure is off.
     pub fn drain_auto_exposure(&self, gpu: &GpuContext) {
         let Some(inner) = self.inner.lock().expect("tonemap inner lock").clone() else {
             return;
         };
-        let enabled = inner
-            .state
-            .lock()
-            .expect("tonemap state lock")
-            .auto_exposure_enabled;
-        if !enabled {
+        if !inner.auto_exposure_enabled.load(Ordering::Relaxed) {
             return;
         }
         if let Some(ev) = inner.auto_exposure.read_back_ev100(&gpu.device) {
-            *inner.auto_ev100.lock().expect("auto ev lock") = Some(ev);
+            inner.auto_ev100_bits.store(ev.to_bits(), Ordering::Relaxed);
         }
     }
 }

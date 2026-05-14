@@ -144,6 +144,12 @@ pub struct CloudsSubsystem {
     /// purely spatial — plan principle #9 / Phase 6 design), so this
     /// flag only gates TAA on/off.
     freeze_time: bool,
+    /// Audit §L2 — the cloud-layer Vec only changes when synthesis
+    /// reruns (`weather.revision` bump). Tracking the revision lets
+    /// `prepare()` skip the per-frame `cpu_layers` zero-fill +
+    /// element copy + 256 B `queue.write_buffer` of the layers
+    /// storage buffer.
+    layers_uploaded_at_revision: Option<u64>,
 }
 
 /// Cloud render target bundle. Two `Rgba16Float` attachments —
@@ -639,6 +645,7 @@ impl CloudsSubsystem {
             taa_dispatch: None,
             data_bg_cache: BindGroupCache::new(),
             freeze_time: c.freeze_time,
+            layers_uploaded_at_revision: None,
         }
     }
 
@@ -1002,33 +1009,45 @@ impl RenderSubsystem for CloudsSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        // Pull in the synthesised cloud layers if the weather pipeline
-        // has produced any; otherwise keep the default cumulus layer.
-        if !ctx.weather.cloud_layers.is_empty() {
-            self.cpu_layers = [CloudLayerGpu::zeroed(); MAX_CLOUD_LAYERS as usize];
-            for (i, l) in ctx
-                .weather
-                .cloud_layers
-                .iter()
-                .take(MAX_CLOUD_LAYERS as usize)
-                .enumerate()
-            {
-                self.cpu_layers[i] = *l;
+        // Audit §L2 — pull synthesised layers + write the layers
+        // storage buffer only when synthesis has rerun (revision bump).
+        // The Vec content is otherwise stable across frames.
+        let revision = ctx.weather.revision;
+        let layers_changed = self.layers_uploaded_at_revision != Some(revision);
+        if layers_changed {
+            if !ctx.weather.cloud_layers.is_empty() {
+                self.cpu_layers = [CloudLayerGpu::zeroed(); MAX_CLOUD_LAYERS as usize];
+                for (i, l) in ctx
+                    .weather
+                    .cloud_layers
+                    .iter()
+                    .take(MAX_CLOUD_LAYERS as usize)
+                    .enumerate()
+                {
+                    self.cpu_layers[i] = *l;
+                }
+                self.params.cloud_layer_count = ctx
+                    .weather
+                    .cloud_layers
+                    .len()
+                    .min(MAX_CLOUD_LAYERS as usize) as u32;
+            } else {
+                self.params.cloud_layer_count = 1;
             }
-            self.params.cloud_layer_count = ctx
-                .weather
-                .cloud_layers
-                .len()
-                .min(MAX_CLOUD_LAYERS as usize) as u32;
-        } else {
-            self.params.cloud_layer_count = 1;
+            ctx.queue.write_buffer(
+                &self.layers_buffer,
+                0,
+                bytemuck::cast_slice(&self.cpu_layers),
+            );
+            self.layers_uploaded_at_revision = Some(revision);
         }
 
-        // Upload uniforms.
+        // Params can change every frame via the UI's reconfigure path,
+        // so this upload stays unconditional. It's a single 16-byte
+        // uniform; the cost vs the layers storage buffer (~256 B) is
+        // marginal.
         ctx.queue
             .write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
-        ctx.queue
-            .write_buffer(&self.layers_buffer, 0, bytemuck::cast_slice(&self.cpu_layers));
         // The group-2 bind group is rebuilt inside the cloud march pass
         // closure because it depends on the HDR depth view (only
         // available via RenderContext).

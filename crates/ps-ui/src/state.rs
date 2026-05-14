@@ -183,8 +183,10 @@ pub struct UiFrameStats {
     pub fps: f32,
     /// Per-pass GPU timestamps in milliseconds: `(pass_name, ms)`.
     /// Empty when timestamp queries are unsupported or unavailable
-    /// for the most recent frame.
-    pub gpu_passes: Vec<(String, f32)>,
+    /// for the most recent frame. Audit §M3 — `&'static str` since
+    /// pass names are static literals; avoids `String::from` per
+    /// pass per frame.
+    pub gpu_passes: Vec<(&'static str, f32)>,
 }
 
 /// World read-out the host pushes each frame for the World panel.

@@ -189,6 +189,13 @@ impl HeadlessApp {
         &self.app
     }
 
+    /// Test-only `&mut` accessor — Phase 10's timestamp-drain test
+    /// needs `&mut App` after audit §L1 dropped the inner Mutexes on
+    /// the timestamp infrastructure.
+    pub fn app_for_test_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
     /// Test-only accessor for the canonical group-0 bind group.
     pub fn frame_bind_group_for_test(&self) -> &wgpu::BindGroup {
         &self.setup.bindings.frame_bind_group
