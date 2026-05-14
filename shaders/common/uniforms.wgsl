@@ -24,6 +24,12 @@ struct FrameUniforms {
     simulated_seconds: f32,
     frame_index: u32,
     ev100: f32,
+    // Cloud TAA reprojection (used by shaders/clouds/cloud_taa.wgsl).
+    // Equals the current frame's `view_proj` on frame 0 so the
+    // reprojection is identity; thereafter holds the previous
+    // frame's value, latched at the start of each prepare via
+    // `FrameUniforms::shift_view_proj_history`.
+    prev_view_proj: mat4x4<f32>,
 };
 
 // Note: std140 vec3 alignment is 16 (size 16). The Rust mirror uses

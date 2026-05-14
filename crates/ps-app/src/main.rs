@@ -290,6 +290,12 @@ struct RunState {
     /// scrolling. `None` until the first frame finishes (so the very
     /// first frame reports zero velocity rather than a garbage delta).
     last_camera_position: Option<glam::Vec3>,
+    /// Previous frame's `view_proj`. `None` until the first frame's
+    /// matrices are set — on that first frame the TAA pass sees
+    /// `prev_view_proj == view_proj` so its reprojection is identity
+    /// (and the history is invalid anyway, so the shader uses the
+    /// current sample directly).
+    prev_view_proj: Option<glam::Mat4>,
     frame_index: u32,
     fps_accum_dt: f32,
     fps_accum_frames: u32,
@@ -583,6 +589,7 @@ impl RunState {
             start: now,
             last_frame: now,
             last_camera_position: None,
+            prev_view_proj: None,
             frame_index: 0,
             fps_accum_dt: 0.0,
             fps_accum_frames: 0,
@@ -1069,6 +1076,14 @@ impl RunState {
             ..FrameUniforms::default()
         };
         frame_uniforms.set_matrices(view, proj);
+        // Cloud TAA reprojection. On the first frame `self.prev_view_proj`
+        // is None — feed the current `view_proj` so the reprojection is
+        // identity (history is also flagged invalid by the cloud
+        // subsystem on its first run, so the TAA shader uses the
+        // current sample directly). After that the cached value is
+        // last frame's `view_proj`.
+        frame_uniforms.prev_view_proj =
+            self.prev_view_proj.unwrap_or(frame_uniforms.view_proj);
         // Sun angular radius from config (degrees → radians).
         // sun_disk toggle: setting angular radius to zero hides the
         // analytic disk (sky shader's `if (cos_view_sun > cos_disk)`
@@ -1316,6 +1331,10 @@ impl RunState {
         frame.present();
 
         self.frame_index = self.frame_index.wrapping_add(1);
+        // Capture this frame's view_proj for next frame's cloud TAA
+        // reprojection. (Computed before the `set_matrices` call near
+        // the top of `frame`; the value mirrors `frame_uniforms.view_proj`.)
+        self.prev_view_proj = Some(proj * view);
         self.fps_accum_dt += dt;
         self.fps_accum_frames += 1;
         if self.fps_accum_dt >= 0.5 {

@@ -363,6 +363,12 @@ impl HeadlessApp {
             ..FrameUniforms::default()
         };
         frame_uniforms.set_matrices(view, proj);
+        // Single-frame headless render — make prev_view_proj equal to
+        // current so the cloud TAA pass' reprojection is identity. The
+        // history is also flagged invalid on first run by the cloud
+        // subsystem, so the TAA shader uses the current sample
+        // directly regardless.
+        frame_uniforms.shift_view_proj_history();
         frame_uniforms.set_sun(
             world.sun_direction_world,
             self.last_config
@@ -534,6 +540,12 @@ impl HeadlessApp {
             ..FrameUniforms::default()
         };
         frame_uniforms.set_matrices(view, proj);
+        // Single-frame headless render — make prev_view_proj equal to
+        // current so the cloud TAA pass' reprojection is identity. The
+        // history is also flagged invalid on first run by the cloud
+        // subsystem, so the TAA shader uses the current sample
+        // directly regardless.
+        frame_uniforms.shift_view_proj_history();
         frame_uniforms.set_sun(
             world.sun_direction_world,
             self.last_config
@@ -712,6 +724,12 @@ impl HeadlessApp {
             ..FrameUniforms::default()
         };
         frame_uniforms.set_matrices(view, proj);
+        // Single-frame headless render — make prev_view_proj equal to
+        // current so the cloud TAA pass' reprojection is identity. The
+        // history is also flagged invalid on first run by the cloud
+        // subsystem, so the TAA shader uses the current sample
+        // directly regardless.
+        frame_uniforms.shift_view_proj_history();
         frame_uniforms.set_sun(
             world.sun_direction_world,
             self.last_config

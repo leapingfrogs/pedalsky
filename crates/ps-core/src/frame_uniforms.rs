@@ -56,16 +56,43 @@ pub struct FrameUniforms {
     pub frame_index: u32,
     /// Photographic EV at ISO 100.
     pub ev100: f32,
+    /// Previous frame's `proj * view`. Used by the cloud TAA pass to
+    /// reproject the previous frame's resolved cloud RT into the
+    /// current frame's screen space. On the first frame the host
+    /// should set this to the current frame's `view_proj` so the
+    /// reprojection is identity (no offset — correctly maps to
+    /// "history sample = current pixel"). After each frame the host
+    /// captures the current `view_proj` and stores it here for the
+    /// next frame's prepare step.
+    pub prev_view_proj: Mat4,
 }
 
 impl FrameUniforms {
     /// Set `view`, `proj`, `view_proj`, `inv_view_proj` from the four basic
     /// matrices. Convenience for hosts that only carry view + proj.
+    ///
+    /// Does **not** touch `prev_view_proj` — that's a stateful slot the
+    /// host must manage explicitly across frames via
+    /// [`FrameUniforms::shift_view_proj_history`]. Setting matrices for
+    /// the first frame should be followed by a call to
+    /// `shift_view_proj_history` to make the prev/current slots equal
+    /// (so the TAA reprojection is identity on frame 0).
     pub fn set_matrices(&mut self, view: Mat4, proj: Mat4) {
         self.view = view;
         self.proj = proj;
         self.view_proj = proj * view;
         self.inv_view_proj = self.view_proj.inverse();
+    }
+
+    /// Latch the current `view_proj` into `prev_view_proj`. Call this at
+    /// the **start** of each prepare, before recomputing `view_proj` for
+    /// the new frame, so the previous-frame value is preserved for the
+    /// cloud TAA pass. On the first frame the host should call
+    /// [`Self::set_matrices`] first and then either call this method
+    /// (which makes prev == current — identity reprojection) or set
+    /// `prev_view_proj` directly to the same value.
+    pub fn shift_view_proj_history(&mut self) {
+        self.prev_view_proj = self.view_proj;
     }
 
     /// Set sun direction + angular radius (radians) from a unit world-space vector.
@@ -128,6 +155,10 @@ pub struct FrameUniformsGpu {
     pub frame_index: u32,
     /// Photographic EV at ISO 100.
     pub ev100: f32,
+    /// Previous frame's `proj * view`, for the cloud TAA pass'
+    /// reprojection step. See [`FrameUniforms::prev_view_proj`] for
+    /// the host-side lifecycle.
+    pub prev_view_proj: [[f32; 4]; 4],
 }
 
 impl FrameUniformsGpu {
@@ -149,6 +180,7 @@ impl FrameUniformsGpu {
             simulated_seconds: u.simulated_seconds,
             frame_index: u.frame_index,
             ev100: u.ev100,
+            prev_view_proj: u.prev_view_proj.to_cols_array_2d(),
         }
     }
 }
@@ -161,8 +193,10 @@ mod tests {
     /// declaration in `shaders/common/uniforms.wgsl`.
     #[test]
     fn frame_uniforms_size_pinned() {
-        // 4 mat4 (4×64=256) + 7 vec4 (7×16=112) + 4 scalars (16) = 384 bytes.
-        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 384);
+        // 4 mat4 (4×64=256) + 7 vec4 (7×16=112) + 4 scalars (16) = 384 bytes
+        // baseline; +1 mat4 (64) for the cloud-TAA `prev_view_proj` slot
+        // takes us to 448.
+        assert_eq!(std::mem::size_of::<FrameUniformsGpu>(), 448);
         assert_eq!(std::mem::size_of::<FrameUniformsGpu>() % 16, 0);
     }
 

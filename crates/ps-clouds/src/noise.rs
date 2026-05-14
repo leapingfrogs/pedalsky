@@ -60,6 +60,10 @@ pub struct CloudNoise {
     /// here so the same layout is reused by [`CloudsSubsystem`] when it
     /// builds the bind group with the cloud uniforms.
     pub layout: wgpu::BindGroupLayout,
+    /// Variant layout adding a binding-12 uniform buffer for the
+    /// half-res march pipeline. Distinct from `layout` so the
+    /// full-res march's Metal MSL emission is unaffected.
+    pub layout_halfres: wgpu::BindGroupLayout,
 }
 
 impl CloudNoise {
@@ -190,6 +194,7 @@ impl CloudNoise {
         });
 
         let layout = noise_bind_group_layout(device);
+        let layout_halfres = noise_halfres_bind_group_layout(device);
 
         Self {
             base,
@@ -203,6 +208,7 @@ impl CloudNoise {
             sampler,
             nearest_sampler,
             layout,
+            layout_halfres,
         }
     }
 }
@@ -494,6 +500,135 @@ pub fn noise_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D3,
                     multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+/// Bind-group layout for the half-res march pipeline only — extends
+/// [`noise_bind_group_layout`] with a binding-12 uniform buffer
+/// carrying the live cloud-RT size. We keep this distinct from the
+/// full-res layout so the full-res pipeline's WGSL→MSL compilation
+/// is byte-identical to the pre-toggle baseline (Naga maps bind
+/// group bindings to Metal argument-buffer slots, so adding a binding
+/// to the full-res layout would shift the emitted MSL).
+pub fn noise_halfres_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let texture_3d = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D3,
+        multisampled: false,
+    };
+    let texture_2d = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2,
+        multisampled: false,
+    };
+    let texture_2d_unfiltered = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+        view_dimension: wgpu::TextureViewDimension::D2,
+        multisampled: false,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("clouds-data-halfres-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_3d,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_3d,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_2d,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_2d_unfiltered,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 7,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_2d,
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: texture_3d,
+                count: None,
+            },
+            // Binding 12: cloud-RT size uniform — half-res only.
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
                 count: None,
             },

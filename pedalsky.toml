@@ -67,6 +67,8 @@ detail_strength       = 0.35
 powder_strength       = 1.0
 reprojection          = "off"     # off | checker_2x2 | quad_4x4 (only "off" in v1)
 freeze_time           = false
+half_res_render       = false
+temporal_taa          = false
 
 [render.precip]
 near_particle_count = 8000

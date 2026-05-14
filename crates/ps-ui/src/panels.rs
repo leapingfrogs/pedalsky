@@ -998,6 +998,44 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .changed();
 
         tuning_changed |= ui.checkbox(&mut c.freeze_time, "Freeze time").changed();
+        // Half-resolution cloud render + 9-tap Catmull-Rom upsample.
+        // ~3-4× cloud-march throughput at the cost of some softness
+        // on thin cloud edges. Toggling reallocates the cloud RT on
+        // the next frame via `reconfigure`.
+        tuning_changed |= ui
+            .checkbox(
+                &mut c.half_res_render,
+                "Half-res render (Catmull-Rom upsample)",
+            )
+            .on_hover_text(
+                "Render the cloud march at 1/4 the framebuffer area \
+                 and reconstruct full-res samples in the composite \
+                 pass via 9-tap Catmull-Rom bicubic. Frees ~3-4× of \
+                 the cloud cost; expect slightly softer edges on \
+                 thin cirrus / cumulus boundaries. Off by default so \
+                 golden-image goldens stay valid.",
+            )
+            .changed();
+        // Temporal anti-aliasing on the cloud RT. Reprojects last
+        // frame's resolved output via prev_view_proj, AABB-clamps to
+        // a 3×3 neighbourhood, blends at ~1/8 weight.
+        ui.add_enabled_ui(!c.freeze_time, |ui| {
+            tuning_changed |= ui
+                .checkbox(
+                    &mut c.temporal_taa,
+                    "Temporal AA (history reprojection)",
+                )
+                .on_hover_text(
+                    "Blend the current cloud march with the \
+                     previous frame's resolved output (EMA, 3×3 \
+                     neighbourhood clamp). Roughly 4–8× effective \
+                     samples for the same cost — pair with half-res \
+                     for the canonical AAA cloud configuration. \
+                     Auto-disabled while paused so screenshots \
+                     reflect a single frame.",
+                )
+                .changed();
+        });
         // Phase 13.9 — optional temporal rotation of the spatial blue
         // noise. Auto-gated by `freeze_time` engine-side, but show the
         // disabled state here so the user understands why the toggle
@@ -1228,6 +1266,23 @@ fn wet_surface_panel(ui: &mut egui::Ui, state: &mut UiState) {
             }
         });
 
+        // Surface temperature. Lives in `Scene.surface` (not
+        // `Scene.surface.wetness`), but the ground shader uses it to
+        // gate the snow layer (`temp < 0.5 °C && snow_depth > 0`) so
+        // it belongs alongside the snow control here. Range spans
+        // typical real-world surface temperatures.
+        any |= Slider::new(&mut new_scene.surface.temperature_c, -20.0..=40.0)
+            .text("temperature_c")
+            .max_decimals(2)
+            .ui(ui)
+            .on_hover_text(
+                "Surface-level air temperature in °C. Snow renders \
+                 when this is below 0.5 °C AND snow_depth_m > 0. \
+                 Wet-surface puddles continue to render at any \
+                 temperature.",
+            )
+            .changed();
+
         let w = &mut new_scene.surface.wetness;
         any |= Slider::new(&mut w.ground_wetness, 0.0..=1.0)
             .text("ground_wetness")
@@ -1248,6 +1303,12 @@ fn wet_surface_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .text("snow_depth_m")
             .max_decimals(4)
             .ui(ui)
+            .on_hover_text(
+                "Settled snow depth in metres. Snow ramps in linearly \
+                 from 0 m to 0.05 m and reaches full coverage at 0.05 m \
+                 (5 cm). Gated by temperature_c < 0.5 °C — adjust \
+                 temperature above if snow isn't visible.",
+            )
             .changed();
         if any {
             state.latest_scene = Some(new_scene.clone());

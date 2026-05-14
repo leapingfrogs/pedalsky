@@ -366,6 +366,25 @@ pub struct CloudsTuning {
     /// cloud types ignore this scalar.
     #[serde(default = "default_diurnal_strength")]
     pub diurnal_strength: f32,
+    /// Render the cloud march at half-resolution (1/4 area) and
+    /// upsample via 9-tap Catmull-Rom in the composite pass. Off by
+    /// default so golden-image regression tests stay valid; toggling
+    /// on at runtime triggers a cloud RT reallocation on the next
+    /// frame. Yields ~3-4× cloud march throughput at the cost of
+    /// some softness on thin cloud edges.
+    #[serde(default)]
+    pub half_res_render: bool,
+    /// Temporal anti-aliasing on the cloud render target. Blends the
+    /// current march output with the prev-frame's resolved output
+    /// using exponential averaging (~1/8 weight) with a 3×3
+    /// neighbourhood-clamp to suppress ghosting on disocclusion.
+    /// Roughly 4–8× effective sample count for the same per-frame
+    /// cost — pair with `half_res_render` for the canonical AAA
+    /// cloud configuration. Auto-disabled while `freeze_time` is
+    /// set so paused screenshots reflect a single frame rather than
+    /// a temporal blend.
+    #[serde(default)]
+    pub temporal_taa: bool,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
@@ -408,6 +427,8 @@ impl Default for CloudsTuning {
             wind_drift_strength: 1.0,
             wind_skew_strength: 0.5,
             diurnal_strength: 1.0,
+            half_res_render: false,
+            temporal_taa: false,
         }
     }
 }
