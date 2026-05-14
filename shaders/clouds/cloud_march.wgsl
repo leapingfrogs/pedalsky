@@ -672,6 +672,9 @@ fn sample_density(
 // ---------------------------------------------------------------------------
 
 fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLayerGpu) -> f32 {
+    if (params.cone_light_sampling != 0u) {
+        return march_to_light_cone(p, p_alt, sun_dir, layer);
+    }
     let cos_sun = max(sun_dir.y, 0.05);
     let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
     let step = dist_to_top / f32(params.light_steps);
@@ -698,6 +701,90 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
         let local_density = sample_density(pi, alt, layer, weather, wind_offset);
         od = od + local_density * step;
     }
+    return od;
+}
+
+/// Schneider / Nubis 2017 cone-tap light sampling.
+///
+/// Six samples toward the sun: five forward-stepped on a cone whose
+/// half-angle widens with sample index, plus a sixth long-distance
+/// tap (3× the layer crossing) that catches occlusion from the
+/// distant cloud body. The widening cone gives the silver-lining
+/// effect — thin material near a cumulus edge reads bright in
+/// forward-scatter because the off-axis taps miss the cloud's
+/// optical mass entirely, returning near-zero density and producing
+/// a low integrated optical depth toward the sun.
+///
+/// The kernel is six pre-normalised unit-sphere offsets, hardcoded
+/// in the original HZD Nubis implementation. Same offsets are used
+/// for both forward and far taps; the radius scaling makes the cone
+/// shape work out.
+///
+/// Step count is fixed at 6 (5 + 1); `params.light_steps` is
+/// ignored when this path runs. That mirrors Schneider's recipe —
+/// the cone count is part of the tuned kernel, not a slider.
+fn cone_kernel_offset(i: u32) -> vec3<f32> {
+    switch i {
+        case 0u: { return vec3<f32>( 0.38051305,  0.92453449, -0.02111345); }
+        case 1u: { return vec3<f32>(-0.50625799, -0.03590792, -0.86163418); }
+        case 2u: { return vec3<f32>(-0.32509218, -0.94557439,  0.01428793); }
+        case 3u: { return vec3<f32>( 0.09026238, -0.27376545,  0.95755165); }
+        case 4u: { return vec3<f32>( 0.28128598,  0.42443639, -0.86065785); }
+        default: { return vec3<f32>(-0.16852403,  0.14748697,  0.97460106); }
+    }
+}
+
+fn march_to_light_cone(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLayerGpu) -> f32 {
+    let cos_sun = max(sun_dir.y, 0.05);
+    let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
+    // 5 forward samples evenly partitioning the path to the top of
+    // the layer along the sun direction.
+    let n_forward: u32 = 5u;
+    let step_size = dist_to_top / f32(n_forward);
+
+    let centre = planet_centre();
+    let r0 = length(p - centre);
+    let cos_view = dot((p - centre) / max(r0, 1.0), sun_dir);
+    let h0 = r0 - world.planet_radius_m;
+    let wind_offset = layer_wind_offset_m(layer);
+
+    var od = 0.0;
+    // Forward cone samples. The cone half-radius at sample i is
+    // proportional to `(i + 1) / n_forward`, so the first sample sits
+    // close to the ray (small offset, conservative shadow estimate)
+    // and the last is at the widest cone angle (catches off-axis
+    // structure that contributes to the silver lining).
+    for (var i = 0u; i < n_forward; i = i + 1u) {
+        let t = (f32(i) + 0.5) * step_size;
+        let cone_off = cone_kernel_offset(i)
+                     * step_size * (f32(i) + 1.0) / f32(n_forward);
+        let pi = p + sun_dir * t + cone_off;
+        let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
+        let weather = textureSampleLevel(
+            weather_map, noise_sampler,
+            world_to_weather_uv(pi.xz - wind_offset), 0.0,
+        );
+        let local_density = sample_density(pi, alt, layer, weather, wind_offset);
+        od = od + local_density * step_size;
+    }
+
+    // Long-distance "anti-shadow" tap (Schneider's 6th sample). Sits
+    // 3× the layer-crossing distance further out and captures the
+    // bulk of a distant cloud cell that still shadows the current
+    // sample. Its effective integration length is wider than a step
+    // so we weight it with 3× step_size.
+    let t_far = dist_to_top * 3.0;
+    let cone_off_far = cone_kernel_offset(5u) * step_size * 3.0;
+    let pi_far = p + sun_dir * t_far + cone_off_far;
+    let alt_far = altitude_from_entry(pi_far, r0, cos_view, h0, t_far);
+    let weather_far = textureSampleLevel(
+        weather_map, noise_sampler,
+        world_to_weather_uv(pi_far.xz - wind_offset), 0.0,
+    );
+    let local_density_far =
+        sample_density(pi_far, alt_far, layer, weather_far, wind_offset);
+    od = od + local_density_far * step_size * 3.0;
+
     return od;
 }
 

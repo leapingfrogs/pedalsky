@@ -385,6 +385,16 @@ pub struct CloudsTuning {
     /// a temporal blend.
     #[serde(default)]
     pub temporal_taa: bool,
+    /// Schneider/Nubis 2017 cone-tap light sampling in
+    /// `march_to_light`. Replaces the straight 6-step march toward
+    /// the sun with 5 forward samples on a widening cone + 1 long-
+    /// distance "anti-shadow" tap using a fixed kernel of 6 unit
+    /// vectors. Produces the characteristic silver lining on
+    /// cumulus edges (forward-scatter-bright thin material) at the
+    /// same step count. Off by default so existing scenes' goldens
+    /// stay valid; toggle on for the visual improvement.
+    #[serde(default)]
+    pub cone_light_sampling: bool,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
@@ -429,6 +439,7 @@ impl Default for CloudsTuning {
             diurnal_strength: 1.0,
             half_res_render: false,
             temporal_taa: false,
+            cone_light_sampling: false,
         }
     }
 }

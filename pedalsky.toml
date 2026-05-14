@@ -69,6 +69,7 @@ reprojection          = "off"     # off | checker_2x2 | quad_4x4 (only "off" in 
 freeze_time           = false
 half_res_render       = false
 temporal_taa          = false
+cone_light_sampling   = false
 
 [render.precip]
 near_particle_count = 8000

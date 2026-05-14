@@ -1016,6 +1016,25 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                  golden-image goldens stay valid.",
             )
             .changed();
+        // Schneider/Nubis 2017 cone-tap light sampling. Replaces the
+        // straight 6-step march with 5 cone-offset samples + 1
+        // long-distance "anti-shadow" sample for the silver-lining
+        // effect on cumulus edges.
+        tuning_changed |= ui
+            .checkbox(
+                &mut c.cone_light_sampling,
+                "Cone-tap light sampling (Schneider/Nubis)",
+            )
+            .on_hover_text(
+                "Replace the straight light-march toward the sun with \
+                 5 cone-offset samples + 1 long-distance tap using \
+                 Schneider's fixed unit-sphere kernel. Produces the \
+                 characteristic silver lining on cumulus edges (thin \
+                 material reads bright in forward-scatter) at the \
+                 same step count. Off by default so existing \
+                 goldens stay valid.",
+            )
+            .changed();
         // Temporal anti-aliasing on the cloud RT. Reprojects last
         // frame's resolved output via prev_view_proj, AABB-clamps to
         // a 3×3 neighbourhood, blends at ~1/8 weight.

@@ -26,7 +26,12 @@ struct CloudParams {
     sigma_a: vec3<f32>,           // per-channel absorption /m
     droplet_diameter_bias: f32,   // multiplier on layer.droplet_diameter_um; packs into sigma_a's trailing 4 bytes
 
-    _pad_after_droplet_bias_0: f32, // retired hg_backward_bias slot
+    // Schneider/Nubis 2017 cone-tap light sampling toggle. 0 = old
+    // straight 6-step light march; 1 = 5-cone + 1-long sample with
+    // hard-coded unit-sphere offsets. Reclaims the pad slot that
+    // used to hold `hg_backward_bias` so the struct size is
+    // unchanged.
+    cone_light_sampling: u32,
     _pad_after_droplet_bias_1: f32, // retired hg_blend_bias slot
     detail_strength: f32,         // 0.35
     curl_strength: f32,           // 0.1

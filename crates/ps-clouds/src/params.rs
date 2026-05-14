@@ -53,10 +53,12 @@ pub struct CloudParamsGpu {
     /// std140 vec3 packing.
     pub droplet_diameter_bias: f32,
 
-    /// std140 pad — was `hg_backward_bias` before the Approximate
-    /// Mie migration retired the dual-lobe HG bias triple. Kept as
-    /// a pad slot so the rest of the struct layout doesn't shift.
-    pub _pad_after_droplet_bias_0: f32,
+    /// Schneider/Nubis 2017 cone-tap light sampling toggle.
+    /// `0` = use the original straight `march_to_light`;
+    /// `1` = use the 5-cone + 1-long-tap kernel. Lives in the
+    /// std140 slot that used to be `hg_backward_bias` so the struct
+    /// size is unchanged.
+    pub cone_light_sampling: u32,
     /// std140 pad — was `hg_blend_bias` before the Approximate Mie
     /// migration retired the dual-lobe HG bias triple.
     pub _pad_after_droplet_bias_1: f32,
@@ -161,7 +163,7 @@ impl Default for CloudParamsGpu {
             // droplet diameter unchanged".
             droplet_diameter_bias: 1.0,
 
-            _pad_after_droplet_bias_0: 0.0,
+            cone_light_sampling: 0,
             _pad_after_droplet_bias_1: 0.0,
             // Schneider 2015 quotes 0.35 but the canonical remap formula
             // wipes coverage<0.5 layers entirely. Keep low here so the
