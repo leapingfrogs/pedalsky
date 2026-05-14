@@ -92,17 +92,20 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
 ///    that produced an abrupt cliff in the rendered output around that
 ///    slider value.
 /// 2. Linear into the visible band from `KNEE_END` to slider = 1.0 so
-///    `BKN` (input 0.5) lands mid-band and `OVC` (input 1.0) lands at
-///    the top edge.
+///    `FEW` (input ~0.15) lands just inside the band, `BKN` (input
+///    0.5) mid-band, and `OVC` (input 1.0) at the top edge.
 ///
-/// `VISIBLE_LOW = 0.30` (down from the previous 0.40) widens the
-/// sparse-cumulus regime users move through most. Pushing past
-/// `VISIBLE_HIGH = 0.60` would slide into the dark-slab artifact; if
-/// that range is ever needed it requires a separate tuning pass on
-/// `sigma_t`, Beer-Powder, and the multi-octave decay so thick bases
-/// still admit ambient + multi-scatter light.
+/// `VISIBLE_LOW = 0.40` is calibrated so that the cover fractions
+/// written by `ps-weather-feed` (NWP `cover_pct / 100.0`) keep
+/// rendering visible cloud structure for FEW/SCT — dropping it lower
+/// pushes those METAR conditions below the Schneider visible
+/// threshold. Pushing past `VISIBLE_HIGH = 0.60` slides into the
+/// dark-slab artifact; if that range is ever needed it requires a
+/// separate tuning pass on `sigma_t`, Beer-Powder, and the multi-
+/// octave decay so thick bases still admit ambient + multi-scatter
+/// light.
 fn remap_coverage_to_visible_band(scene_coverage: f32) -> f32 {
-    const VISIBLE_LOW: f32 = 0.30;
+    const VISIBLE_LOW: f32 = 0.40;
     const VISIBLE_HIGH: f32 = 0.60;
     /// Width of the smoothstep knee at the low end (in slider units).
     /// Slider <= this lives in the "near-clear sparse-puff" regime
@@ -283,7 +286,7 @@ mod tests {
         // Sweep at 1% increments; each step must not regress and must
         // not jump by more than a small fraction of the visible-band
         // width (catches future step-style cliffs).
-        const MAX_STEP: f32 = 0.05;
+        const MAX_STEP: f32 = 0.06;
         let mut prev = 0.0_f32;
         for i in 0..=100 {
             let t = i as f32 / 100.0;
@@ -298,20 +301,23 @@ mod tests {
         }
     }
 
-    /// Bot of the knee at slider 0.10 should land at `VISIBLE_LOW`
+    /// The top of the knee at slider 0.10 should land at `VISIBLE_LOW`
     /// (the bottom of the Schneider visible band). Above the knee the
     /// mapping is linear toward `VISIBLE_HIGH` at slider 1.0. Pinning
     /// these endpoints makes the look-and-feel deliberate rather than
-    /// a happy accident of the smoothstep.
+    /// a happy accident of the smoothstep, and also locks the
+    /// real-weather mapping: an `ps-weather-feed` METAR/NWP cover of
+    /// e.g. 0.40 (SCT) must produce effective coverage above the
+    /// Schneider visible threshold so the cloud march renders.
     #[test]
     fn coverage_remap_knee_endpoints() {
         let at_knee = remap_coverage_to_visible_band(0.10);
         assert!(
-            (at_knee - 0.30).abs() < 1e-5,
-            "knee endpoint at 0.10 = {at_knee}, expected 0.30 (VISIBLE_LOW)",
+            (at_knee - 0.40).abs() < 1e-5,
+            "knee endpoint at 0.10 = {at_knee}, expected 0.40 (VISIBLE_LOW)",
         );
         let mid_band = remap_coverage_to_visible_band(0.50);
-        let expected_mid = 0.30 + (0.50 - 0.10) / (1.0 - 0.10) * (0.60 - 0.30);
+        let expected_mid = 0.40 + (0.50 - 0.10) / (1.0 - 0.10) * (0.60 - 0.40);
         assert!(
             (mid_band - expected_mid).abs() < 1e-5,
             "mid-band slider 0.50 = {mid_band}, expected {expected_mid}",
