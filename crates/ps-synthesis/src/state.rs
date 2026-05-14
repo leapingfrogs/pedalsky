@@ -5,12 +5,23 @@
 //! textures + storage buffer and uploads CPU-synthesised data via
 //! `queue.write_*`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use thiserror::Error;
 
 use ps_core::{
     AtmosphereParams, CloudLayerGpu, Config, GpuContext, Scene, SurfaceParams, WeatherState,
     WeatherTextures, WorldState,
 };
+
+/// Monotonic counter shared across the process; bumped once per
+/// `synthesise` invocation. Stamped into `WeatherState::revision` so
+/// downstream subsystems can cache bind groups keyed on it (cheap u64
+/// comparison per frame vs rebuilding a multi-entry wgpu bind group).
+///
+/// Starts at 1 so the default-initialised `WeatherState` (revision 0)
+/// always compares unequal to a real synthesised state.
+static SYNTHESIS_REVISION: AtomicU64 = AtomicU64::new(1);
 
 use crate::cloud_layers::{check_non_overlap, synthesise_cloud_layers};
 use crate::cloud_type_grid::CloudTypeGrid;
@@ -160,5 +171,6 @@ pub fn synthesise(
             [bias[0], bias[1], bias[2], 0.0]
         },
         scene_water: scene.water.clone(),
+        revision: SYNTHESIS_REVISION.fetch_add(1, Ordering::Relaxed),
     })
 }

@@ -18,12 +18,12 @@ pub mod pipeline;
 
 use std::sync::{Arc, Mutex};
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    AtmosphereLuts, CloudLayerGpu, Config, GpuContext, HdrFramebuffer, PassStage,
-    PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
+    AtmosphereLuts, BindGroupCache, CloudLayerGpu, Config, GpuContext, HdrFramebuffer,
+    PassStage, PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
 };
 use tracing::warn;
 
@@ -35,6 +35,22 @@ const HALF_RES_SCALE: f32 = 0.5;
 /// history is valid. 1/8 ≈ 87.5% history, 12.5% current — gives
 /// roughly 8-frame accumulation. Matches Frostbite / Decima defaults.
 const TAA_BLEND_WEIGHT: f32 = 1.0 / 8.0;
+
+/// Sentinel for the [`AtomicU32`] in `taa_dispatch` meaning "TAA off
+/// this frame". Any other value is a valid history-slot index (0 or 1).
+/// `u32::MAX` is chosen because the ping-pong slot is always < 2, so
+/// the sentinel can never collide with a real value.
+const TAA_DISPATCH_NONE: u32 = u32::MAX;
+
+/// Cache-key tuple for the cloud-march `data_bg` cache: weather
+/// revision, framebuffer width, framebuffer height, half-res flag.
+/// Captures every input that can change which bind-group object
+/// the march should be using.
+type DataBgKey = (u64, u32, u32, bool);
+
+/// Type alias for the cloud-march data bind-group cache. Pulled out
+/// of the struct definition to keep the field declaration legible.
+type DataBgCache = Arc<Mutex<BindGroupCache<DataBgKey>>>;
 
 /// CPU mirror of the WGSL `CloudCompositeParams` uniform. 32 bytes.
 #[repr(C)]
@@ -100,23 +116,35 @@ pub struct CloudsSubsystem {
     /// Live half-res toggle. Pulled from `clouds.half_res_render` and
     /// refreshed in `reconfigure`. Drives both the cloud RT
     /// allocation size and the composite shader's upsample mode.
-    half_res_render: Arc<Mutex<bool>>,
+    /// Atomic because every read happens on the main thread and the
+    /// flag is single-writer (reconfigure) — no contention, no
+    /// poisoning, cheaper than a mutex.
+    half_res_render: Arc<AtomicBool>,
     /// Live TAA toggle. Pulled from `clouds.temporal_taa`; auto-gated
     /// off in the closure when `freeze_time` is set (so paused
     /// screenshots reflect a single frame rather than a temporal
     /// blend).
-    temporal_taa: Arc<Mutex<bool>>,
-    /// Per-frame TAA dispatch state — `Some(write_slot)` when the
-    /// march closure decided TAA runs this frame, `None` otherwise.
-    /// The TAA + composite closures read this to decide whether to
-    /// dispatch the TAA pass and which history slot to read from.
-    /// Lives in a shared `Arc<Mutex<>>` so the closures don't need
-    /// to re-derive the gating logic from the live toggles.
-    taa_dispatch: Arc<Mutex<Option<u32>>>,
+    temporal_taa: Arc<AtomicBool>,
+    /// Per-frame TAA dispatch state — the cloud-march closure latches
+    /// the active ping-pong slot here for the TAA + composite closures
+    /// to read. `TAA_DISPATCH_NONE` (= `u32::MAX`) means "TAA off this
+    /// frame"; any other value is the history-slot index (0 or 1).
+    /// AtomicU32 because all accesses live on the main thread and the
+    /// shared-state cost is just a sentinel-aware load/store.
+    taa_dispatch: Arc<AtomicU32>,
     /// Live freeze_time mirror, shared with the march closure so it
     /// can disable TAA on paused frames without seeing a stale
     /// snapshot.
-    freeze_time_live: Arc<Mutex<bool>>,
+    freeze_time_live: Arc<AtomicBool>,
+    /// Cache for the cloud-march group-2 bind group. Keyed on
+    /// `(weather.revision, fb_w, fb_h, half_res)` because the bind
+    /// group's entries depend on: the weather-state texture views
+    /// (revision), the framebuffer's depth view (resize → size
+    /// change), and the layout choice (half_res selects between
+    /// `noise.layout` and `noise.layout_halfres`). With this cache
+    /// the 12-13 entry bind group only gets rebuilt on synthesis,
+    /// window resize, or the half-res toggle — not every frame.
+    data_bg_cache: DataBgCache,
     /// Plan §6.9 freeze-time toggle. The cloud march itself doesn't
     /// read `simulated_seconds` (the base/detail/curl noise volumes are
     /// purely spatial — plan principle #9 / Phase 6 design), so this
@@ -618,10 +646,11 @@ impl CloudsSubsystem {
             layers_buffer,
             composite_params_buffer,
             taa_params_buffer,
-            half_res_render: Arc::new(Mutex::new(c.half_res_render)),
-            temporal_taa: Arc::new(Mutex::new(c.temporal_taa)),
-            taa_dispatch: Arc::new(Mutex::new(None)),
-            freeze_time_live: Arc::new(Mutex::new(c.freeze_time)),
+            half_res_render: Arc::new(AtomicBool::new(c.half_res_render)),
+            temporal_taa: Arc::new(AtomicBool::new(c.temporal_taa)),
+            taa_dispatch: Arc::new(AtomicU32::new(TAA_DISPATCH_NONE)),
+            freeze_time_live: Arc::new(AtomicBool::new(c.freeze_time)),
+            data_bg_cache: Arc::new(Mutex::new(BindGroupCache::new())),
             freeze_time: c.freeze_time,
         }
     }
@@ -688,6 +717,7 @@ impl RenderSubsystem for CloudsSubsystem {
         let taa_params_buffer = self.taa_params_buffer.clone();
         let half_res_render = self.half_res_render.clone();
         let half_res_render_composite = self.half_res_render.clone();
+        let data_bg_cache = self.data_bg_cache.clone();
         let temporal_taa_march = self.temporal_taa.clone();
         let freeze_time_march = self.freeze_time_live.clone();
         // Tracks the previous frame's `taa_on` so the march closure
@@ -716,9 +746,7 @@ impl RenderSubsystem for CloudsSubsystem {
                         // passes still run; clear `taa_dispatch` so
                         // the TAA pass skips and the composite reads
                         // the (possibly stale) scratch as before.
-                        *taa_dispatch_march
-                            .lock()
-                            .expect("clouds: taa_dispatch lock") = None;
+                        taa_dispatch_march.store(TAA_DISPATCH_NONE, Ordering::Relaxed);
                         return;
                     };
                     let fb_size = (ctx.framebuffer.size.0, ctx.framebuffer.size.1);
@@ -727,7 +755,7 @@ impl RenderSubsystem for CloudsSubsystem {
                     // (= 0.5 ⇒ 1/4 the area, 1/3-1/4 the cloud-march
                     // cost). `.max(1)` so a tiny window doesn't produce a
                     // zero-sized RT.
-                    let half_res = *half_res_render.lock().expect("clouds: half-res lock");
+                    let half_res = half_res_render.load(Ordering::Relaxed);
                     let rt_size = if half_res {
                         (
                             ((fb_size.0 as f32 * HALF_RES_SCALE) as u32).max(1),
@@ -754,10 +782,8 @@ impl RenderSubsystem for CloudsSubsystem {
                     // TAA frame. The dispatched slot is published via
                     // `taa_dispatch` so the TAA + composite closures
                     // run in step.
-                    let taa_on = *temporal_taa_march.lock().expect("clouds: taa toggle lock")
-                        && !*freeze_time_march
-                            .lock()
-                            .expect("clouds: freeze_time lock");
+                    let taa_on = temporal_taa_march.load(Ordering::Relaxed)
+                        && !freeze_time_march.load(Ordering::Relaxed);
                     let was_taa_on = prev_taa_on_march.swap(taa_on, Ordering::Relaxed);
                     let just_enabled = taa_on && !was_taa_on;
                     let taa_dispatch_slot: Option<u32> = if taa_on {
@@ -818,9 +844,10 @@ impl RenderSubsystem for CloudsSubsystem {
                     } else {
                         None
                     };
-                    *taa_dispatch_march
-                        .lock()
-                        .expect("clouds: taa_dispatch lock") = taa_dispatch_slot;
+                    taa_dispatch_march.store(
+                        taa_dispatch_slot.unwrap_or(TAA_DISPATCH_NONE),
+                        Ordering::Relaxed,
+                    );
 
                     // Upload the cloud-RT-size uniform. The buffer is
                     // bound twice — at binding 12 of the half-res march
@@ -851,89 +878,101 @@ impl RenderSubsystem for CloudsSubsystem {
                         0,
                         bytemuck::bytes_of(&composite_params),
                     );
-                    // Build the group-2 bind group inline. We need the
-                    // HDR depth view for plan §9.1 depth-aware march
-                    // termination, which is only available via
-                    // RenderContext.framebuffer.
-                    //
-                    // The full-res and half-res pipelines use
-                    // different bind-group layouts (the half-res
-                    // layout has an extra uniform at binding 12), so
-                    // build the right one for the active pipeline.
-                    let mut entries = vec![
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&noise.base_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&noise.detail_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&noise.curl_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(
-                                &noise.blue_noise_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&noise.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&noise.nearest_sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 6,
-                            resource: params_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 7,
-                            resource: layers_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 8,
-                            resource: wgpu::BindingResource::TextureView(
-                                &ctx.weather.textures.weather_map_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 9,
-                            resource: wgpu::BindingResource::TextureView(
-                                &ctx.framebuffer.depth_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 10,
-                            resource: wgpu::BindingResource::TextureView(
-                                &ctx.weather.textures.cloud_type_grid_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 11,
-                            resource: wgpu::BindingResource::TextureView(
-                                &ctx.weather.textures.wind_field_view,
-                            ),
-                        },
-                    ];
-                    let data_layout = if half_res {
-                        entries.push(wgpu::BindGroupEntry {
-                            binding: 12,
-                            resource: composite_params_buffer.as_entire_binding(),
+                    // Build the group-2 bind group via the cache. Keyed
+                    // on (weather.revision, fb_w, fb_h, half_res) so
+                    // the 12–13 entry bind group only gets rebuilt on
+                    // synthesis, window resize, or the half-res toggle
+                    // — not every frame. The full-res and half-res
+                    // pipelines use different bind-group layouts (the
+                    // half-res layout has an extra uniform at binding
+                    // 12), so the cache key includes `half_res` to
+                    // ensure the cache fires whenever the layout
+                    // choice flips.
+                    let cache_key = (
+                        ctx.weather.revision,
+                        ctx.framebuffer.size.0,
+                        ctx.framebuffer.size.1,
+                        half_res,
+                    );
+                    let data_bg = data_bg_cache
+                        .lock()
+                        .expect("clouds: data_bg_cache lock")
+                        .get_or_build(cache_key, || {
+                            let mut entries = vec![
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(&noise.base_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::TextureView(&noise.detail_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(&noise.curl_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &noise.blue_noise_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: wgpu::BindingResource::Sampler(&noise.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 5,
+                                    resource: wgpu::BindingResource::Sampler(&noise.nearest_sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 6,
+                                    resource: params_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 7,
+                                    resource: layers_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 8,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &ctx.weather.textures.weather_map_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 9,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &ctx.framebuffer.depth_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 10,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &ctx.weather.textures.cloud_type_grid_view,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 11,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &ctx.weather.textures.wind_field_view,
+                                    ),
+                                },
+                            ];
+                            let data_layout = if half_res {
+                                entries.push(wgpu::BindGroupEntry {
+                                    binding: 12,
+                                    resource: composite_params_buffer.as_entire_binding(),
+                                });
+                                &noise.layout_halfres
+                            } else {
+                                &noise.layout
+                            };
+                            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("clouds-data-bg"),
+                                layout: data_layout,
+                                entries: &entries,
+                            })
                         });
-                        &noise.layout_halfres
-                    } else {
-                        &noise.layout
-                    };
-                    let data_bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("clouds-data-bg"),
-                        layout: data_layout,
-                        entries: &entries,
-                    });
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("clouds::march"),
                         color_attachments: &[
@@ -986,7 +1025,7 @@ impl RenderSubsystem for CloudsSubsystem {
                     pass.set_pipeline(march_pipeline);
                     pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                     pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                    pass.set_bind_group(2, &data_bg, &[]);
+                    pass.set_bind_group(2, data_bg.as_ref(), &[]);
                     pass.set_bind_group(3, &luts.bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }),
@@ -1000,11 +1039,11 @@ impl RenderSubsystem for CloudsSubsystem {
                 name: "clouds::taa",
                 stage: PassStage::Translucent,
                 run: Box::new(move |encoder, ctx| {
-                    let Some(write_slot) =
-                        *taa_dispatch_taa.lock().expect("clouds: taa_dispatch lock")
-                    else {
+                    let slot_raw = taa_dispatch_taa.load(Ordering::Relaxed);
+                    if slot_raw == TAA_DISPATCH_NONE {
                         return;
-                    };
+                    }
+                    let write_slot = slot_raw;
                     let rt = rt_taa.lock().expect("clouds: rt lock");
                     let Some(taa_state) = rt.taa.as_ref() else {
                         return;
@@ -1065,12 +1104,14 @@ impl RenderSubsystem for CloudsSubsystem {
                     let half_res_for_composite = half_res_render_composite;
                     move |encoder, ctx| {
                         let rt = rt_composite.lock().expect("clouds: rt lock");
-                        let half_res = *half_res_for_composite
-                            .lock()
-                            .expect("clouds: half-res lock");
-                        let taa_slot = *taa_dispatch_composite
-                            .lock()
-                            .expect("clouds: taa_dispatch lock");
+                        let half_res = half_res_for_composite.load(Ordering::Relaxed);
+                        let taa_slot_raw =
+                            taa_dispatch_composite.load(Ordering::Relaxed);
+                        let taa_slot = if taa_slot_raw == TAA_DISPATCH_NONE {
+                            None
+                        } else {
+                            Some(taa_slot_raw)
+                        };
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("clouds::composite"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1151,26 +1192,20 @@ impl RenderSubsystem for CloudsSubsystem {
         // overwrite the cpu-side params if a future tunable drives it,
         // but the canonical pause path is `WorldClock::set_paused`.
         self.freeze_time = c.freeze_time;
-        *self
-            .freeze_time_live
-            .lock()
-            .expect("clouds: freeze_time_live lock") = c.freeze_time;
+        self.freeze_time_live
+            .store(c.freeze_time, Ordering::Relaxed);
         // Half-res toggle. The cloud march pass closure observes this
         // on its next frame; if it has changed, `rt.size != rt_size`
         // triggers a rebuild of the cloud RT at the new dimensions.
-        *self
-            .half_res_render
-            .lock()
-            .expect("clouds: half-res lock") = c.half_res_render;
+        self.half_res_render
+            .store(c.half_res_render, Ordering::Relaxed);
         // TAA toggle. Going off → on triggers history reallocation +
         // bootstrap on the next frame; going on → off keeps the
         // history textures around (they're a few MB) so a re-enable
         // doesn't churn the allocator, but the CloudRt.taa fields get
         // dropped naturally on the next resize.
-        *self
-            .temporal_taa
-            .lock()
-            .expect("clouds: temporal_taa lock") = c.temporal_taa;
+        self.temporal_taa
+            .store(c.temporal_taa, Ordering::Relaxed);
         Ok(())
     }
 

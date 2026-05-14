@@ -196,16 +196,16 @@ fn build_timings(gpu: &GpuContext, pass_count: usize) -> Option<TimingsState> {
         usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    let staging_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("ps-core::frame-timings-staging"),
-        size: buf_size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    let readback = crate::PipelinedReadback::new(
+        &gpu.device,
+        "ps-core::frame-timings-staging",
+        buf_size,
+    );
     Some(TimingsState {
         query_set,
         resolve_buf,
-        staging_buf,
+        readback: std::sync::Mutex::new(readback),
+        pending_names: std::sync::Mutex::new([Vec::new(), Vec::new()]),
         last_durations_s: std::sync::Mutex::new(Vec::new()),
         period_ns: gpu.queue.get_timestamp_period(),
         capacity,
@@ -231,8 +231,17 @@ struct TimingsState {
     query_set: wgpu::QuerySet,
     /// Tightly packed `u64` resolved timestamps. Capacity = 2 * passes.
     resolve_buf: wgpu::Buffer,
-    /// MAP_READ staging buffer copied from `resolve_buf` each frame.
-    staging_buf: wgpu::Buffer,
+    /// Two-slot ping-pong staging buffer. Each frame writes into the
+    /// current write slot; `drain_gpu_timings` (called after the
+    /// caller's `queue.submit`) initiates the non-blocking map and
+    /// reads whatever the previous frame put into the opposite slot.
+    /// No `device.poll(WaitIndefinitely)` per frame — the CPU never
+    /// stalls on the timestamp readback.
+    readback: std::sync::Mutex<crate::PipelinedReadback>,
+    /// Pass-name lists captured per slot at write time. When the
+    /// matching slot becomes ready, these label its durations.
+    /// Indexed by readback slot (0 or 1).
+    pending_names: std::sync::Mutex<[Vec<&'static str>; 2]>,
     /// Last drained frame's per-pass durations in seconds, paired with
     /// pass names. The host reads via `App::gpu_timings` and pushes
     /// into the UI.
@@ -286,84 +295,110 @@ impl App {
             pass_names.push(pass.name);
         }
 
-        // Resolve the query set into the resolve buffer and stage for
-        // the host's next-frame read-back.
+        // Resolve the query set into the resolve buffer and copy into
+        // the current ping-pong staging slot. The host calls
+        // `drain_gpu_timings` after `queue.submit`, which initiates a
+        // non-blocking map on this slot and reads whatever the
+        // previous frame put into the opposite slot.
         if timings_active {
             if let Some(t) = &self.timings {
                 let n = self.passes.len() as u32 * 2;
+                let n_bytes = n as u64 * std::mem::size_of::<u64>() as u64;
+                let readback = t.readback.lock().expect("timings readback lock");
                 encoder.resolve_query_set(&t.query_set, 0..n, &t.resolve_buf, 0);
                 encoder.copy_buffer_to_buffer(
                     &t.resolve_buf,
                     0,
-                    &t.staging_buf,
+                    readback.write_buffer(),
                     0,
-                    n as u64 * std::mem::size_of::<u64>() as u64,
+                    n_bytes,
                 );
-                // Stash the names for the upcoming read-back; the host
-                // calls `drain_gpu_timings` after queue.submit.
-                t.last_durations_s
-                    .lock()
-                    .expect("timings names lock")
-                    .clear();
-                for name in &pass_names {
-                    t.last_durations_s
-                        .lock()
-                        .expect("timings names lock")
-                        .push((name.to_string(), 0.0));
-                }
+                // Stash this frame's pass-name list against the slot
+                // we just wrote into, so `drain_gpu_timings` can pair
+                // names with the corresponding readback bytes when
+                // the GPU finishes the copy on the *next* frame.
+                let slot = readback.write_slot();
+                drop(readback);
+                let mut pending = t.pending_names.lock().expect("timings pending names lock");
+                pending[slot].clear();
+                pending[slot].extend_from_slice(&pass_names);
             }
         }
     }
 
-    /// Phase 10 — read back the previous frame's GPU timestamps. Call
-    /// after `queue.submit(...)` (blocks on `device.poll`). Returns the
-    /// per-pass durations in milliseconds, or an empty Vec when
-    /// timestamps are unsupported / haven't run yet.
+    /// Phase 10 — drain the previous frame's GPU timestamps and stage
+    /// the current frame's. Call after `queue.submit(...)`. Returns
+    /// the per-pass durations in milliseconds for the *previous*
+    /// frame (the GPU has had a full frame to finish that copy);
+    /// returns the last successful drain unchanged when the
+    /// previous frame's slot is still in flight or never written.
+    ///
+    /// This is the non-blocking pipelined replacement for the old
+    /// `device.poll(WaitIndefinitely)` path. The CPU never stalls
+    /// on the GPU here — at worst the UI shows a slightly older
+    /// timing snapshot for a frame or two during pipeline warm-up.
     pub fn drain_gpu_timings(&self, gpu: &GpuContext) -> Vec<(String, f32)> {
         let Some(t) = &self.timings else { return Vec::new() };
-        let names = t
-            .last_durations_s
-            .lock()
-            .expect("timings names lock")
-            .clone();
-        if names.is_empty() {
-            return Vec::new();
-        }
+        // 1. Initiate map_async on the slot we just wrote in `frame()`.
+        //    This flips `write_slot` so the next try_read sees the
+        //    opposite slot (the one submitted last frame).
+        let mut readback = t.readback.lock().expect("timings readback lock");
+        readback.submit();
+        // 2. Non-blocking check on the slot submitted last frame. If
+        //    not ready, return the previous successful drain
+        //    unchanged.
+        let Some((slot_idx, bytes)) = readback.try_read(&gpu.device) else {
+            drop(readback);
+            return t
+                .last_durations_s
+                .lock()
+                .expect("timings last durations lock")
+                .clone();
+        };
+        drop(readback);
+        // 3. Parse the bytes into per-pass durations using the names
+        //    captured when this slot was originally written.
+        let names = {
+            let pending = t.pending_names.lock().expect("timings pending names lock");
+            pending[slot_idx].clone()
+        };
         let n_passes = names.len();
-        let bytes_needed = (n_passes * 2 * std::mem::size_of::<u64>()) as u64;
-        let slice = t.staging_buf.slice(..bytes_needed);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        if gpu
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .is_err()
-        {
-            return Vec::new();
-        }
-        if rx.recv().ok().and_then(|r| r.ok()).is_none() {
-            return Vec::new();
-        }
-        let bytes = slice.get_mapped_range().to_vec();
-        t.staging_buf.unmap();
         let mut out = Vec::with_capacity(n_passes);
-        for i in 0..n_passes {
+        // Defensive: the bytes should always be at least 16*n_passes
+        // (two u64 timestamps per pass). If they're shorter, something
+        // upstream is misconfigured — return the last good readout
+        // rather than fabricating zeros.
+        if bytes.len() < n_passes * 16 {
+            tracing::warn!(
+                target: "ps_core::app",
+                expected = n_passes * 16,
+                got = bytes.len(),
+                "timings staging readback shorter than expected; skipping",
+            );
+            return t
+                .last_durations_s
+                .lock()
+                .expect("timings last durations lock")
+                .clone();
+        }
+        for (i, name) in names.iter().enumerate() {
             let begin = u64::from_le_bytes(
                 bytes[i * 16..i * 16 + 8]
                     .try_into()
-                    .unwrap_or([0; 8]),
+                    .expect("16 bytes per timestamp pair"),
             );
             let end = u64::from_le_bytes(
                 bytes[i * 16 + 8..i * 16 + 16]
                     .try_into()
-                    .unwrap_or([0; 8]),
+                    .expect("16 bytes per timestamp pair"),
             );
             let ticks = end.saturating_sub(begin) as f32;
             let ms = ticks * t.period_ns / 1_000_000.0;
-            out.push((names[i].0.clone(), ms));
+            out.push(((*name).to_string(), ms));
         }
+        *t.last_durations_s
+            .lock()
+            .expect("timings last durations lock") = out.clone();
         out
     }
 

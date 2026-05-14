@@ -26,8 +26,9 @@ use ps_core::{
     atmosphere_lut_bind_group_layout, atmosphere_static_only_bind_group,
     atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
     atmosphere_transmittance_only_bind_group_layout, frame_bind_group_layout,
-    world_bind_group_layout, AtmosphereLuts, Config, GpuContext, HdrFramebuffer, PassStage,
-    PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
+    world_bind_group_layout, AtmosphereLuts, BindGroupCache, Config, GpuContext,
+    HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
+    SubsystemFactory,
 };
 use tracing::{debug, info};
 
@@ -156,6 +157,10 @@ pub struct AtmosphereSubsystem {
     /// Arc so the multi-scatter pass closure can read it through a
     /// shared reference.
     tuning_multi_scattering: Arc<Mutex<bool>>,
+    /// Sky-pass density-mask bind group cache, keyed on the weather
+    /// revision. The mask view only changes when `ps-synthesis`
+    /// reruns; the previous code rebuilt this bind group every frame.
+    sky_density_mask_cache: Arc<Mutex<BindGroupCache<u64>>>,
 }
 
 impl AtmosphereSubsystem {
@@ -384,6 +389,7 @@ impl AtmosphereSubsystem {
             tuning_multi_scattering: Arc::new(Mutex::new(
                 config.render.atmosphere.multi_scattering,
             )),
+            sky_density_mask_cache: Arc::new(Mutex::new(BindGroupCache::new())),
         }
     }
 
@@ -621,31 +627,36 @@ impl RenderSubsystem for AtmosphereSubsystem {
                     let lut_bg = lut_bg.clone();
                     let mask_layout = self.sky_density_mask_layout.clone();
                     let mask_sampler = self.density_mask_sampler.clone();
+                    let mask_cache = self.sky_density_mask_cache.clone();
                     move |encoder, ctx| {
-                        // Phase 12.6b — rebuild group 2 against the
-                        // live density mask each frame (synthesis can
-                        // be re-run from a hot-reload, replacing the
-                        // texture view).
-                        let mask_view =
-                            &ctx.weather.textures.top_down_density_mask_view;
-                        let density_bg =
-                            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                label: Some("atmosphere::sky-density-mask-bg"),
-                                layout: &mask_layout,
-                                entries: &[
-                                    wgpu::BindGroupEntry {
-                                        binding: 0,
-                                        resource: wgpu::BindingResource::TextureView(
-                                            mask_view,
-                                        ),
-                                    },
-                                    wgpu::BindGroupEntry {
-                                        binding: 1,
-                                        resource: wgpu::BindingResource::Sampler(
-                                            &mask_sampler,
-                                        ),
-                                    },
-                                ],
+                        // The density-mask bind group only changes when
+                        // synthesis reruns (bumping `weather.revision`).
+                        // Cache by revision so the per-frame fast path
+                        // is an `Arc::clone` rather than a wgpu hub
+                        // touch.
+                        let density_bg = mask_cache
+                            .lock()
+                            .expect("atmosphere: sky_density_mask_cache lock")
+                            .get_or_build(ctx.weather.revision, || {
+                                ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("atmosphere::sky-density-mask-bg"),
+                                    layout: &mask_layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                &ctx.weather.textures
+                                                    .top_down_density_mask_view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(
+                                                &mask_sampler,
+                                            ),
+                                        },
+                                    ],
+                                })
                             });
 
                         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -676,7 +687,7 @@ impl RenderSubsystem for AtmosphereSubsystem {
                         pass.set_pipeline(&sky_pipeline);
                         pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                         pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, &density_bg, &[]);
+                        pass.set_bind_group(2, density_bg.as_ref(), &[]);
                         pass.set_bind_group(3, &lut_bg, &[]);
                         pass.draw(0..3, 0..1);
                     }

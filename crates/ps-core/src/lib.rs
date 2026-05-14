@@ -10,6 +10,7 @@
 pub mod app;
 pub mod astro;
 pub mod atmosphere_luts;
+pub mod bind_group_cache;
 pub mod bind_groups;
 pub mod camera;
 pub mod config;
@@ -18,6 +19,7 @@ pub mod frame_uniforms;
 pub mod framebuffer;
 pub mod gpu;
 pub mod hot_reload;
+pub mod pipelined_readback;
 pub mod scene;
 pub mod shaders;
 pub mod subsystem;
@@ -32,7 +34,9 @@ pub use atmosphere_luts::{
     atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts, AP_FAR_M, AP_NEAR_M,
     AP_SIZE,
 };
+pub use bind_group_cache::BindGroupCache;
 pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
+pub use pipelined_readback::PipelinedReadback;
 pub use config::{Config, ConfigError};
 pub use contexts::{
     FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,

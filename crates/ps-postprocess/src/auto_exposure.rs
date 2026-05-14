@@ -18,7 +18,7 @@
 use std::sync::Mutex;
 
 use bytemuck::{Pod, Zeroable};
-use ps_core::HdrFramebuffer;
+use ps_core::{HdrFramebuffer, PipelinedReadback};
 
 const SHADER_BAKED: &str =
     include_str!("../../../shaders/postprocess/auto_exposure.comp.wgsl");
@@ -37,7 +37,18 @@ pub struct AutoExposure {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     output_buf: wgpu::Buffer,
-    staging_buf: wgpu::Buffer,
+    /// Two-slot ping-pong staging for the readback. The compute pass'
+    /// `copy_buffer_to_buffer` lands in `readback.write_buffer()`
+    /// each frame; the next frame's `read_back_ev100` non-blocking
+    /// reads from the opposite slot. No `device.poll(WaitIndefinitely)`
+    /// per frame — the CPU never stalls on the GPU here.
+    readback: Mutex<PipelinedReadback>,
+    /// Last successful EV100 readout. Returned by `read_back_ev100`
+    /// when the pipeline is still warming up (first frame) or the
+    /// previous slot hasn't completed yet. Kept here rather than on
+    /// the caller so a transient "no result" doesn't reset auto-EV
+    /// to None and cause a tonemap exposure flicker.
+    last_ev100: Mutex<Option<f32>>,
     /// Bound to the HDR target. Mutex so the host can rebuild on
     /// resize through a shared `Arc<AutoExposure>` reference.
     bind_group: Mutex<wgpu::BindGroup>,
@@ -99,12 +110,11 @@ impl AutoExposure {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("auto-exposure-staging"),
-            size: std::mem::size_of::<AeOutputCpu>() as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = PipelinedReadback::new(
+            device,
+            "auto-exposure-staging",
+            std::mem::size_of::<AeOutputCpu>() as u64,
+        );
         let bind_group =
             Mutex::new(build_bind_group(device, &bind_group_layout, hdr, &output_buf));
 
@@ -112,7 +122,8 @@ impl AutoExposure {
             pipeline,
             bind_group_layout,
             output_buf,
-            staging_buf,
+            readback: Mutex::new(readback),
+            last_ev100: Mutex::new(None),
             bind_group,
         }
     }
@@ -125,8 +136,11 @@ impl AutoExposure {
     }
 
     /// Dispatch the auto-exposure compute pass and copy the output to
-    /// the staging buffer ready for read-back. Call after all HDR writes
-    /// for the frame.
+    /// the current ping-pong staging slot. Call after all HDR writes
+    /// for the frame. The host's subsequent call to
+    /// [`read_back_ev100`] (after `queue.submit`) initiates the
+    /// non-blocking map on this slot and reads whatever the previous
+    /// frame put into the opposite slot.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
         {
             let bg = self.bind_group.lock().expect("auto-exposure bg lock");
@@ -138,10 +152,11 @@ impl AutoExposure {
             pass.set_bind_group(0, &*bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
+        let readback = self.readback.lock().expect("auto-exposure readback lock");
         encoder.copy_buffer_to_buffer(
             &self.output_buf,
             0,
-            &self.staging_buf,
+            readback.write_buffer(),
             0,
             std::mem::size_of::<AeOutputCpu>() as u64,
         );
@@ -157,29 +172,31 @@ impl AutoExposure {
     /// So `avg_lum_post = avg_lum_pre * exposure` should equal 0.18,
     /// giving `EV100 = log2(avg_lum_pre / 0.216)`.
     pub fn read_back_ev100(&self, device: &wgpu::Device) -> Option<f32> {
-        let slice = self.staging_buf.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .ok()?;
-        let recv = rx.recv().ok()?;
-        recv.ok()?;
-        let bytes = slice.get_mapped_range().to_vec();
-        self.staging_buf.unmap();
+        // Pipelined read-back: initiate map on this frame's slot, try
+        // non-blocking read of last frame's slot. Falls back to the
+        // last successful EV100 if the previous slot isn't ready yet
+        // (first frame, post-resize, or auto-exposure freshly enabled).
+        let mut readback = self.readback.lock().expect("auto-exposure readback lock");
+        readback.submit();
+        let Some((_slot_idx, bytes)) = readback.try_read(device) else {
+            // Pipeline warm-up or transient miss — keep showing the
+            // last known EV100 rather than reverting to None and
+            // triggering an exposure flicker.
+            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
+        };
+        drop(readback);
         if bytes.len() < std::mem::size_of::<AeOutputCpu>() {
-            return None;
+            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
         }
         let out: AeOutputCpu = *bytemuck::from_bytes(&bytes[..std::mem::size_of::<AeOutputCpu>()]);
         if out.pixel_count <= 0.0 {
-            return None;
+            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
         }
         let avg_log_lum = out.log_lum_sum / out.pixel_count;
         let avg_lum = avg_log_lum.exp2().max(1e-6);
         // 0.18 grey × 1.2 (tone-map's denominator constant) = 0.216.
         let ev100 = (avg_lum / 0.216).log2();
+        *self.last_ev100.lock().expect("auto-exposure last_ev100 lock") = Some(ev100);
         Some(ev100)
     }
 }

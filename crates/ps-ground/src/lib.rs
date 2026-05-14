@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
-    atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout, Config,
-    GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory, SurfaceParams,
+    atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout,
+    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
+    RegisteredPass, RenderSubsystem, SubsystemFactory, SurfaceParams,
 };
 
 /// Baked shader source — used as the fallback when no runtime
@@ -246,11 +246,17 @@ pub struct GroundSubsystem {
     /// ground shader still runs but `prepare()` zeros out the wetness +
     /// snow inputs so the dry BRDF path is taken.
     wet_surface_enabled: bool,
-    /// Live group-2 bind group, rebuilt each frame in `prepare()`
-    /// against the current top-down density mask view from
-    /// WeatherState (Phase 12.6). Shared with the registered pass
-    /// closure via `Arc<Mutex>`.
+    /// Live group-2 bind group published by `prepare()` for the
+    /// registered pass closure. Built via a revision-keyed cache so
+    /// the wgpu hub touch only happens when the underlying density
+    /// mask view changes (synthesis rerun), not every frame.
     live_surface_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
+    /// Revision-keyed cache for the surface bind group. The entries
+    /// reference `inner.surface_buf` (stable), the density mask view
+    /// from WeatherState (changes only on synthesis rerun), and a
+    /// sampler (stable) — so keying on `weather.revision` alone
+    /// catches every meaningful change.
+    surface_bg_cache: Arc<Mutex<BindGroupCache<u64>>>,
 }
 
 impl GroundSubsystem {
@@ -262,6 +268,7 @@ impl GroundSubsystem {
             surface: Mutex::new(SurfaceParams::default()),
             wet_surface_enabled: config.render.subsystems.wet_surface,
             live_surface_bg: Arc::new(Mutex::new(None)),
+            surface_bg_cache: Arc::new(Mutex::new(BindGroupCache::new())),
         }
     }
 }
@@ -284,35 +291,47 @@ impl RenderSubsystem for GroundSubsystem {
             .write_buffer(&self.inner.surface_buf, 0, bytes_of(&surface));
         *self.surface.lock().expect("ground: surface lock") = surface;
 
-        // Phase 12.6 — rebuild the group-2 bind group against the
-        // live top-down density mask view from WeatherState. The view
-        // can be replaced when synthesis re-runs (hot-reload), so we
-        // do this every frame rather than caching.
-        let mask_view = &ctx.weather.textures.top_down_density_mask_view;
-        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ground-surface-bg"),
-            layout: &self.inner.surface_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.inner.surface_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(mask_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(
-                        &self.inner.density_mask_sampler,
-                    ),
-                },
-            ],
-        });
+        // Phase 12.6 — publish the group-2 bind group for the pass
+        // closure. The entries reference: `surface_buf` (stable —
+        // its contents change per frame via `write_buffer`, but the
+        // buffer handle is stable), `mask_view` (only changes when
+        // synthesis re-runs and bumps `weather.revision`), and a
+        // sampler (stable). Keying the cache on `weather.revision`
+        // alone is sufficient — the wgpu hub touch only fires after
+        // a synthesis rerun, not every frame.
+        let inner = self.inner.clone();
+        let bg = self
+            .surface_bg_cache
+            .lock()
+            .expect("ground: surface_bg_cache lock")
+            .get_or_build(ctx.weather.revision, || {
+                ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("ground-surface-bg"),
+                    layout: &inner.surface_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: inner.surface_buf.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &ctx.weather.textures.top_down_density_mask_view,
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(
+                                &inner.density_mask_sampler,
+                            ),
+                        },
+                    ],
+                })
+            });
         *self
             .live_surface_bg
             .lock()
-            .expect("ground: live surface bg lock") = Some(Arc::new(bg));
+            .expect("ground: live surface bg lock") = Some(bg);
     }
 
     fn register_passes(&self) -> Vec<RegisteredPass> {
