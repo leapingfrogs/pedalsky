@@ -14,8 +14,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
-    RenderContext, RenderSubsystem, SubsystemFactory,
+    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
+    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
 };
 
 const PASS_MULTIPLY: PassId = 0;
@@ -40,6 +40,11 @@ pub struct TintSubsystem {
     uniforms: wgpu::Buffer,
     /// Scratch texture sized to match the HDR target. Rebuilt when size changes.
     scratch: Option<ScratchState>,
+    /// Audit S.H1 — bind-group cache keyed on the scratch texture's
+    /// size. Inputs (scratch view, sampler, uniform buffer) are stable
+    /// across frames; the cache turns the per-frame rebuild into an
+    /// `Arc::clone`.
+    bg_cache: BindGroupCache<(u32, u32)>,
     multiplier: [f32; 3],
 }
 
@@ -142,6 +147,7 @@ impl TintSubsystem {
             sampler,
             uniforms,
             scratch: None,
+            bg_cache: BindGroupCache::new(),
             multiplier: [r, g, b],
         }
     }
@@ -229,23 +235,31 @@ impl RenderSubsystem for TintSubsystem {
             }),
         );
 
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tint-bg"),
-            layout: &self.bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&scratch.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniforms.as_entire_binding(),
-                },
-            ],
+        // Audit S.H1 — bind-group inputs (scratch view, sampler,
+        // uniform buffer) are stable while `scratch.size` holds; the
+        // cache turns the per-frame rebuild into an `Arc::clone`.
+        let bgl = &self.bgl;
+        let sampler = &self.sampler;
+        let uniforms = &self.uniforms;
+        let bg = self.bg_cache.get_or_build(size, || {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tint-bg"),
+                layout: bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&scratch.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                ],
+            })
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tint-multiply"),
@@ -264,7 +278,7 @@ impl RenderSubsystem for TintSubsystem {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &bg, &[]);
+        pass.set_bind_group(0, bg.as_ref(), &[]);
         pass.draw(0..3, 0..1);
     }
 

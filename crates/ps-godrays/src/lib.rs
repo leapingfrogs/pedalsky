@@ -22,8 +22,8 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec4;
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
-    RenderContext, RenderSubsystem, SubsystemFactory,
+    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
+    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
 };
 
 const PASS_RADIAL: PassId = 0;
@@ -65,6 +65,12 @@ pub struct GodraysSubsystem {
     radial_params: wgpu::Buffer,
     composite_params: wgpu::Buffer,
     scratch: Option<ScratchState>,
+    /// Audit S.H1 — caches keyed on the scratch's `full_size`. The
+    /// per-frame params buffer changes (written each frame in
+    /// `prepare`), but the buffer **handle** is stable so the bind
+    /// group doesn't need rebuilding.
+    radial_bg_cache: BindGroupCache<(u32, u32)>,
+    composite_bg_cache: BindGroupCache<(u32, u32)>,
     tuning: TuningSnapshot,
 }
 
@@ -291,6 +297,8 @@ impl GodraysSubsystem {
             radial_params,
             composite_params,
             scratch: None,
+            radial_bg_cache: BindGroupCache::new(),
+            composite_bg_cache: BindGroupCache::new(),
             tuning: TuningSnapshot {
                 samples: g.samples,
                 decay: g.decay,
@@ -457,23 +465,34 @@ impl RenderSubsystem for GodraysSubsystem {
                     },
                 );
 
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("godrays-radial-bg"),
-                    layout: &self.radial_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&scratch.hdr_copy_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: self.radial_params.as_entire_binding(),
-                        },
-                    ],
+                // Audit S.H1 — cache keyed on the scratch's full_size;
+                // the params buffer's handle is stable across frames
+                // (only its contents change, via per-frame
+                // `queue.write_buffer`).
+                let radial_layout = &self.radial_layout;
+                let sampler = &self.sampler;
+                let radial_params = &self.radial_params;
+                let bg = self.radial_bg_cache.get_or_build(full_size, || {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("godrays-radial-bg"),
+                        layout: radial_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &scratch.hdr_copy_view,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: radial_params.as_entire_binding(),
+                            },
+                        ],
+                    })
                 });
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("godrays-radial"),
@@ -498,7 +517,7 @@ impl RenderSubsystem for GodraysSubsystem {
                 });
                 pass.set_pipeline(&self.radial_pipeline);
                 pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, &bg, &[]);
+                pass.set_bind_group(1, bg.as_ref(), &[]);
                 pass.draw(0..3, 0..1);
             }
             PASS_COMPOSITE => {
@@ -507,23 +526,30 @@ impl RenderSubsystem for GodraysSubsystem {
                 let Some(scratch) = self.scratch.as_ref() else {
                     return;
                 };
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("godrays-composite-bg"),
-                    layout: &self.composite_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&scratch.rays_rt_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&self.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: self.composite_params.as_entire_binding(),
-                        },
-                    ],
+                let composite_layout = &self.composite_layout;
+                let sampler = &self.sampler;
+                let composite_params = &self.composite_params;
+                let bg = self.composite_bg_cache.get_or_build(scratch.full_size, || {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("godrays-composite-bg"),
+                        layout: composite_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &scratch.rays_rt_view,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: composite_params.as_entire_binding(),
+                            },
+                        ],
+                    })
                 });
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("godrays-composite"),
@@ -542,7 +568,7 @@ impl RenderSubsystem for GodraysSubsystem {
                     multiview_mask: None,
                 });
                 pass.set_pipeline(&self.composite_pipeline);
-                pass.set_bind_group(0, &bg, &[]);
+                pass.set_bind_group(0, bg.as_ref(), &[]);
                 pass.draw(0..3, 0..1);
             }
             _ => panic!("godrays: unknown pass id {id}"),

@@ -306,6 +306,15 @@ pub struct WeatherState {
     /// render-graph state, not to synthesis; the host sets it before
     /// each frame.
     pub cloud_render_active: bool,
+    /// Audit §H3 — `revision` at which the overcast field was last
+    /// zeroed (or `None` if it hasn't been zeroed since the last
+    /// synthesis). When `cloud_render_active` is false, the host
+    /// calls [`Self::refresh_overcast_field_visibility`] each frame;
+    /// without this cookie that would re-upload 16 KB every frame. We
+    /// only need to zero once per (cloud_render_active=false, revision)
+    /// pair — after that the texture stays zero until synthesis bumps
+    /// the revision (which re-populates the field).
+    pub overcast_zeroed_at_revision: Option<u64>,
     /// Monotonic counter bumped each time `ps-synthesis::synthesise`
     /// produces a fresh `WeatherState`. Subsystems can cache
     /// bind groups keyed on this value and rebuild only when it
@@ -321,12 +330,16 @@ impl WeatherState {
     /// subsystem isn't rendering this frame, so sky/ground passes that
     /// sample it for overcast modulation see no overhead cloud cover.
     ///
-    /// Idempotent and cheap (~16 KB texture upload at the 128×128 R8
-    /// default). The host calls this once per frame after setting
-    /// [`Self::cloud_render_active`]; if the flag is true, this is a
-    /// no-op.
-    pub fn refresh_overcast_field_visibility(&self, queue: &wgpu::Queue) {
+    /// Cheap in the steady state (audit §H3): once zeroed at the
+    /// current `revision`, the texture stays zero until synthesis
+    /// re-runs and bumps the revision (re-populating the field). The
+    /// `overcast_zeroed_at_revision` cookie skips redundant uploads
+    /// in the clouds-disabled steady state.
+    pub fn refresh_overcast_field_visibility(&mut self, queue: &wgpu::Queue) {
         if self.cloud_render_active {
+            return;
+        }
+        if self.overcast_zeroed_at_revision == Some(self.revision) {
             return;
         }
         let size = self.textures.overcast_field.size();
@@ -347,6 +360,7 @@ impl WeatherState {
             },
             size,
         );
+        self.overcast_zeroed_at_revision = Some(self.revision);
     }
 
     /// Construct a minimal `WeatherState` with 1×1×1 zeroed textures
@@ -510,6 +524,7 @@ impl WeatherState {
             scene_aurora_colour_bias: [0.10, 0.85, 0.05, 0.0],
             scene_water: None,
             cloud_render_active: true,
+            overcast_zeroed_at_revision: None,
             revision: 0,
         }
     }

@@ -1135,7 +1135,10 @@ impl RunState {
         if !config.render.atmosphere.ozone_enabled {
             atmo.ozone_absorption = glam::Vec4::ZERO;
         }
-        // Upload the per-frame uniforms (groups 0 and 1).
+        // Upload the per-frame uniforms (groups 0 and 1). The world
+        // (group 1) upload is diff-gated inside `write()` so it only
+        // hits the wgpu queue when `atmo` actually changes — audit
+        // §H2.
         self.bindings.write(
             &self.windowed_gpu.gpu.queue,
             &frame_uniforms,

@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
-    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId,
-    PassStage, PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
+    frame_bind_group_layout, BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor,
+    PassId, PassStage, PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
 };
 
 const PASS_ADVANCE: PassId = 0;
@@ -112,16 +112,28 @@ pub struct PrecipSubsystem {
     /// Layouts + sampler used to rebuild bind groups in `prepare()`.
     bg_builder: BindGroupBuilder,
 
-    /// Live compute bind group for the active pool (rebuilt each frame
-    /// against the current wind_field view).
-    live_compute_bg: Option<wgpu::BindGroup>,
+    /// Live compute bind group for the active pool, published by
+    /// `prepare()` for `dispatch_pass` to read. Audit S.H1 — driven by
+    /// a revision-keyed cache (`compute_bg_cache`); the per-frame
+    /// `prepare` call is just an `Arc::clone` in steady state.
+    live_compute_bg: Option<Arc<wgpu::BindGroup>>,
 
-    /// Live render bind group (rebuilt each frame against the current
-    /// density mask view).
-    live_render_bg: Option<wgpu::BindGroup>,
+    /// Live render bind group, same model as `live_compute_bg`.
+    live_render_bg: Option<Arc<wgpu::BindGroup>>,
 
     /// Live far-rain bind groups (one per layer).
-    live_far_bgs: Vec<wgpu::BindGroup>,
+    live_far_bgs: Vec<Arc<wgpu::BindGroup>>,
+
+    /// Audit S.H1 — caches keyed on `(kind, weather.revision)`. The
+    /// kind switches the active pool (rain ↔ snow), and the
+    /// revision changes when synthesis publishes new wind_field /
+    /// overcast_field views. Pool replacement on reconfigure (when
+    /// `near_particle_count` changes) is handled by `invalidate()`.
+    compute_bg_cache: BindGroupCache<(u32, u64)>,
+    render_bg_cache: BindGroupCache<(u32, u64)>,
+    /// One cache per far layer. Resized on reconfigure when
+    /// `far_layers` count changes.
+    far_bg_caches: Vec<BindGroupCache<(u32, u64)>>,
 
     /// Plan §Cross-Cutting/Determinism — user-supplied seed XOR'd into
     /// the per-particle respawn jitter. Sourced from
@@ -493,6 +505,7 @@ impl PrecipSubsystem {
             wind_sampler,
         };
 
+        let far_count = far_layers.len();
         Self {
             rain_pool,
             snow_pool,
@@ -505,6 +518,9 @@ impl PrecipSubsystem {
             live_compute_bg: None,
             live_render_bg: None,
             live_far_bgs: Vec::new(),
+            compute_bg_cache: BindGroupCache::new(),
+            render_bg_cache: BindGroupCache::new(),
+            far_bg_caches: (0..far_count).map(|_| BindGroupCache::new()).collect(),
             user_seed: config.debug.seed as u32,
         }
     }
@@ -699,23 +715,30 @@ impl RenderSubsystem for PrecipSubsystem {
             0,
             bytemuck::cast_slice(&reset_args),
         );
-        self.live_compute_bg = Some(Self::build_compute_bg(
-            ctx.device,
-            &self.bg_builder,
-            active_pool,
-            wind_view,
-        ));
-        self.live_render_bg = Some(Self::build_render_bg(
-            ctx.device,
-            &self.bg_builder,
-            active_pool,
-            mask_view,
-        ));
+        // Audit S.H1 — bind groups are rebuilt only when `(kind,
+        // weather.revision)` changes. In the dominant steady state
+        // (kind stable, no synthesis re-run), this is a chain of
+        // `Arc::clone` calls instead of N wgpu hub touches.
+        let key = (kind, ctx.weather.revision);
+        let device = ctx.device;
+        let bg_builder = &self.bg_builder;
+        self.live_compute_bg = Some(self.compute_bg_cache.get_or_build(key, || {
+            Self::build_compute_bg(device, bg_builder, active_pool, wind_view)
+        }));
+        self.live_render_bg = Some(self.render_bg_cache.get_or_build(key, || {
+            Self::build_render_bg(device, bg_builder, active_pool, mask_view)
+        }));
+        // `far_bg_caches` is sized at construction / reconfigure to
+        // match `far_layers.len()`.
+        let far_layers = &self.far_layers;
         self.live_far_bgs = self
-            .far_layers
-            .iter()
-            .map(|layer| {
-                Self::build_far_bg(ctx.device, &self.bg_builder, active_pool, layer, mask_view)
+            .far_bg_caches
+            .iter_mut()
+            .zip(far_layers.iter())
+            .map(|(cache, layer)| {
+                cache.get_or_build(key, || {
+                    Self::build_far_bg(device, bg_builder, active_pool, layer, mask_view)
+                })
             })
             .collect();
     }
@@ -765,7 +788,7 @@ impl RenderSubsystem for PrecipSubsystem {
                     timestamp_writes: None,
                 });
                 pass.set_pipeline(&self.advance_pipeline);
-                pass.set_bind_group(0, bg, &[]);
+                pass.set_bind_group(0, bg.as_ref(), &[]);
                 let groups = active_pool.count.div_ceil(64);
                 pass.dispatch_workgroups(groups, 1, 1);
             }
@@ -798,7 +821,7 @@ impl RenderSubsystem for PrecipSubsystem {
                 });
                 pass.set_pipeline(&self.render_pipeline);
                 pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, bg, &[]);
+                pass.set_bind_group(1, bg.as_ref(), &[]);
                 // draw_indirect reads (vertex_count, instance_count,
                 // first_vertex, first_instance) from the args buffer
                 // the compute shader just populated atomically (plan
@@ -835,7 +858,7 @@ impl RenderSubsystem for PrecipSubsystem {
                 pass.set_pipeline(&self.far_pipeline);
                 pass.set_bind_group(0, ctx.frame_bind_group, &[]);
                 for bg in &self.live_far_bgs {
-                    pass.set_bind_group(1, bg, &[]);
+                    pass.set_bind_group(1, bg.as_ref(), &[]);
                     pass.draw(0..3, 0..1);
                 }
             }
@@ -851,11 +874,24 @@ impl RenderSubsystem for PrecipSubsystem {
         if new_count != self.rain_pool.count {
             self.rain_pool = make_pool(&gpu.device, &gpu.queue, new_count, 0, RAIN_FALL_MPS);
             self.snow_pool = make_pool(&gpu.device, &gpu.queue, new_count, 1, SNOW_FALL_MPS);
+            // Audit S.H1 — pool reallocation invalidates every cached
+            // bind group: the buffer handles inside the BGs are now
+            // stale. The (kind, revision) cache key wouldn't catch
+            // this on its own.
+            self.compute_bg_cache.invalidate();
+            self.render_bg_cache.invalidate();
+            for cache in &mut self.far_bg_caches {
+                cache.invalidate();
+            }
         }
         let cur_far = self.far_layers.len() as u32;
         if config.render.precip.far_layers != cur_far {
             self.far_layers =
                 make_far_layers(&gpu.device, &gpu.queue, config.render.precip.far_layers);
+            // Resize the per-far-layer cache vec to match.
+            self.far_bg_caches = (0..self.far_layers.len())
+                .map(|_| BindGroupCache::new())
+                .collect();
         }
         Ok(())
     }

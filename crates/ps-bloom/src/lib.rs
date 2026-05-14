@@ -23,8 +23,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
-    RenderContext, RenderSubsystem, SubsystemFactory,
+    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
+    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
 };
 use tracing::debug;
 
@@ -136,6 +136,14 @@ pub struct BloomSubsystem {
     hdr_copy: Option<HdrCopy>,
     /// Per-size pyramid scratch.
     scratch: Option<ScratchState>,
+    /// Audit S.H1 — bind-group caches. Pyramid resources are stable
+    /// while `full_size` holds; the per-level params buffer handles
+    /// are stable across frames (only their contents change), so the
+    /// bind groups don't need rebuilding every frame.
+    bright_bg_cache: BindGroupCache<(u32, u32)>,
+    composite_bg_cache: BindGroupCache<(u32, u32)>,
+    down_bg_caches: Vec<BindGroupCache<(u32, u32)>>,
+    up_bg_caches: Vec<BindGroupCache<(u32, u32)>>,
     tuning: TuningSnapshot,
 }
 
@@ -372,6 +380,10 @@ impl BloomSubsystem {
             up_params,
             hdr_copy: None,
             scratch: None,
+            bright_bg_cache: BindGroupCache::new(),
+            composite_bg_cache: BindGroupCache::new(),
+            down_bg_caches: (0..PYRAMID_LEVELS).map(|_| BindGroupCache::new()).collect(),
+            up_bg_caches: (0..PYRAMID_LEVELS).map(|_| BindGroupCache::new()).collect(),
             tuning: TuningSnapshot::from_config(config),
         }
     }
@@ -532,24 +544,38 @@ impl RenderSubsystem for BloomSubsystem {
         );
 
         // --- Pass 1: bright pass into level-0 (half res).
+        //
+        // Audit S.H1 — all four BG kinds (bright/down/up/composite)
+        // route through caches keyed on `full_size` (plus the level
+        // index for the pyramid chains). The buffer handles
+        // (`bright_params`, `down_params[i]`, `up_params[i]`,
+        // `composite_params`) are stable across frames; only their
+        // contents change via per-frame `queue.write_buffer`, which
+        // does not invalidate the bind group.
         {
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bloom-bright-bg"),
-                layout: &self.bright_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&copy_state.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.bright_params.as_entire_binding(),
-                    },
-                ],
+            let bright_layout = &self.bright_layout;
+            let sampler = &self.sampler;
+            let bright_params = &self.bright_params;
+            let copy_view = &copy_state.view;
+            let bg = self.bright_bg_cache.get_or_build(full_size, || {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom-bright-bg"),
+                    layout: bright_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(copy_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: bright_params.as_entire_binding(),
+                        },
+                    ],
+                })
             });
             let level0 = &scratch_state.levels[0];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -569,7 +595,7 @@ impl RenderSubsystem for BloomSubsystem {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.bright_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg.as_ref(), &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -581,23 +607,29 @@ impl RenderSubsystem for BloomSubsystem {
                 config: [1.0 / src.size.0 as f32, 1.0 / src.size.1 as f32, 0.0, 0.0],
             };
             queue.write_buffer(&self.down_params[i], 0, bytemuck::bytes_of(&down));
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bloom-down-bg"),
-                layout: &self.down_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&src.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.down_params[i].as_entire_binding(),
-                    },
-                ],
+            let down_layout = &self.down_layout;
+            let sampler = &self.sampler;
+            let down_params_i = &self.down_params[i];
+            let src_view = &src.view;
+            let bg = self.down_bg_caches[i].get_or_build(full_size, || {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom-down-bg"),
+                    layout: down_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(src_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: down_params_i.as_entire_binding(),
+                        },
+                    ],
+                })
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bloom-down"),
@@ -616,7 +648,7 @@ impl RenderSubsystem for BloomSubsystem {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.down_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg.as_ref(), &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -628,23 +660,29 @@ impl RenderSubsystem for BloomSubsystem {
                 config: [1.0 / src.size.0 as f32, 1.0 / src.size.1 as f32, 1.0, 0.0],
             };
             queue.write_buffer(&self.up_params[i], 0, bytemuck::bytes_of(&up));
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bloom-up-bg"),
-                layout: &self.up_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&src.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.up_params[i].as_entire_binding(),
-                    },
-                ],
+            let up_layout = &self.up_layout;
+            let sampler = &self.sampler;
+            let up_params_i = &self.up_params[i];
+            let src_view = &src.view;
+            let bg = self.up_bg_caches[i].get_or_build(full_size, || {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom-up-bg"),
+                    layout: up_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(src_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: up_params_i.as_entire_binding(),
+                        },
+                    ],
+                })
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bloom-up"),
@@ -665,7 +703,7 @@ impl RenderSubsystem for BloomSubsystem {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.up_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg.as_ref(), &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -673,23 +711,29 @@ impl RenderSubsystem for BloomSubsystem {
         // pyramid) and additively blend into the HDR target.
         {
             let level0 = &scratch_state.levels[0];
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bloom-composite-bg"),
-                layout: &self.composite_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&level0.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.composite_params.as_entire_binding(),
-                    },
-                ],
+            let composite_layout = &self.composite_layout;
+            let sampler = &self.sampler;
+            let composite_params = &self.composite_params;
+            let level0_view = &level0.view;
+            let bg = self.composite_bg_cache.get_or_build(full_size, || {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom-composite-bg"),
+                    layout: composite_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(level0_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: composite_params.as_entire_binding(),
+                        },
+                    ],
+                })
             });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("bloom-composite"),
@@ -708,7 +752,7 @@ impl RenderSubsystem for BloomSubsystem {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.composite_pipeline);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, bg.as_ref(), &[]);
             pass.draw(0..3, 0..1);
         }
     }

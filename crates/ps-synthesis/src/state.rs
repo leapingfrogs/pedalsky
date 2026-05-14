@@ -175,6 +175,10 @@ pub fn synthesise(
         // this in `WeatherState` for the executor when
         // `[render.subsystems].clouds = false`. Audit §3.2.
         cloud_render_active: true,
+        // Fresh synthesis re-populated the overcast field; the host
+        // will re-zero it (and stamp this) if clouds-disabled this
+        // frame. Audit §H3.
+        overcast_zeroed_at_revision: None,
         revision: SYNTHESIS_REVISION.fetch_add(1, Ordering::Relaxed),
     })
 }

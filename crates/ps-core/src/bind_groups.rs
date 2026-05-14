@@ -9,6 +9,8 @@
 //! pipeline) and the [`FrameWorldBindings`] helper that owns the two
 //! uniform buffers + their bind groups in the host (ps-app).
 
+use std::cell::Cell;
+
 use bytemuck::bytes_of;
 use wgpu::util::DeviceExt;
 
@@ -74,6 +76,14 @@ pub struct FrameWorldBindings {
     pub world_bind_group: wgpu::BindGroup,
     /// Layout for group 1.
     pub world_layout: wgpu::BindGroupLayout,
+    /// Audit §H2 — CPU mirror of the last uploaded `WorldUniformsGpu`.
+    /// `AtmosphereParams` only changes on hot-reload / weather
+    /// synthesis re-run / UI tuning toggle, but the host doesn't have
+    /// a clean event to gate uploads on, so we diff the value each
+    /// frame and skip `queue.write_buffer` when unchanged. The check
+    /// is a cheap `Pod` byte comparison and replaces ~50 KB/s of
+    /// pointless PCIe traffic in steady state.
+    last_world: Cell<Option<WorldUniformsGpu>>,
 }
 
 impl FrameWorldBindings {
@@ -118,16 +128,24 @@ impl FrameWorldBindings {
             world_buffer,
             world_bind_group,
             world_layout,
+            last_world: Cell::new(None),
         }
     }
 
-    /// Upload fresh `frame` + `world` payloads.
+    /// Upload fresh `frame` + `world` payloads. The frame buffer is
+    /// uploaded unconditionally (its contents change every frame);
+    /// the world buffer is diff-checked against the last upload via
+    /// the internal CPU mirror and skipped when unchanged — audit
+    /// §H2.
     pub fn write(&self, queue: &wgpu::Queue, frame: &FrameUniforms, world: &WorldUniformsGpu) {
         queue.write_buffer(
             &self.frame_buffer,
             0,
             bytes_of(&FrameUniformsGpu::from_cpu(frame)),
         );
-        queue.write_buffer(&self.world_buffer, 0, bytes_of(world));
+        if self.last_world.get() != Some(*world) {
+            queue.write_buffer(&self.world_buffer, 0, bytes_of(world));
+            self.last_world.set(Some(*world));
+        }
     }
 }
