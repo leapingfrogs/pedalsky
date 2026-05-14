@@ -12,11 +12,13 @@
 use std::sync::{Arc, Mutex};
 
 use ps_core::{
-    Config, GpuContext, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    Config, GpuContext, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
+    RenderSubsystem, SubsystemFactory,
 };
 
 use crate::{auto_exposure::AutoExposure, tonemap::Tonemap, tonemap::TonemapMode};
+
+const PASS_TONEMAP: PassId = 0;
 
 /// Per-frame state the host pushes into the subsystem.
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +52,6 @@ struct TonemapShared {
     /// Cached EV100 derived by the previous frame's auto-exposure
     /// read-back. `None` until the first read completes.
     auto_ev100: Mutex<Option<f32>>,
-    enabled: Mutex<bool>,
 }
 
 /// Phase 9.1 tone-map subsystem.
@@ -70,7 +71,6 @@ impl TonemapSubsystem {
                 auto_exposure,
                 state: Mutex::new(initial_state),
                 auto_ev100: Mutex::new(None),
-                enabled: Mutex::new(true),
             }),
         }
     }
@@ -83,36 +83,37 @@ impl RenderSubsystem for TonemapSubsystem {
 
     fn prepare(&mut self, _ctx: &mut PrepareContext<'_>) {}
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let inner = self.inner.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "tonemap",
             stage: PassStage::ToneMap,
-            run: Box::new(move |encoder, ctx| {
-                let Some(target) = ctx.tonemap_target else {
-                    return;
-                };
-                let st = *inner.state.lock().expect("tonemap state lock");
-                let ev = if st.auto_exposure_enabled {
-                    inner.auto_exposure.dispatch(encoder);
-                    inner
-                        .auto_ev100
-                        .lock()
-                        .expect("auto ev lock")
-                        .unwrap_or(st.ev100)
-                } else {
-                    st.ev100
-                };
-                inner.tonemap.render(encoder, ctx.queue, target, ev, st.mode);
-            }),
+            id: PASS_TONEMAP,
         }]
     }
 
-    fn enabled(&self) -> bool {
-        *self.inner.enabled.lock().expect("tonemap enabled lock")
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        *self.inner.enabled.lock().expect("tonemap enabled lock") = enabled;
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let Some(target) = ctx.tonemap_target else {
+            return;
+        };
+        let st = *self.inner.state.lock().expect("tonemap state lock");
+        let ev = if st.auto_exposure_enabled {
+            self.inner.auto_exposure.dispatch(encoder);
+            self.inner
+                .auto_ev100
+                .lock()
+                .expect("auto ev lock")
+                .unwrap_or(st.ev100)
+        } else {
+            st.ev100
+        };
+        self.inner
+            .tonemap
+            .render(encoder, ctx.queue, target, ev, st.mode);
     }
 }
 

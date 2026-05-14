@@ -21,14 +21,14 @@
 
 #![deny(missing_docs)]
 
-use std::sync::{Arc, Mutex};
-
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass,
-    RenderSubsystem, SubsystemFactory,
+    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
+    RenderContext, RenderSubsystem, SubsystemFactory,
 };
 use tracing::debug;
+
+const PASS_BLOOM: PassId = 0;
 
 const BRIGHT_BAKED: &str = include_str!("../../../shaders/bloom/bright_pass.wgsl");
 const BRIGHT_REL: &str = "bloom/bright_pass.wgsl";
@@ -116,7 +116,6 @@ struct LevelTextures {
 
 /// Phase 13.3 bloom subsystem.
 pub struct BloomSubsystem {
-    enabled: bool,
     bright_pipeline: wgpu::RenderPipeline,
     down_pipeline: wgpu::RenderPipeline,
     up_pipeline: wgpu::RenderPipeline,
@@ -134,10 +133,10 @@ pub struct BloomSubsystem {
     up_params: Vec<wgpu::Buffer>,
     /// HDR copy used as a sample source for the bright pass without
     /// a read+write conflict.
-    hdr_copy: Arc<Mutex<Option<HdrCopy>>>,
+    hdr_copy: Option<HdrCopy>,
     /// Per-size pyramid scratch.
-    scratch: Arc<Mutex<Option<ScratchState>>>,
-    tuning: Arc<Mutex<TuningSnapshot>>,
+    scratch: Option<ScratchState>,
+    tuning: TuningSnapshot,
 }
 
 struct HdrCopy {
@@ -358,7 +357,6 @@ impl BloomSubsystem {
 
         debug!(target: "ps_bloom", "subsystem ready");
         Self {
-            enabled: true,
             bright_pipeline,
             down_pipeline,
             up_pipeline,
@@ -372,9 +370,9 @@ impl BloomSubsystem {
             composite_params,
             down_params,
             up_params,
-            hdr_copy: Arc::new(Mutex::new(None)),
-            scratch: Arc::new(Mutex::new(None)),
-            tuning: Arc::new(Mutex::new(TuningSnapshot::from_config(config))),
+            hdr_copy: None,
+            scratch: None,
+            tuning: TuningSnapshot::from_config(config),
         }
     }
 }
@@ -449,7 +447,7 @@ impl RenderSubsystem for BloomSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        let tuning = *self.tuning.lock().expect("bloom tuning lock");
+        let tuning = self.tuning;
 
         // Bright pass: convert ev100 stops into a linear luminance
         // threshold. ev100 stops are log2 multiples of the scene's
@@ -457,7 +455,7 @@ impl RenderSubsystem for BloomSubsystem {
         // average exposure target".
         let scene_ev = ctx.frame_uniforms.ev100;
         let threshold_lin = (scene_ev + tuning.threshold_ev100).exp2();
-        let knee_lin = (tuning.knee_ev * 0.6931).max(1e-6); // ~1 ev = ln(2)
+        let knee_lin = (tuning.knee_ev * std::f32::consts::LN_2).max(1e-6); // ~1 ev = ln(2)
         let bright = BrightParamsGpu {
             config: [threshold_lin, knee_lin, 0.0, 0.0],
         };
@@ -475,302 +473,249 @@ impl RenderSubsystem for BloomSubsystem {
         );
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let bright_pipeline = self.bright_pipeline.clone();
-        let down_pipeline = self.down_pipeline.clone();
-        let up_pipeline = self.up_pipeline.clone();
-        let composite_pipeline = self.composite_pipeline.clone();
-        let bright_layout = self.bright_layout.clone();
-        let down_layout = self.down_layout.clone();
-        let up_layout = self.up_layout.clone();
-        let composite_layout = self.composite_layout.clone();
-        let sampler = self.sampler.clone();
-        let bright_params = self.bright_params.clone();
-        let composite_params = self.composite_params.clone();
-        let down_params = self.down_params.clone();
-        let up_params = self.up_params.clone();
-        let hdr_copy = self.hdr_copy.clone();
-        let scratch = self.scratch.clone();
-
-        // The whole pyramid runs as a single registered pass closure
-        // — the per-frame allocation/dispatch is too coupled to
-        // split across multiple pass entries cleanly, and a single
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        // The whole pyramid runs as a single registered pass — the
+        // per-frame allocation/dispatch is too coupled to split
+        // across multiple pass entries cleanly, and a single
         // PostProcess pass keeps the GPU timestamp output clean.
-        vec![RegisteredPass {
+        vec![PassDescriptor {
             name: "bloom",
             stage: PassStage::PostProcess,
-            run: Box::new(move |encoder, ctx| {
-                let device = ctx.device;
-                let queue = ctx.queue;
-                let hdr = ctx.framebuffer;
-                let full_size = hdr.size;
-
-                // (Re)allocate scratch + hdr-copy if size changed.
-                let mut copy_guard = hdr_copy.lock().expect("bloom hdr-copy lock");
-                let mut scratch_guard = scratch.lock().expect("bloom scratch lock");
-                let needs_alloc = match (&*copy_guard, &*scratch_guard) {
-                    (Some(c), Some(s)) => {
-                        c.full_size != full_size || s.full_size != full_size
-                    }
-                    _ => true,
-                };
-                if needs_alloc {
-                    let (c, s) = allocate_pyramid(device, full_size);
-                    *copy_guard = Some(c);
-                    *scratch_guard = Some(s);
-                }
-                let copy_state = copy_guard.as_ref().expect("just allocated");
-                let scratch_state = scratch_guard.as_ref().expect("just allocated");
-
-                // Snapshot HDR → hdr_copy so the bright pass can
-                // sample without a read+write conflict.
-                encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &hdr.color,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &copy_state.tex,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::Extent3d {
-                        width: full_size.0,
-                        height: full_size.1,
-                        depth_or_array_layers: 1,
-                    },
-                );
-
-                // --- Pass 1: bright pass into level-0 (half res).
-                {
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("bloom-bright-bg"),
-                        layout: &bright_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &copy_state.view,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: bright_params.as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let level0 = &scratch_state.levels[0];
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("bloom-bright"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &level0.view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&bright_pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-
-                // --- Pass 2..N: downsample chain.
-                for i in 1..(PYRAMID_LEVELS as usize) {
-                    let src = &scratch_state.levels[i - 1];
-                    let dst = &scratch_state.levels[i];
-                    let down = DownParamsGpu {
-                        config: [
-                            1.0 / src.size.0 as f32,
-                            1.0 / src.size.1 as f32,
-                            0.0,
-                            0.0,
-                        ],
-                    };
-                    queue.write_buffer(
-                        &down_params[i],
-                        0,
-                        bytemuck::bytes_of(&down),
-                    );
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("bloom-down-bg"),
-                        layout: &down_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&src.view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: down_params[i].as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("bloom-down"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &dst.view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&down_pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-
-                // --- Pass N+1..2N-1: upsample chain.
-                // Walk levels (N-1) → 1; each step samples the
-                // smaller (i) level and additively blends into the
-                // next-larger (i-1) level.
-                for i in (1..(PYRAMID_LEVELS as usize)).rev() {
-                    let src = &scratch_state.levels[i];
-                    let dst = &scratch_state.levels[i - 1];
-                    let up = UpParamsGpu {
-                        config: [
-                            1.0 / src.size.0 as f32,
-                            1.0 / src.size.1 as f32,
-                            1.0,
-                            0.0,
-                        ],
-                    };
-                    queue.write_buffer(
-                        &up_params[i],
-                        0,
-                        bytemuck::bytes_of(&up),
-                    );
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("bloom-up-bg"),
-                        layout: &up_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&src.view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: up_params[i].as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("bloom-up"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &dst.view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    // Load — the larger level
-                                    // already holds its own blur,
-                                    // we add the upsampled smaller
-                                    // level on top of it.
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&up_pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-
-                // --- Final composite: sample level-0 (the fully
-                // accumulated pyramid) and additively blend into
-                // the HDR target.
-                {
-                    let level0 = &scratch_state.levels[0];
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("bloom-composite-bg"),
-                        layout: &composite_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &level0.view,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: composite_params.as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("bloom-composite"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &hdr.color_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&composite_pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-            }),
+            id: PASS_BLOOM,
         }]
     }
 
-    fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
-        *self.tuning.lock().expect("bloom tuning lock") =
-            TuningSnapshot::from_config(config);
-        Ok(())
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let device = ctx.device;
+        let queue = ctx.queue;
+        let hdr = ctx.framebuffer;
+        let full_size = hdr.size;
+
+        // (Re)allocate scratch + hdr-copy if size changed.
+        let needs_alloc = match (&self.hdr_copy, &self.scratch) {
+            (Some(c), Some(s)) => c.full_size != full_size || s.full_size != full_size,
+            _ => true,
+        };
+        if needs_alloc {
+            let (c, s) = allocate_pyramid(device, full_size);
+            self.hdr_copy = Some(c);
+            self.scratch = Some(s);
+        }
+        let copy_state = self.hdr_copy.as_ref().expect("just allocated");
+        let scratch_state = self.scratch.as_ref().expect("just allocated");
+
+        // Snapshot HDR → hdr_copy so the bright pass can sample
+        // without a read+write conflict.
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &hdr.color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &copy_state.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: full_size.0,
+                height: full_size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // --- Pass 1: bright pass into level-0 (half res).
+        {
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom-bright-bg"),
+                layout: &self.bright_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&copy_state.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.bright_params.as_entire_binding(),
+                    },
+                ],
+            });
+            let level0 = &scratch_state.levels[0];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom-bright"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &level0.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.bright_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // --- Pass 2..N: downsample chain.
+        for i in 1..(PYRAMID_LEVELS as usize) {
+            let src = &scratch_state.levels[i - 1];
+            let dst = &scratch_state.levels[i];
+            let down = DownParamsGpu {
+                config: [1.0 / src.size.0 as f32, 1.0 / src.size.1 as f32, 0.0, 0.0],
+            };
+            queue.write_buffer(&self.down_params[i], 0, bytemuck::bytes_of(&down));
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom-down-bg"),
+                layout: &self.down_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&src.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.down_params[i].as_entire_binding(),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom-down"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dst.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.down_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // --- Pass N+1..2N-1: upsample chain.
+        for i in (1..(PYRAMID_LEVELS as usize)).rev() {
+            let src = &scratch_state.levels[i];
+            let dst = &scratch_state.levels[i - 1];
+            let up = UpParamsGpu {
+                config: [1.0 / src.size.0 as f32, 1.0 / src.size.1 as f32, 1.0, 0.0],
+            };
+            queue.write_buffer(&self.up_params[i], 0, bytemuck::bytes_of(&up));
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom-up-bg"),
+                layout: &self.up_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&src.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.up_params[i].as_entire_binding(),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom-up"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dst.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Load — the larger level already holds its own
+                        // blur; we add the upsampled smaller level on top.
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.up_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // --- Final composite: sample level-0 (the fully accumulated
+        // pyramid) and additively blend into the HDR target.
+        {
+            let level0 = &scratch_state.levels[0];
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom-composite-bg"),
+                layout: &self.composite_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&level0.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.composite_params.as_entire_binding(),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("bloom-composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &hdr.color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.composite_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
     }
 
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+    fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
+        self.tuning = TuningSnapshot::from_config(config);
+        Ok(())
     }
 }
 

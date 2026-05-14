@@ -27,8 +27,11 @@ use bytemuck::{bytes_of, Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use ps_core::{
     atmosphere_lut_bind_group_layout, frame_bind_group_layout, Config, GpuContext, HdrFramebuffer,
-    PassStage, PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
+    PassDescriptor, PassId, PassStage, PrepareContext, RenderContext, RenderSubsystem,
+    SubsystemFactory,
 };
+
+const PASS_WINDSOCK: PassId = 0;
 
 const SHADER_BAKED: &str = include_str!("../../../shaders/windsock/windsock.wgsl");
 const SHADER_REL: &str = "windsock/windsock.wgsl";
@@ -72,7 +75,6 @@ struct WindsockParamsGpu {
 
 /// Phase 13.6 windsock subsystem.
 pub struct WindsockSubsystem {
-    enabled: bool,
     pipeline: wgpu::RenderPipeline,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
@@ -209,7 +211,6 @@ impl WindsockSubsystem {
         });
 
         Self {
-            enabled: true,
             pipeline,
             vertex_buf,
             index_buf,
@@ -231,60 +232,55 @@ impl RenderSubsystem for WindsockSubsystem {
             .write_buffer(&self.params_buf, 0, bytes_of(&params));
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let pipeline = self.pipeline.clone();
-        let vertex_buf = self.vertex_buf.clone();
-        let index_buf = self.index_buf.clone();
-        let index_count = self.index_count;
-        let params_bg = self.params_bg.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "windsock",
             stage: PassStage::Opaque,
-            run: Box::new(move |encoder, ctx| {
-                let Some(luts_bg) = ctx.luts_bind_group else {
-                    // No LUTs available — skip (shader requires the AP
-                    // 3D texture). Matches the ground subsystem.
-                    return;
-                };
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("windsock-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &ctx.framebuffer.color_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &ctx.framebuffer.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, &params_bg, &[]);
-                pass.set_bind_group(2, luts_bg, &[]);
-                pass.set_vertex_buffer(0, vertex_buf.slice(..));
-                pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..index_count, 0, 0..1);
-            }),
+            id: PASS_WINDSOCK,
         }]
     }
 
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let Some(luts_bg) = ctx.luts_bind_group else {
+            // No LUTs available — skip (shader requires the AP 3D
+            // texture). Matches the ground subsystem.
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("windsock-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &ctx.framebuffer.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &ctx.framebuffer.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+        pass.set_bind_group(1, &self.params_bg, &[]);
+        pass.set_bind_group(2, luts_bg, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+        pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
     }
 }
 

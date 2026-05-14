@@ -26,9 +26,11 @@ use std::sync::{Arc, Mutex};
 
 use glam::{Vec3, Vec4};
 use ps_core::{
-    Config, GpuContext, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    Config, GpuContext, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
+    RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_BOLTS: PassId = 0;
 use tracing::debug;
 
 use crate::strike::{ActiveStrike, StrikeStore};
@@ -92,16 +94,17 @@ impl TuningSnapshot {
 
 /// Phase 12.3 lightning subsystem.
 pub struct LightningSubsystem {
-    enabled: bool,
-    tuning: Arc<Mutex<TuningSnapshot>>,
-    strikes: Arc<Mutex<StrikeStore>>,
+    tuning: TuningSnapshot,
+    strikes: StrikeStore,
     /// Per-pass GPU resources (vertex buffers, pipeline). Built once
     /// at construction; the vertex buffer is re-uploaded per frame
     /// from active strikes' geometry.
-    render: Arc<render::BoltRender>,
+    render: render::BoltRender,
     /// Published snapshot of the current cloud-illumination state —
     /// the host reads this after `prepare()` returns and splices it
-    /// into the next `FrameUniforms` upload.
+    /// into the next `FrameUniforms` upload. Still behind `Arc<Mutex>`
+    /// because external callers (ps-app) hold a clone for cross-frame
+    /// reads outside the subsystem's `&mut self` access window.
     publish: LightningPublish,
 }
 
@@ -112,7 +115,7 @@ impl LightningSubsystem {
     pub fn new(config: &Config, gpu: &GpuContext) -> (Self, LightningPublish) {
         let tuning = TuningSnapshot::from_config(config);
         let strikes = StrikeStore::new(tuning.seed, tuning.max_active_strikes);
-        let render = Arc::new(render::BoltRender::new(&gpu.device, tuning.max_active_strikes));
+        let render = render::BoltRender::new(&gpu.device, tuning.max_active_strikes);
         let publish: LightningPublish = Arc::new(Mutex::new(LightningSnapshot::default()));
         debug!(
             target: "ps_lightning",
@@ -122,9 +125,8 @@ impl LightningSubsystem {
         let publish_clone = publish.clone();
         (
             Self {
-                enabled: true,
-                tuning: Arc::new(Mutex::new(tuning)),
-                strikes: Arc::new(Mutex::new(strikes)),
+                tuning,
+                strikes,
                 render,
                 publish: publish_clone,
             },
@@ -139,8 +141,8 @@ impl RenderSubsystem for LightningSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        let tuning = *self.tuning.lock().expect("lightning tuning lock");
-        let mut store = self.strikes.lock().expect("lightning strike lock");
+        let tuning = self.tuning;
+        let store = &mut self.strikes;
 
         // Advance lifetimes, evict expired.
         store.advance(ctx.dt_seconds);
@@ -202,34 +204,30 @@ impl RenderSubsystem for LightningSubsystem {
             .upload_active_strikes(ctx.queue, store.active(), tuning.bolt_peak_emission);
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let render = self.render.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "lightning-bolts",
             stage: PassStage::Translucent,
-            run: Box::new(move |encoder, ctx| {
-                render.draw(encoder, ctx);
-            }),
+            id: PASS_BOLTS,
         }]
+    }
+
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        self.render.draw(encoder, ctx);
     }
 
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         let snapshot = TuningSnapshot::from_config(config);
-        *self.tuning.lock().expect("lightning tuning lock") = snapshot;
+        self.tuning = snapshot;
         // Re-seed the RNG when seed changes for deterministic
         // headless renders.
-        self.strikes
-            .lock()
-            .expect("lightning strike lock")
-            .reseed(snapshot.seed);
+        self.strikes.reseed(snapshot.seed);
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

@@ -19,14 +19,15 @@
 
 #![deny(missing_docs)]
 
-use std::sync::{Arc, Mutex};
-
 use bytemuck::{Pod, Zeroable};
 use glam::Vec4;
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass,
-    RenderSubsystem, SubsystemFactory,
+    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
+    RenderContext, RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_RADIAL: PassId = 0;
+const PASS_COMPOSITE: PassId = 1;
 
 const RADIAL_BAKED: &str = include_str!("../../../shaders/godrays/radial.wgsl");
 const RADIAL_REL: &str = "godrays/radial.wgsl";
@@ -56,7 +57,6 @@ struct GodraysCompositeParamsGpu {
 /// Phase 12.4 godrays subsystem. Holds two pipelines + a
 /// dynamically-sized half-res scratch RT.
 pub struct GodraysSubsystem {
-    enabled: bool,
     radial_pipeline: wgpu::RenderPipeline,
     composite_pipeline: wgpu::RenderPipeline,
     radial_layout: wgpu::BindGroupLayout,
@@ -64,8 +64,8 @@ pub struct GodraysSubsystem {
     sampler: wgpu::Sampler,
     radial_params: wgpu::Buffer,
     composite_params: wgpu::Buffer,
-    scratch: Arc<Mutex<Option<ScratchState>>>,
-    tuning: Arc<Mutex<TuningSnapshot>>,
+    scratch: Option<ScratchState>,
+    tuning: TuningSnapshot,
 }
 
 struct ScratchState {
@@ -283,7 +283,6 @@ impl GodraysSubsystem {
 
         let g = &config.render.godrays;
         Self {
-            enabled: true,
             radial_pipeline,
             composite_pipeline,
             radial_layout,
@@ -291,13 +290,13 @@ impl GodraysSubsystem {
             sampler,
             radial_params,
             composite_params,
-            scratch: Arc::new(Mutex::new(None)),
-            tuning: Arc::new(Mutex::new(TuningSnapshot {
+            scratch: None,
+            tuning: TuningSnapshot {
                 samples: g.samples,
                 decay: g.decay,
                 intensity: g.intensity,
                 bright_threshold: g.bright_threshold,
-            })),
+            },
         }
     }
 }
@@ -337,7 +336,7 @@ impl RenderSubsystem for GodraysSubsystem {
             }
         }
 
-        let tuning = *self.tuning.lock().expect("godrays tuning lock");
+        let tuning = self.tuning;
         let radial = GodraysParamsGpu {
             sun_ndc: [sun_ndc[0], sun_ndc[1], sun_on_screen, 0.0],
             tunables: [
@@ -360,227 +359,205 @@ impl RenderSubsystem for GodraysSubsystem {
         );
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let radial_pipeline = self.radial_pipeline.clone();
-        let composite_pipeline = self.composite_pipeline.clone();
-        let radial_layout = self.radial_layout.clone();
-        let composite_layout = self.composite_layout.clone();
-        let radial_sampler = self.sampler.clone();
-        let composite_sampler = self.sampler.clone();
-        let radial_params = self.radial_params.clone();
-        let composite_params = self.composite_params.clone();
-        let scratch = self.scratch.clone();
-
-        let radial_scratch = scratch.clone();
-        let composite_scratch = scratch.clone();
-
+    fn register_passes(&self) -> Vec<PassDescriptor> {
         vec![
-            // Pass 1 — radial accumulation into the half-res RT.
-            RegisteredPass {
+            PassDescriptor {
                 name: "godrays-radial",
                 stage: PassStage::PostProcess,
-                run: Box::new(move |encoder, ctx| {
-                    let device = ctx.device;
-                    let hdr = ctx.framebuffer;
-                    let full_size = hdr.size;
-                    let half_size = (
-                        (full_size.0 / HALF_RES_FACTOR).max(1),
-                        (full_size.1 / HALF_RES_FACTOR).max(1),
-                    );
-
-                    let mut scratch_guard =
-                        radial_scratch.lock().expect("godrays scratch lock");
-                    let needs_alloc = scratch_guard
-                        .as_ref()
-                        .is_none_or(|s| s.full_size != full_size);
-                    if needs_alloc {
-                        let hdr_copy = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("godrays-hdr-copy"),
-                            size: wgpu::Extent3d {
-                                width: full_size.0,
-                                height: full_size.1,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: HdrFramebuffer::COLOR_FORMAT,
-                            usage: wgpu::TextureUsages::COPY_DST
-                                | wgpu::TextureUsages::TEXTURE_BINDING,
-                            view_formats: &[],
-                        });
-                        let hdr_copy_view =
-                            hdr_copy.create_view(&wgpu::TextureViewDescriptor::default());
-                        let rays_rt = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("godrays-rays-rt"),
-                            size: wgpu::Extent3d {
-                                width: half_size.0,
-                                height: half_size.1,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: HdrFramebuffer::COLOR_FORMAT,
-                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                                | wgpu::TextureUsages::TEXTURE_BINDING,
-                            view_formats: &[],
-                        });
-                        let rays_rt_view =
-                            rays_rt.create_view(&wgpu::TextureViewDescriptor::default());
-                        *scratch_guard = Some(ScratchState {
-                            hdr_copy,
-                            hdr_copy_view,
-                            rays_rt,
-                            rays_rt_view,
-                            full_size,
-                        });
-                    }
-                    let scratch = scratch_guard.as_ref().expect("just allocated");
-
-                    // Copy HDR → hdr_copy so the radial pass can sample
-                    // without a read+write conflict on HDR.
-                    encoder.copy_texture_to_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &hdr.color,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &scratch.hdr_copy,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        wgpu::Extent3d {
-                            width: full_size.0,
-                            height: full_size.1,
-                            depth_or_array_layers: 1,
-                        },
-                    );
-
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("godrays-radial-bg"),
-                        layout: &radial_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &scratch.hdr_copy_view,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&radial_sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: radial_params.as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("godrays-radial"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &scratch.rays_rt_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                                        r: 0.0,
-                                        g: 0.0,
-                                        b: 0.0,
-                                        a: 0.0,
-                                    }),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&radial_pipeline);
-                    pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                    pass.set_bind_group(1, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }),
+                id: PASS_RADIAL,
             },
-            // Pass 2 — additive composite back into HDR.
-            RegisteredPass {
+            PassDescriptor {
                 name: "godrays-composite",
                 stage: PassStage::PostProcess,
-                run: Box::new(move |encoder, ctx| {
-                    let device = ctx.device;
-                    let hdr = ctx.framebuffer;
-                    let scratch_guard =
-                        composite_scratch.lock().expect("godrays scratch lock");
-                    let Some(scratch) = scratch_guard.as_ref() else {
-                        return;
-                    };
-                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("godrays-composite-bg"),
-                        layout: &composite_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &scratch.rays_rt_view,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&composite_sampler),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: composite_params.as_entire_binding(),
-                            },
-                        ],
-                    });
-                    let mut pass =
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("godrays-composite"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &hdr.color_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                    pass.set_pipeline(&composite_pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }),
+                id: PASS_COMPOSITE,
             },
         ]
     }
 
+    fn dispatch_pass(
+        &mut self,
+        id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        match id {
+            PASS_RADIAL => {
+                let device = ctx.device;
+                let hdr = ctx.framebuffer;
+                let full_size = hdr.size;
+                let half_size = (
+                    (full_size.0 / HALF_RES_FACTOR).max(1),
+                    (full_size.1 / HALF_RES_FACTOR).max(1),
+                );
+                let needs_alloc = self.scratch.as_ref().is_none_or(|s| s.full_size != full_size);
+                if needs_alloc {
+                    let hdr_copy = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("godrays-hdr-copy"),
+                        size: wgpu::Extent3d {
+                            width: full_size.0,
+                            height: full_size.1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        usage: wgpu::TextureUsages::COPY_DST
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    });
+                    let hdr_copy_view =
+                        hdr_copy.create_view(&wgpu::TextureViewDescriptor::default());
+                    let rays_rt = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("godrays-rays-rt"),
+                        size: wgpu::Extent3d {
+                            width: half_size.0,
+                            height: half_size.1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: HdrFramebuffer::COLOR_FORMAT,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    });
+                    let rays_rt_view =
+                        rays_rt.create_view(&wgpu::TextureViewDescriptor::default());
+                    self.scratch = Some(ScratchState {
+                        hdr_copy,
+                        hdr_copy_view,
+                        rays_rt,
+                        rays_rt_view,
+                        full_size,
+                    });
+                }
+                let scratch = self.scratch.as_ref().expect("just allocated");
+
+                // Copy HDR → hdr_copy so the radial pass can sample
+                // without a read+write conflict on HDR.
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &hdr.color,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &scratch.hdr_copy,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: full_size.0,
+                        height: full_size.1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("godrays-radial-bg"),
+                    layout: &self.radial_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&scratch.hdr_copy_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.radial_params.as_entire_binding(),
+                        },
+                    ],
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("godrays-radial"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scratch.rays_rt_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.0,
+                                g: 0.0,
+                                b: 0.0,
+                                a: 0.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.radial_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(1, &bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            PASS_COMPOSITE => {
+                let device = ctx.device;
+                let hdr = ctx.framebuffer;
+                let Some(scratch) = self.scratch.as_ref() else {
+                    return;
+                };
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("godrays-composite-bg"),
+                    layout: &self.composite_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&scratch.rays_rt_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.composite_params.as_entire_binding(),
+                        },
+                    ],
+                });
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("godrays-composite"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &hdr.color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.composite_pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            _ => panic!("godrays: unknown pass id {id}"),
+        }
+    }
+
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         let g = &config.render.godrays;
-        *self.tuning.lock().expect("godrays tuning lock") = TuningSnapshot {
+        self.tuning = TuningSnapshot {
             samples: g.samples,
             decay: g.decay,
             intensity: g.intensity,
             bright_threshold: g.bright_threshold,
         };
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

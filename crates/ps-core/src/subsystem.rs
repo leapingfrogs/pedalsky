@@ -1,5 +1,5 @@
 //! The `RenderSubsystem` trait, the `PassStage` ordering enum, and the
-//! `RegisteredPass` value the trait returns. See plan §1.3.
+//! lightweight `PassDescriptor` value the trait returns. See plan §1.3.
 
 use crate::config::Config;
 use crate::contexts::{GpuContext, PrepareContext, RenderContext};
@@ -30,20 +30,32 @@ pub enum PassStage {
     Overlay,
 }
 
-/// Closure type executed once per frame for a registered pass. Boxed and
-/// trait-objected so the runtime can store heterogeneous passes in a single
-/// `Vec`.
-pub type PassFn = dyn Fn(&mut wgpu::CommandEncoder, &RenderContext<'_>) + Send + Sync;
+/// Subsystem-local identifier for a single registered pass.
+///
+/// Subsystems pick their own values (typically a small enum cast to `u32`,
+/// or sequential 0/1/2 if they don't need stable names). The executor
+/// just round-trips it back to the subsystem inside `dispatch_pass`.
+pub type PassId = u32;
 
-/// A single render-graph pass registered by a subsystem. A subsystem may
-/// register many — see plan §1.3.
-pub struct RegisteredPass {
+/// Lightweight description of a render-graph pass. Returned once at
+/// registration time; the executor stores it by value and dispatches
+/// to the owning subsystem's [`RenderSubsystem::dispatch_pass`] when
+/// the pass should run.
+///
+/// Replaces the previous `RegisteredPass { run: Box<dyn Fn...> }` model
+/// (audit §2.4): with the closure gone, subsystems hold their own
+/// per-frame mutable state as plain `&mut self` fields instead of
+/// `Arc<Mutex<…>>` cells that only existed to satisfy the closure's
+/// `Send + Sync + 'static` bounds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PassDescriptor {
     /// Debug-friendly pass name (used in tracing logs and wgpu labels).
     pub name: &'static str,
     /// Coarse ordering bucket.
     pub stage: PassStage,
-    /// Closure executed once per frame with an active command encoder.
-    pub run: Box<PassFn>,
+    /// Subsystem-local identifier. Passed back to the owning subsystem
+    /// via `dispatch_pass` so it knows which of its passes to run.
+    pub id: PassId,
 }
 
 /// Trait implemented by every renderable subsystem (atmosphere, clouds,
@@ -67,15 +79,25 @@ pub trait RenderSubsystem: Send + Sync {
     /// gets re-published as a fresh `Arc<AtmosphereLuts>` whenever the
     /// atmosphere subsystem is toggled off and back on, and any cached
     /// reference would point at a dropped texture. Build the LUT bind
-    /// group inside the pass closure (or each frame in `prepare`) from
+    /// group inside `dispatch_pass` (or each frame in `prepare`) from
     /// the live `PrepareContext::atmosphere_luts` / `RenderContext::
     /// luts_bind_group` reference.
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>);
 
     /// Render-graph passes this subsystem contributes. Called once at
-    /// registration; the executor flattens and sorts these into the
-    /// per-frame command sequence.
-    fn register_passes(&self) -> Vec<RegisteredPass>;
+    /// registration (and on reconfigure); the executor flattens, sorts
+    /// by stage, and stores the result for the per-frame loop.
+    fn register_passes(&self) -> Vec<PassDescriptor>;
+
+    /// Execute a single pass previously announced by `register_passes`.
+    /// `id` is the same `PassId` the subsystem chose when describing
+    /// the pass, so a match on `id` selects the right code path.
+    fn dispatch_pass(
+        &mut self,
+        id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    );
 
     /// Optional UI panel.
     ///
@@ -93,12 +115,4 @@ pub trait RenderSubsystem: Send + Sync {
     fn reconfigure(&mut self, config: &Config, gpu: &GpuContext) -> anyhow::Result<()> {
         Ok(())
     }
-
-    /// Whether the subsystem is currently active.
-    fn enabled(&self) -> bool;
-
-    /// Set the enabled flag. Disabled subsystems still receive `prepare()`
-    /// calls (so they can keep their resources warm) but their passes are
-    /// skipped by the render-graph executor.
-    fn set_enabled(&mut self, enabled: bool);
 }

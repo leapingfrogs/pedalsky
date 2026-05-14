@@ -12,13 +12,13 @@
 
 #![deny(missing_docs)]
 
-use std::sync::{Arc, Mutex};
-
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext,
+    RenderContext, RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_MULTIPLY: PassId = 0;
 
 const SHADER_BAKED: &str = include_str!("../../../shaders/tint/multiply.wgsl");
 const SHADER_REL: &str = "tint/multiply.wgsl";
@@ -34,14 +34,13 @@ struct TintUniformsGpu {
 
 /// Phase 1 demo subsystem.
 pub struct TintSubsystem {
-    enabled: bool,
     pipeline: wgpu::RenderPipeline,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniforms: wgpu::Buffer,
     /// Scratch texture sized to match the HDR target. Rebuilt when size changes.
-    scratch: Arc<Mutex<Option<ScratchState>>>,
-    multiplier: Arc<Mutex<[f32; 3]>>,
+    scratch: Option<ScratchState>,
+    multiplier: [f32; 3],
 }
 
 struct ScratchState {
@@ -138,13 +137,12 @@ impl TintSubsystem {
 
         let [r, g, b] = config.render.tint.multiplier;
         Self {
-            enabled: true,
             pipeline,
             bgl,
             sampler,
             uniforms,
-            scratch: Arc::new(Mutex::new(None)),
-            multiplier: Arc::new(Mutex::new([r, g, b])),
+            scratch: None,
+            multiplier: [r, g, b],
         }
     }
 }
@@ -160,139 +158,120 @@ impl RenderSubsystem for TintSubsystem {
         // us move that work here.
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        // wgpu objects are internally Arc-shared; cloning them into the closure
-        // does not deep-copy GPU state.
-        let pipeline = self.pipeline.clone();
-        let bgl = self.bgl.clone();
-        let sampler = self.sampler.clone();
-        let uniforms = self.uniforms.clone();
-        let scratch = self.scratch.clone();
-        let multiplier = self.multiplier.clone();
-
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "tint-multiply",
             stage: PassStage::PostProcess,
-            run: Box::new(move |encoder, ctx| {
-                let device = ctx.device;
-                let queue = ctx.queue;
-                let hdr = ctx.framebuffer;
-                let size = hdr.size;
-
-                // (Re)allocate scratch if size changed.
-                let mut scratch_guard = scratch.lock().expect("tint scratch lock poisoned");
-                let needs_alloc = scratch_guard.as_ref().is_none_or(|s| s.size != size);
-                if needs_alloc {
-                    let texture = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("tint-scratch"),
-                        size: wgpu::Extent3d {
-                            width: size.0,
-                            height: size.1,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
-                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    *scratch_guard = Some(ScratchState {
-                        texture,
-                        view,
-                        size,
-                    });
-                }
-                let scratch = scratch_guard.as_ref().expect("just allocated");
-
-                // HDR → scratch.
-                encoder.copy_texture_to_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &hdr.color,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &scratch.texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
-                        depth_or_array_layers: 1,
-                    },
-                );
-
-                // Update uniform.
-                let [r, g, b] = *multiplier.lock().expect("tint multiplier lock poisoned");
-                queue.write_buffer(
-                    &uniforms,
-                    0,
-                    bytemuck::bytes_of(&TintUniformsGpu {
-                        multiplier: [r, g, b, 1.0],
-                    }),
-                );
-
-                // Build bind group + draw.
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("tint-bg"),
-                    layout: &bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&scratch.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: uniforms.as_entire_binding(),
-                        },
-                    ],
-                });
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("tint-multiply"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &hdr.color_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, &bg, &[]);
-                pass.draw(0..3, 0..1);
-            }),
+            id: PASS_MULTIPLY,
         }]
+    }
+
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let device = ctx.device;
+        let queue = ctx.queue;
+        let hdr = ctx.framebuffer;
+        let size = hdr.size;
+
+        // (Re)allocate scratch if size changed.
+        let needs_alloc = self.scratch.as_ref().is_none_or(|s| s.size != size);
+        if needs_alloc {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("tint-scratch"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HdrFramebuffer::COLOR_FORMAT,
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.scratch = Some(ScratchState { texture, view, size });
+        }
+        let scratch = self.scratch.as_ref().expect("just allocated");
+
+        // HDR → scratch.
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &hdr.color,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &scratch.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let [r, g, b] = self.multiplier;
+        queue.write_buffer(
+            &self.uniforms,
+            0,
+            bytemuck::bytes_of(&TintUniformsGpu {
+                multiplier: [r, g, b, 1.0],
+            }),
+        );
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tint-bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scratch.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniforms.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("tint-multiply"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &hdr.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         let [r, g, b] = config.render.tint.multiplier;
-        *self
-            .multiplier
-            .lock()
-            .expect("tint multiplier lock poisoned") = [r, g, b];
+        self.multiplier = [r, g, b];
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

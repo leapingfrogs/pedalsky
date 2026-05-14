@@ -50,7 +50,7 @@ pub use scene::{
     CloudLayer, CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation,
     Scene, SceneError, Surface, SurfaceMaterial, Water, Wetness, WindAloftSample,
 };
-pub use subsystem::{PassStage, RegisteredPass, RenderSubsystem};
+pub use subsystem::{PassDescriptor, PassId, PassStage, RenderSubsystem};
 pub use weather::{
     AtmosphereParams, CloudLayerGpu, SurfaceParams, WeatherState, WeatherTextures, WorldUniformsGpu,
 };

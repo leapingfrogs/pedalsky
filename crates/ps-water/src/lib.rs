@@ -23,9 +23,11 @@
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
     atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout, Config,
-    GpuContext, HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
+    RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_WATER: PassId = 0;
 
 const SHADER_BAKED: &str = include_str!("../../../shaders/water/water.wgsl");
 const SHADER_REL: &str = "water/water.wgsl";
@@ -53,7 +55,6 @@ struct WaterParamsGpu {
 
 /// Phase 13.5 water subsystem.
 pub struct WaterSubsystem {
-    enabled: bool,
     pipeline: wgpu::RenderPipeline,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
@@ -61,8 +62,9 @@ pub struct WaterSubsystem {
     params_buf: wgpu::Buffer,
     params_bg: wgpu::BindGroup,
     /// Active flag: `true` only when the live `WeatherState.scene_water`
-    /// is `Some`. The pass closure reads this via the shared cell.
-    active: std::sync::Arc<std::sync::Mutex<bool>>,
+    /// is `Some`. Latched by `prepare` from WeatherState, read by
+    /// `dispatch_pass`.
+    active: bool,
 }
 
 impl WaterSubsystem {
@@ -198,14 +200,13 @@ impl WaterSubsystem {
         });
 
         Self {
-            enabled: true,
             pipeline,
             vertex_buf,
             index_buf,
             index_count,
             params_buf,
             params_bg,
-            active: std::sync::Arc::new(std::sync::Mutex::new(false)),
+            active: false,
         }
     }
 }
@@ -217,7 +218,7 @@ impl RenderSubsystem for WaterSubsystem {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
         let Some(water) = ctx.weather.scene_water.as_ref() else {
-            *self.active.lock().expect("water active lock") = false;
+            self.active = false;
             return;
         };
         let surface = &ctx.weather.surface;
@@ -233,66 +234,60 @@ impl RenderSubsystem for WaterSubsystem {
         };
         ctx.queue
             .write_buffer(&self.params_buf, 0, bytes_of(&params));
-        *self.active.lock().expect("water active lock") = true;
+        self.active = true;
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let pipeline = self.pipeline.clone();
-        let vertex_buf = self.vertex_buf.clone();
-        let index_buf = self.index_buf.clone();
-        let index_count = self.index_count;
-        let params_bg = self.params_bg.clone();
-        let active = self.active.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "water",
             stage: PassStage::Opaque,
-            run: Box::new(move |encoder, ctx| {
-                if !*active.lock().expect("water active lock") {
-                    return;
-                }
-                let Some(luts_bg) = ctx.luts_bind_group else {
-                    return;
-                };
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("water-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &ctx.framebuffer.color_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &ctx.framebuffer.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                pass.set_bind_group(2, &params_bg, &[]);
-                pass.set_bind_group(3, luts_bg, &[]);
-                pass.set_vertex_buffer(0, vertex_buf.slice(..));
-                pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..index_count, 0, 0..1);
-            }),
+            id: PASS_WATER,
         }]
     }
 
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        if !self.active {
+            return;
+        }
+        let Some(luts_bg) = ctx.luts_bind_group else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("water-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &ctx.framebuffer.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &ctx.framebuffer.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+        pass.set_bind_group(1, ctx.world_bind_group, &[]);
+        pass.set_bind_group(2, &self.params_bg, &[]);
+        pass.set_bind_group(3, luts_bg, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+        pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
     }
 }
 

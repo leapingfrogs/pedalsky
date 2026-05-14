@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ps_core::{
-    App, AppBuilder, Config, GpuContext, PassStage, PrepareContext, RegisteredPass,
-    RenderSubsystem, SubsystemFactory,
+    App, AppBuilder, Config, GpuContext, PassDescriptor, PassId, PassStage, PrepareContext,
+    RenderContext, RenderSubsystem, SubsystemFactory,
 };
 
 /// Lazily construct a headless GpuContext, shared across tests in this file.
@@ -28,12 +28,11 @@ type PrepareLog = Arc<Mutex<Vec<&'static str>>>;
 type PassLog = Arc<Mutex<Vec<(&'static str, PassStage)>>>;
 
 /// Fake subsystem whose `prepare()` pushes its name into a shared `Vec` and
-/// whose pass closures push `(name, stage)` into another, so tests can
+/// whose `dispatch_pass` pushes `(name, stage)` into another, so tests can
 /// verify the actual call order under `App::frame`.
 struct FakeSubsystem {
     name: &'static str,
     stages: Vec<PassStage>,
-    enabled: bool,
     prepare_log: Option<PrepareLog>,
     pass_log: Option<PassLog>,
 }
@@ -47,31 +46,28 @@ impl RenderSubsystem for FakeSubsystem {
             log.lock().unwrap().push(self.name);
         }
     }
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let name = self.name;
-        let pass_log = self.pass_log.clone();
+    fn register_passes(&self) -> Vec<PassDescriptor> {
         self.stages
             .iter()
             .copied()
-            .map(|stage| {
-                let pass_log = pass_log.clone();
-                RegisteredPass {
-                    name,
-                    stage,
-                    run: Box::new(move |_, _| {
-                        if let Some(log) = &pass_log {
-                            log.lock().unwrap().push((name, stage));
-                        }
-                    }),
-                }
+            .enumerate()
+            .map(|(i, stage)| PassDescriptor {
+                name: self.name,
+                stage,
+                id: i as PassId,
             })
             .collect()
     }
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, e: bool) {
-        self.enabled = e;
+    fn dispatch_pass(
+        &mut self,
+        id: PassId,
+        _encoder: &mut wgpu::CommandEncoder,
+        _ctx: &RenderContext<'_>,
+    ) {
+        if let Some(log) = &self.pass_log {
+            let stage = self.stages[id as usize];
+            log.lock().unwrap().push((self.name, stage));
+        }
     }
 }
 
@@ -111,7 +107,6 @@ impl SubsystemFactory for FakeFactory {
         Ok(Box::new(FakeSubsystem {
             name: self.name,
             stages: self.stages.clone(),
-            enabled: true,
             prepare_log: self.prepare_log.clone(),
             pass_log: self.pass_log.clone(),
         }))

@@ -23,9 +23,11 @@ use std::sync::{Arc, Mutex};
 
 use egui_wgpu::{Renderer, ScreenDescriptor};
 use ps_core::{
-    Config, GpuContext, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    Config, GpuContext, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
+    RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_OVERLAY: PassId = 0;
 
 pub use state::{
     CameraSettings, GeocodeMatch, GeocodeRequest, GeocodeStatus, UiDebugSelection, UiFrameStats,
@@ -50,8 +52,6 @@ struct PaintFrame {
 /// [`UiBridge`] (created by [`UiFactory::new`]) — the subsystem itself
 /// only owns GPU resources and the `Overlay`-stage pass.
 pub struct UiSubsystem {
-    enabled: bool,
-
     /// egui core context. Cheap to clone (Arc inside).
     ctx: egui::Context,
     /// Per-window winit input → egui events bridge. Owned by an
@@ -96,7 +96,6 @@ impl UiSubsystem {
             },
         );
         Self {
-            enabled: true,
             ctx,
             shared_winit_state: Arc::new(Mutex::new(winit_state)),
             renderer: Arc::new(Mutex::new(renderer)),
@@ -115,70 +114,69 @@ impl RenderSubsystem for UiSubsystem {
         // and the panel state are populated. Nothing to do here.
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let renderer = self.renderer.clone();
-        let paint = self.paint.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "ui::overlay",
             stage: PassStage::Overlay,
-            run: Box::new(move |encoder, ctx| {
-                let Some(target) = ctx.tonemap_target else {
-                    return;
-                };
-                let mut paint_guard = paint.lock().expect("ui paint lock");
-                let Some(frame_paint) = paint_guard.take() else {
-                    // No build_ui_frame this turn — leave overlay alone.
-                    return;
-                };
-                let (w, h) = (ctx.framebuffer.size.0, ctx.framebuffer.size.1);
-                let screen_desc = ScreenDescriptor {
-                    size_in_pixels: [w, h],
-                    pixels_per_point: frame_paint.pixels_per_point,
-                };
-                let mut renderer = renderer.lock().expect("ui renderer lock");
-                for (id, image_delta) in &frame_paint.textures_delta.set {
-                    renderer.update_texture(ctx.device, ctx.queue, *id, image_delta);
-                }
-                renderer.update_buffers(
-                    ctx.device,
-                    ctx.queue,
-                    encoder,
-                    &frame_paint.paint_jobs,
-                    &screen_desc,
-                );
-                {
-                    let mut pass = encoder
-                        .begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("ui::overlay"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: target,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        })
-                        .forget_lifetime();
-                    renderer.render(&mut pass, &frame_paint.paint_jobs, &screen_desc);
-                }
-                for id in &frame_paint.textures_delta.free {
-                    renderer.free_texture(id);
-                }
-            }),
+            id: PASS_OVERLAY,
         }]
     }
 
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let Some(target) = ctx.tonemap_target else {
+            return;
+        };
+        let mut paint_guard = self.paint.lock().expect("ui paint lock");
+        let Some(frame_paint) = paint_guard.take() else {
+            // No build_ui_frame this turn — leave overlay alone.
+            return;
+        };
+        drop(paint_guard);
+        let (w, h) = (ctx.framebuffer.size.0, ctx.framebuffer.size.1);
+        let screen_desc = ScreenDescriptor {
+            size_in_pixels: [w, h],
+            pixels_per_point: frame_paint.pixels_per_point,
+        };
+        let mut renderer = self.renderer.lock().expect("ui renderer lock");
+        for (id, image_delta) in &frame_paint.textures_delta.set {
+            renderer.update_texture(ctx.device, ctx.queue, *id, image_delta);
+        }
+        renderer.update_buffers(
+            ctx.device,
+            ctx.queue,
+            encoder,
+            &frame_paint.paint_jobs,
+            &screen_desc,
+        );
+        {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("ui::overlay"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            renderer.render(&mut pass, &frame_paint.paint_jobs, &screen_desc);
+        }
+        for id in &frame_paint.textures_delta.free {
+            renderer.free_texture(id);
+        }
     }
 }
 

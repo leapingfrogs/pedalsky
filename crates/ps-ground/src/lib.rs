@@ -21,14 +21,14 @@
 
 #![deny(missing_docs)]
 
-use std::sync::{Arc, Mutex};
-
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
     atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout,
-    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
-    RegisteredPass, RenderSubsystem, SubsystemFactory, SurfaceParams,
+    BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
+    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory, SurfaceParams,
 };
+
+const PASS_GROUND: PassId = 0;
 
 /// Baked shader source — used as the fallback when no runtime
 /// override is registered (the default for headless tests and
@@ -238,37 +238,31 @@ impl PbrGround {
 
 /// `RenderSubsystem` wrapper around [`PbrGround`].
 pub struct GroundSubsystem {
-    enabled: bool,
-    inner: Arc<PbrGround>,
+    inner: PbrGround,
     /// Most-recent SurfaceParams (uploaded each frame in `prepare()`).
-    surface: Mutex<SurfaceParams>,
+    surface: SurfaceParams,
     /// `true` when `[render.subsystems].wet_surface` is on. When off the
     /// ground shader still runs but `prepare()` zeros out the wetness +
     /// snow inputs so the dry BRDF path is taken.
     wet_surface_enabled: bool,
-    /// Live group-2 bind group published by `prepare()` for the
-    /// registered pass closure. Built via a revision-keyed cache so
-    /// the wgpu hub touch only happens when the underlying density
-    /// mask view changes (synthesis rerun), not every frame.
-    live_surface_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
-    /// Revision-keyed cache for the surface bind group. The entries
-    /// reference `inner.surface_buf` (stable), the density mask view
-    /// from WeatherState (changes only on synthesis rerun), and a
-    /// sampler (stable) — so keying on `weather.revision` alone
-    /// catches every meaningful change.
-    surface_bg_cache: Arc<Mutex<BindGroupCache<u64>>>,
+    /// Live group-2 bind group published by `prepare()` for `dispatch_pass`.
+    /// Built via a revision-keyed cache so the wgpu hub touch only
+    /// happens when the underlying density mask view changes (synthesis
+    /// rerun), not every frame.
+    live_surface_bg: Option<std::sync::Arc<wgpu::BindGroup>>,
+    /// Revision-keyed cache for the surface bind group.
+    surface_bg_cache: BindGroupCache<u64>,
 }
 
 impl GroundSubsystem {
     /// Construct.
     pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         Self {
-            enabled: true,
-            inner: Arc::new(PbrGround::new(&gpu.device)),
-            surface: Mutex::new(SurfaceParams::default()),
+            inner: PbrGround::new(&gpu.device),
+            surface: SurfaceParams::default(),
             wet_surface_enabled: config.render.subsystems.wet_surface,
-            live_surface_bg: Arc::new(Mutex::new(None)),
-            surface_bg_cache: Arc::new(Mutex::new(BindGroupCache::new())),
+            live_surface_bg: None,
+            surface_bg_cache: BindGroupCache::new(),
         }
     }
 }
@@ -289,21 +283,17 @@ impl RenderSubsystem for GroundSubsystem {
         }
         ctx.queue
             .write_buffer(&self.inner.surface_buf, 0, bytes_of(&surface));
-        *self.surface.lock().expect("ground: surface lock") = surface;
+        self.surface = surface;
 
-        // Phase 12.6 — publish the group-2 bind group for the pass
-        // closure. The entries reference: `surface_buf` (stable —
-        // its contents change per frame via `write_buffer`, but the
-        // buffer handle is stable), `mask_view` (only changes when
-        // synthesis re-runs and bumps `weather.revision`), and a
-        // sampler (stable). Keying the cache on `weather.revision`
-        // alone is sufficient — the wgpu hub touch only fires after
-        // a synthesis rerun, not every frame.
-        let inner = self.inner.clone();
+        // Phase 12.6 — publish the group-2 bind group for `dispatch_pass`.
+        // The entries reference: `surface_buf` (stable handle; per-frame
+        // writes don't invalidate the bind group), `mask_view` (only
+        // changes when synthesis re-runs and bumps `weather.revision`),
+        // and a sampler (stable). Keying the cache on `weather.revision`
+        // alone is sufficient.
+        let inner = &self.inner;
         let bg = self
             .surface_bg_cache
-            .lock()
-            .expect("ground: surface_bg_cache lock")
             .get_or_build(ctx.weather.revision, || {
                 ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("ground-surface-bg"),
@@ -328,85 +318,71 @@ impl RenderSubsystem for GroundSubsystem {
                     ],
                 })
             });
-        *self
-            .live_surface_bg
-            .lock()
-            .expect("ground: live surface bg lock") = Some(bg);
+        self.live_surface_bg = Some(bg);
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let inner = self.inner.clone();
-        let live_surface_bg = self.live_surface_bg.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "ground-pbr",
             stage: PassStage::Opaque,
-            run: Box::new(move |encoder, ctx| {
-                // Phase 12.6 — read the live group-2 bind group built
-                // in `prepare()` against this frame's density mask.
-                let Some(surface_bg) = live_surface_bg
-                    .lock()
-                    .expect("ground: live surface bg lock")
-                    .clone()
-                else {
-                    // prepare() hasn't run yet (first frame in some
-                    // headless test paths); skip cleanly.
-                    return;
-                };
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("ground-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &ctx.framebuffer.color_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &ctx.framebuffer.depth_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                let Some(luts_bg) = ctx.luts_bind_group else {
-                    // Atmosphere disabled — skip; the shader needs the LUTs.
-                    return;
-                };
-                pass.set_pipeline(&inner.pipeline);
-                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                pass.set_bind_group(2, surface_bg.as_ref(), &[]);
-                pass.set_bind_group(3, luts_bg, &[]);
-                pass.set_vertex_buffer(0, inner.vertex_buf.slice(..));
-                pass.draw(0..6, 0..1);
-            }),
+            id: PASS_GROUND,
         }]
     }
 
-    /// Phase 19.A — refresh runtime-tunable flags so the UI
-    /// subsystem checkboxes actually take effect mid-session.
-    /// Previously `wet_surface_enabled` was snapshotted at
-    /// construction and never updated, so toggling the
-    /// `wet_surface` subsystem off / on at runtime had no effect
-    /// (the ground subsystem kept zeroing or kept passing through
-    /// based on whatever the config said at app startup).
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        // Phase 12.6 — read the live group-2 bind group built in
+        // `prepare()` against this frame's density mask.
+        let Some(surface_bg) = self.live_surface_bg.as_ref() else {
+            // prepare() hasn't run yet (first frame in some headless
+            // test paths); skip cleanly.
+            return;
+        };
+        let Some(luts_bg) = ctx.luts_bind_group else {
+            // Atmosphere disabled — skip; the shader needs the LUTs.
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ground-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &ctx.framebuffer.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &ctx.framebuffer.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.inner.pipeline);
+        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+        pass.set_bind_group(1, ctx.world_bind_group, &[]);
+        pass.set_bind_group(2, surface_bg.as_ref(), &[]);
+        pass.set_bind_group(3, luts_bg, &[]);
+        pass.set_vertex_buffer(0, self.inner.vertex_buf.slice(..));
+        pass.draw(0..6, 0..1);
+    }
+
+    /// Phase 19.A — refresh runtime-tunable flags so the UI subsystem
+    /// checkboxes actually take effect mid-session.
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         self.wet_surface_enabled = config.render.subsystems.wet_surface;
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

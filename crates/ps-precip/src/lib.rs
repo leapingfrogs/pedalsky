@@ -19,13 +19,17 @@
 
 pub mod uniforms;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use bytemuck::{bytes_of, Pod, Zeroable};
 use ps_core::{
-    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassStage, PrepareContext,
-    RegisteredPass, RenderSubsystem, SubsystemFactory,
+    frame_bind_group_layout, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId,
+    PassStage, PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
 };
+
+const PASS_ADVANCE: PassId = 0;
+const PASS_NEAR: PassId = 1;
+const PASS_FAR: PassId = 2;
 
 pub use uniforms::{FarRainLayerGpu, PrecipUniformsGpu};
 
@@ -83,44 +87,41 @@ struct FarRainLayer {
 
 /// Phase 8 precipitation subsystem.
 pub struct PrecipSubsystem {
-    enabled: bool,
-
     /// Two pools: one for rain, one for snow. Both are always allocated;
     /// only the kind matching the current `PrecipKind` is dispatched.
-    /// Behind `Arc<Mutex>` so `reconfigure` can swap the pool when
-    /// `near_particle_count` changes — pass closures captured at
-    /// `register_passes` always read the current pool.
-    rain_pool: Arc<Mutex<Arc<ParticlePool>>>,
-    snow_pool: Arc<Mutex<Arc<ParticlePool>>>,
+    /// `Arc` is retained because pool buffers are read by the render
+    /// bind groups; reconfigure swaps the Arc when `near_particle_count`
+    /// changes.
+    rain_pool: Arc<ParticlePool>,
+    snow_pool: Arc<ParticlePool>,
 
-    /// Pre-built far-rain layers. Behind `Arc<Mutex<Vec<…>>>` so
-    /// `reconfigure` can resize when `far_layers` changes.
-    far_layers: Arc<Mutex<Vec<Arc<FarRainLayer>>>>,
+    /// Pre-built far-rain layers. Reconfigure replaces the Vec when
+    /// `far_layers` changes.
+    far_layers: Vec<Arc<FarRainLayer>>,
 
     /// Compute pipeline (shared between rain + snow pools).
-    advance_pipeline: Arc<wgpu::ComputePipeline>,
+    advance_pipeline: wgpu::ComputePipeline,
     /// Particle render pipeline.
-    render_pipeline: Arc<wgpu::RenderPipeline>,
+    render_pipeline: wgpu::RenderPipeline,
     /// Far-rain render pipeline.
-    far_pipeline: Arc<wgpu::RenderPipeline>,
+    far_pipeline: wgpu::RenderPipeline,
 
     /// Most-recent kind from WeatherState (0 none, 1 rain, 2 snow, 3 sleet).
-    /// Shared with pass closures via Arc<Mutex>.
-    state: Arc<Mutex<PrecipState>>,
+    state: PrecipState,
 
     /// Layouts + sampler used to rebuild bind groups in `prepare()`.
-    bg_builder: Arc<BindGroupBuilder>,
+    bg_builder: BindGroupBuilder,
 
     /// Live compute bind group for the active pool (rebuilt each frame
     /// against the current wind_field view).
-    live_compute_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
+    live_compute_bg: Option<wgpu::BindGroup>,
 
     /// Live render bind group (rebuilt each frame against the current
     /// density mask view).
-    live_render_bg: Arc<Mutex<Option<Arc<wgpu::BindGroup>>>>,
+    live_render_bg: Option<wgpu::BindGroup>,
 
     /// Live far-rain bind groups (one per layer).
-    live_far_bgs: Arc<Mutex<Vec<Arc<wgpu::BindGroup>>>>,
+    live_far_bgs: Vec<wgpu::BindGroup>,
 
     /// Plan §Cross-Cutting/Determinism — user-supplied seed XOR'd into
     /// the per-particle respawn jitter. Sourced from
@@ -296,15 +297,14 @@ impl PrecipSubsystem {
             bind_group_layouts: &[Some(&compute_layout)],
             immediate_size: 0,
         });
-        let advance_pipeline =
-            Arc::new(device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("precip::advance-pipeline"),
-                layout: Some(&advance_pl_layout),
-                module: &advance_module,
-                entry_point: Some("cs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            }));
+        let advance_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("precip::advance-pipeline"),
+            layout: Some(&advance_pl_layout),
+            module: &advance_module,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
         // Particle render pipeline.
         let render_main = ps_core::shaders::load_shader(RENDER_REL, RENDER_BAKED);
@@ -322,8 +322,7 @@ impl PrecipSubsystem {
             bind_group_layouts: &[Some(&frame_layout), Some(&render_layout)],
             immediate_size: 0,
         });
-        let render_pipeline =
-            Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("precip::render-pipeline"),
                 layout: Some(&render_pl_layout),
                 vertex: wgpu::VertexState {
@@ -368,7 +367,7 @@ impl PrecipSubsystem {
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
-            }));
+            });
 
         // Far rain pipeline.
         let far_main = ps_core::shaders::load_shader(FAR_RAIN_REL, FAR_RAIN_BAKED);
@@ -385,8 +384,7 @@ impl PrecipSubsystem {
             bind_group_layouts: &[Some(&frame_layout), Some(&far_layout)],
             immediate_size: 0,
         });
-        let far_pipeline =
-            Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let far_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("precip::far-pipeline"),
                 layout: Some(&far_pl_layout),
                 vertex: wgpu::VertexState {
@@ -432,7 +430,7 @@ impl PrecipSubsystem {
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,
                 cache: None,
-            }));
+            });
 
         // Sampler shared by render + far passes.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -466,16 +464,10 @@ impl PrecipSubsystem {
         let placeholder_view =
             placeholder_mask.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let rain_pool =
-            Arc::new(Mutex::new(make_pool(device, queue, count, 0, RAIN_FALL_MPS)));
-        let snow_pool =
-            Arc::new(Mutex::new(make_pool(device, queue, count, 1, SNOW_FALL_MPS)));
+        let rain_pool = make_pool(device, queue, count, 0, RAIN_FALL_MPS);
+        let snow_pool = make_pool(device, queue, count, 1, SNOW_FALL_MPS);
 
-        let far_layers = Arc::new(Mutex::new(make_far_layers(
-            device,
-            queue,
-            config.render.precip.far_layers,
-        )));
+        let far_layers = make_far_layers(device, queue, config.render.precip.far_layers);
         let _ = placeholder_view;
 
         // Wind sampler (linear, clamp-to-edge) for the compute shader.
@@ -502,18 +494,17 @@ impl PrecipSubsystem {
         };
 
         Self {
-            enabled: true,
             rain_pool,
             snow_pool,
             far_layers,
             advance_pipeline,
             render_pipeline,
             far_pipeline,
-            state: Arc::new(Mutex::new(PrecipState::default())),
-            bg_builder: Arc::new(bg_builder),
-            live_compute_bg: Arc::new(Mutex::new(None)),
-            live_render_bg: Arc::new(Mutex::new(None)),
-            live_far_bgs: Arc::new(Mutex::new(Vec::new())),
+            state: PrecipState::default(),
+            bg_builder,
+            live_compute_bg: None,
+            live_render_bg: None,
+            live_far_bgs: Vec::new(),
             user_seed: config.debug.seed as u32,
         }
     }
@@ -635,9 +626,8 @@ impl RenderSubsystem for PrecipSubsystem {
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
         let intensity = ctx.weather.surface.precip_intensity_mm_per_h.max(0.0);
-        let kind_f = ctx.weather.surface.precip_kind;
-        let kind = kind_f as u32;
-        *self.state.lock().expect("precip: state lock") = PrecipState {
+        let kind = ctx.weather.surface.precip_kind as u32;
+        self.state = PrecipState {
             kind,
             intensity_mm_per_h: intensity,
         };
@@ -664,9 +654,7 @@ impl RenderSubsystem for PrecipSubsystem {
             0.0,
         ];
 
-        let rain_pool = self.rain_pool.lock().expect("rain pool lock").clone();
-        let snow_pool = self.snow_pool.lock().expect("snow pool lock").clone();
-        for (pool, active_kind) in [(&rain_pool, 0u32), (&snow_pool, 1u32)] {
+        for (pool, active_kind) in [(&self.rain_pool, 0u32), (&self.snow_pool, 1u32)] {
             // Only feed live intensity to the matching pool; the other
             // gets zero so its particles are still updated (cheap) but
             // not rendered.
@@ -698,8 +686,8 @@ impl RenderSubsystem for PrecipSubsystem {
         let mask_view = &ctx.weather.textures.top_down_density_mask_view;
         let wind_view = &ctx.weather.textures.wind_field_view;
         let active_pool: &ParticlePool = match kind {
-            2 => &snow_pool,
-            _ => &rain_pool,
+            2 => &self.snow_pool,
+            _ => &self.rain_pool,
         };
         // Reset the draw-indirect args for the active pool. Vertex count
         // is fixed at 6 (the quad); instance_count starts at 0 and the
@@ -711,189 +699,148 @@ impl RenderSubsystem for PrecipSubsystem {
             0,
             bytemuck::cast_slice(&reset_args),
         );
-        let compute_bg =
-            Self::build_compute_bg(ctx.device, &self.bg_builder, active_pool, wind_view);
-        *self
-            .live_compute_bg
-            .lock()
-            .expect("precip: live compute bg lock") = Some(Arc::new(compute_bg));
-
-        let render_bg =
-            Self::build_render_bg(ctx.device, &self.bg_builder, active_pool, mask_view);
-        *self.live_render_bg.lock().expect("precip: live bg lock") = Some(Arc::new(render_bg));
-
-        let far_layers_snapshot =
-            self.far_layers.lock().expect("far layers lock").clone();
-        let mut far_bgs = Vec::with_capacity(far_layers_snapshot.len());
-        for layer in &far_layers_snapshot {
-            let bg = Self::build_far_bg(ctx.device, &self.bg_builder, active_pool, layer, mask_view);
-            far_bgs.push(Arc::new(bg));
-        }
-        *self.live_far_bgs.lock().expect("precip: live far bgs lock") = far_bgs;
+        self.live_compute_bg = Some(Self::build_compute_bg(
+            ctx.device,
+            &self.bg_builder,
+            active_pool,
+            wind_view,
+        ));
+        self.live_render_bg = Some(Self::build_render_bg(
+            ctx.device,
+            &self.bg_builder,
+            active_pool,
+            mask_view,
+        ));
+        self.live_far_bgs = self
+            .far_layers
+            .iter()
+            .map(|layer| {
+                Self::build_far_bg(ctx.device, &self.bg_builder, active_pool, layer, mask_view)
+            })
+            .collect();
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let advance = self.advance_pipeline.clone();
-        let render = self.render_pipeline.clone();
-        let far = self.far_pipeline.clone();
-        let rain_pool = self.rain_pool.clone();
-        let snow_pool = self.snow_pool.clone();
-        let far_layers = self.far_layers.clone();
-        let state = self.state.clone();
-        let live_compute_bg = self.live_compute_bg.clone();
-        let live_render_bg = self.live_render_bg.clone();
-        let live_far_bgs = self.live_far_bgs.clone();
-
+    fn register_passes(&self) -> Vec<PassDescriptor> {
         vec![
-            // 1. Advance the active pool (cheap when intensity = 0).
-            RegisteredPass {
+            PassDescriptor {
                 name: "precip::advance",
                 stage: PassStage::Compute,
-                run: Box::new({
-                    let advance = advance.clone();
-                    let rain = rain_pool.clone();
-                    let snow = snow_pool.clone();
-                    let state = state.clone();
-                    let live_bg = live_compute_bg.clone();
-                    move |encoder, _ctx| {
-                        let st = state.lock().expect("precip: state lock");
-                        if st.intensity_mm_per_h <= 0.0 {
-                            return;
-                        }
-                        let bg_guard = live_bg.lock().expect("precip: compute bg lock");
-                        let Some(bg) = bg_guard.as_ref() else {
-                            return;
-                        };
-                        let active: Arc<ParticlePool> = match st.kind {
-                            2 => snow.lock().expect("snow pool lock").clone(),
-                            _ => rain.lock().expect("rain pool lock").clone(),
-                        };
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("precip::advance"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&advance);
-                        pass.set_bind_group(0, bg.as_ref(), &[]);
-                        let groups = active.count.div_ceil(64);
-                        pass.dispatch_workgroups(groups, 1, 1);
-                    }
-                }),
+                id: PASS_ADVANCE,
             },
-            // 2. Near-particle render.
-            RegisteredPass {
+            PassDescriptor {
                 name: "precip::near",
                 stage: PassStage::Translucent,
-                run: Box::new({
-                    let render = render.clone();
-                    let rain = rain_pool.clone();
-                    let snow = snow_pool.clone();
-                    let state = state.clone();
-                    let live_bg = live_render_bg.clone();
-                    move |encoder, ctx| {
-                        let st = state.lock().expect("precip: state lock");
-                        if st.intensity_mm_per_h <= 0.0 {
-                            return;
-                        }
-                        let bg_guard = live_bg.lock().expect("precip: bg lock");
-                        let Some(bg) = bg_guard.as_ref() else {
-                            return;
-                        };
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("precip::near"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &ctx.framebuffer.color_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view: &ctx.framebuffer.depth_view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        pass.set_pipeline(&render);
-                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        pass.set_bind_group(1, bg.as_ref(), &[]);
-                        let active: Arc<ParticlePool> = match st.kind {
-                            2 => snow.lock().expect("snow pool lock").clone(),
-                            _ => rain.lock().expect("rain pool lock").clone(),
-                        };
-                        // draw_indirect reads (vertex_count,
-                        // instance_count, first_vertex, first_instance)
-                        // from the args buffer the compute shader just
-                        // populated atomically (plan §8.1).
-                        pass.draw_indirect(&active.draw_args_buf, 0);
-                    }
-                }),
+                id: PASS_NEAR,
             },
-            // 3. Far rain (3 layers, all rendered each frame; the shader
-            //    early-discards when intensity * cloud_mask is too low).
-            RegisteredPass {
+            PassDescriptor {
                 name: "precip::far",
                 stage: PassStage::Translucent,
-                run: Box::new({
-                    let far = far.clone();
-                    let layers = far_layers.clone();
-                    let state = state.clone();
-                    let live_bgs = live_far_bgs.clone();
-                    move |encoder, ctx| {
-                        let st = state.lock().expect("precip: state lock");
-                        if st.intensity_mm_per_h <= 0.0 {
-                            return;
-                        }
-                        let bgs_guard = live_bgs.lock().expect("precip: live far bgs lock");
-                        if bgs_guard.is_empty() {
-                            return;
-                        }
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("precip::far"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &ctx.framebuffer.color_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view: &ctx.framebuffer.depth_view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        pass.set_pipeline(&far);
-                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        let layers_snapshot =
-                            layers.lock().expect("far layers lock").clone();
-                        for (_layer, bg) in layers_snapshot.iter().zip(bgs_guard.iter()) {
-                            pass.set_bind_group(1, bg.as_ref(), &[]);
-                            pass.draw(0..3, 0..1);
-                        }
-                    }
-                }),
+                id: PASS_FAR,
             },
         ]
+    }
+
+    fn dispatch_pass(
+        &mut self,
+        id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        // Common skip — both renderable passes are no-ops at zero
+        // intensity.
+        if self.state.intensity_mm_per_h <= 0.0 {
+            return;
+        }
+        let active_pool: &ParticlePool = match self.state.kind {
+            2 => &self.snow_pool,
+            _ => &self.rain_pool,
+        };
+        match id {
+            PASS_ADVANCE => {
+                let Some(bg) = self.live_compute_bg.as_ref() else {
+                    return;
+                };
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("precip::advance"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.advance_pipeline);
+                pass.set_bind_group(0, bg, &[]);
+                let groups = active_pool.count.div_ceil(64);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
+            PASS_NEAR => {
+                let Some(bg) = self.live_render_bg.as_ref() else {
+                    return;
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("precip::near"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &ctx.framebuffer.color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &ctx.framebuffer.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.render_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(1, bg, &[]);
+                // draw_indirect reads (vertex_count, instance_count,
+                // first_vertex, first_instance) from the args buffer
+                // the compute shader just populated atomically (plan
+                // §8.1).
+                pass.draw_indirect(&active_pool.draw_args_buf, 0);
+            }
+            PASS_FAR => {
+                if self.live_far_bgs.is_empty() {
+                    return;
+                }
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("precip::far"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &ctx.framebuffer.color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &ctx.framebuffer.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.far_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                for bg in &self.live_far_bgs {
+                    pass.set_bind_group(1, bg, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+            }
+            _ => panic!("precip: unknown pass id {id}"),
+        }
     }
 
     fn reconfigure(&mut self, config: &Config, gpu: &GpuContext) -> anyhow::Result<()> {
@@ -901,26 +848,16 @@ impl RenderSubsystem for PrecipSubsystem {
         // rebuild the corresponding GPU resources so the new sliders
         // take effect on the next frame's prepare/render.
         let new_count = config.render.precip.near_particle_count.max(64);
-        let cur_count = self.rain_pool.lock().expect("rain pool lock").count;
-        if new_count != cur_count {
-            *self.rain_pool.lock().expect("rain pool lock") =
-                make_pool(&gpu.device, &gpu.queue, new_count, 0, RAIN_FALL_MPS);
-            *self.snow_pool.lock().expect("snow pool lock") =
-                make_pool(&gpu.device, &gpu.queue, new_count, 1, SNOW_FALL_MPS);
+        if new_count != self.rain_pool.count {
+            self.rain_pool = make_pool(&gpu.device, &gpu.queue, new_count, 0, RAIN_FALL_MPS);
+            self.snow_pool = make_pool(&gpu.device, &gpu.queue, new_count, 1, SNOW_FALL_MPS);
         }
-        let cur_far = self.far_layers.lock().expect("far lock").len() as u32;
+        let cur_far = self.far_layers.len() as u32;
         if config.render.precip.far_layers != cur_far {
-            *self.far_layers.lock().expect("far lock") =
+            self.far_layers =
                 make_far_layers(&gpu.device, &gpu.queue, config.render.precip.far_layers);
         }
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 
@@ -939,7 +876,7 @@ impl SubsystemFactory for PrecipFactory {
 impl PrecipSubsystem {
     /// Test helper: returns the rain particle pool's count.
     pub fn rain_particle_count(&self) -> u32 {
-        self.rain_pool.lock().expect("rain pool lock").count
+        self.rain_pool.count
     }
 }
 

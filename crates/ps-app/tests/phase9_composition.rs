@@ -182,8 +182,24 @@ fn auto_exposure_derives_ev100_from_avg_log_luminance() {
         },
     );
 
+    // Drive the pipelined readback over two frames so the GPU has a
+    // chance to complete the slot we just wrote. Sprint 1 made
+    // `read_back_ev100` non-blocking: the first call after fresh
+    // construction submits this dispatch's slot for mapping and reads
+    // the opposite (still-Idle) slot, returning None. Wait between
+    // frames so the GPU has time to complete the map_async.
     let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("ae-test"),
+    });
+    ae.dispatch(&mut encoder);
+    gpu.queue.submit([encoder.finish()]);
+    let _ = ae.read_back_ev100(&gpu.device); // first call submits, returns None
+    let _ = gpu.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    }); // wait for the just-submitted map
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("ae-test-2"),
     });
     ae.dispatch(&mut encoder);
     gpu.queue.submit([encoder.finish()]);

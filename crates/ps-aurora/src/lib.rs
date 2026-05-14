@@ -17,14 +17,15 @@
 
 #![deny(missing_docs)]
 
-use std::sync::{Arc, Mutex};
-
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use ps_core::{
     frame_bind_group_layout, world_bind_group_layout, Config, GpuContext, HdrFramebuffer,
-    PassStage, PrepareContext, RegisteredPass, RenderSubsystem, SubsystemFactory,
+    PassDescriptor, PassId, PassStage, PrepareContext, RenderContext, RenderSubsystem,
+    SubsystemFactory,
 };
+
+const PASS_AURORA: PassId = 0;
 use tracing::debug;
 
 const SHADER_REL: &str = "aurora/curtain.wgsl";
@@ -74,14 +75,13 @@ impl TuningSnapshot {
 
 /// Phase 12.5 aurora subsystem.
 pub struct AuroraSubsystem {
-    enabled: bool,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     params_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    tuning: Arc<Mutex<TuningSnapshot>>,
+    tuning: TuningSnapshot,
     /// Cached most-recent intensity (debug log throttling).
-    last_logged_intensity: Mutex<f32>,
+    last_logged_intensity: f32,
 }
 
 impl AuroraSubsystem {
@@ -188,16 +188,15 @@ impl AuroraSubsystem {
             }],
         });
 
-        let tuning = Arc::new(Mutex::new(TuningSnapshot::from_config(config)));
+        let tuning = TuningSnapshot::from_config(config);
         debug!(target: "ps_aurora", "subsystem ready");
         Self {
-            enabled: true,
             pipeline,
             layout,
             params_buf,
             bind_group,
             tuning,
-            last_logged_intensity: Mutex::new(-1.0),
+            last_logged_intensity: -1.0,
         }
     }
 }
@@ -208,7 +207,7 @@ impl RenderSubsystem for AuroraSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        let tuning = *self.tuning.lock().expect("aurora tuning lock");
+        let tuning = self.tuning;
         let lat_abs = ctx.world.latitude_deg.abs() as f32;
         let lat_gate = latitude_gate(
             lat_abs,
@@ -252,11 +251,7 @@ impl RenderSubsystem for AuroraSubsystem {
 
         // One-time / change-throttled debug log so the gate behaviour
         // is visible in logs without spamming every frame.
-        let mut last = self
-            .last_logged_intensity
-            .lock()
-            .expect("aurora log lock");
-        if (combined - *last).abs() > 0.05 {
+        if (combined - self.last_logged_intensity).abs() > 0.05 {
             debug!(
                 target: "ps_aurora",
                 lat_abs_deg = lat_abs,
@@ -266,66 +261,61 @@ impl RenderSubsystem for AuroraSubsystem {
                 combined,
                 "aurora intensity refreshed",
             );
-            *last = combined;
+            self.last_logged_intensity = combined;
         }
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        let pipeline = self.pipeline.clone();
-        let bind_group = self.bind_group.clone();
-        vec![RegisteredPass {
+    fn register_passes(&self) -> Vec<PassDescriptor> {
+        vec![PassDescriptor {
             name: "aurora-curtain",
             stage: PassStage::Translucent,
-            run: Box::new(move |encoder, ctx| {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("aurora-curtain"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &ctx.framebuffer.color_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(
-                        wgpu::RenderPassDepthStencilAttachment {
-                            view: &ctx.framebuffer.depth_view,
-                            depth_ops: Some(wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            }),
-                            stencil_ops: None,
-                        },
-                    ),
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                    multiview_mask: None,
-                });
-                pass.set_pipeline(&pipeline);
-                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                pass.set_bind_group(2, &bind_group, &[]);
-                pass.draw(0..3, 0..1);
-            }),
+            id: PASS_AURORA,
         }]
     }
 
+    fn dispatch_pass(
+        &mut self,
+        _id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("aurora-curtain"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &ctx.framebuffer.color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &ctx.framebuffer.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+        pass.set_bind_group(1, ctx.world_bind_group, &[]);
+        pass.set_bind_group(2, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
-        *self.tuning.lock().expect("aurora tuning lock") =
-            TuningSnapshot::from_config(config);
+        self.tuning = TuningSnapshot::from_config(config);
         // Suppress the dead_code warning on `layout`; we hold it so
         // future hot-reload paths can rebuild bind groups without
         // re-creating the layout.
         let _ = &self.layout;
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

@@ -27,10 +27,16 @@ use ps_core::{
     atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
     atmosphere_transmittance_only_bind_group_layout, frame_bind_group_layout,
     world_bind_group_layout, AtmosphereLuts, BindGroupCache, Config, GpuContext,
-    HdrFramebuffer, PassStage, PrepareContext, RegisteredPass, RenderSubsystem,
-    SubsystemFactory,
+    HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
+    RenderSubsystem, SubsystemFactory,
 };
 use tracing::{debug, info};
+
+const PASS_TRANSMITTANCE: PassId = 0;
+const PASS_MULTISCATTER: PassId = 1;
+const PASS_SKYVIEW: PassId = 2;
+const PASS_AP: PassId = 3;
+const PASS_SKY: PassId = 4;
 
 /// Stable subsystem name (matches `[render.subsystems].atmosphere`).
 pub const NAME: &str = "atmosphere";
@@ -115,7 +121,6 @@ fn sky_density_mask_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 
 /// Phase 5 atmosphere subsystem.
 pub struct AtmosphereSubsystem {
-    enabled: bool,
     /// LUT textures + sampling bind group (group 3).
     luts: Arc<AtmosphereLuts>,
 
@@ -149,18 +154,17 @@ pub struct AtmosphereSubsystem {
     /// True until the static LUTs (transmittance, multi-scatter) have been
     /// baked. They depend only on `WorldUniforms`/`AtmosphereParams`, so
     /// re-bake only on `reconfigure`.
-    static_dirty: Mutex<bool>,
+    static_dirty: bool,
 
     /// Plan §10 tuning toggle: when false the multi-scatter LUT is
     /// cleared to zero so the sky-view bake's MS contribution
-    /// collapses. The LUT texture is allocated either way. Behind an
-    /// Arc so the multi-scatter pass closure can read it through a
-    /// shared reference.
-    tuning_multi_scattering: Arc<Mutex<bool>>,
+    /// collapses. The LUT texture is allocated either way.
+    tuning_multi_scattering: bool,
     /// Sky-pass density-mask bind group cache, keyed on the weather
     /// revision. The mask view only changes when `ps-synthesis`
-    /// reruns; the previous code rebuilt this bind group every frame.
-    sky_density_mask_cache: Arc<Mutex<BindGroupCache<u64>>>,
+    /// reruns; this cache means the bind group only gets rebuilt
+    /// when synthesis actually fires.
+    sky_density_mask_cache: BindGroupCache<u64>,
 }
 
 impl AtmosphereSubsystem {
@@ -370,7 +374,6 @@ impl AtmosphereSubsystem {
         });
 
         Self {
-            enabled: true,
             luts,
             transmittance_pipeline,
             multiscatter_pipeline,
@@ -385,11 +388,9 @@ impl AtmosphereSubsystem {
             ap_storage,
             sample_trans_only,
             sample_static_only,
-            static_dirty: Mutex::new(true),
-            tuning_multi_scattering: Arc::new(Mutex::new(
-                config.render.atmosphere.multi_scattering,
-            )),
-            sky_density_mask_cache: Arc::new(Mutex::new(BindGroupCache::new())),
+            static_dirty: true,
+            tuning_multi_scattering: config.render.atmosphere.multi_scattering,
+            sky_density_mask_cache: BindGroupCache::new(),
         }
     }
 
@@ -464,259 +465,200 @@ impl RenderSubsystem for AtmosphereSubsystem {
         // No CPU prepare work — uniform writes happen in ps-app.
     }
 
-    fn register_passes(&self) -> Vec<RegisteredPass> {
-        // We register the four LUT bakes + sky pass. Only sky-view + AP
-        // re-run every frame; transmittance + multi-scatter only on first
-        // frame (and on `reconfigure`). Track this via the shared
-        // `static_dirty` flag.
-        let static_dirty = Arc::new(Mutex::new(true));
-        let static_dirty_check = static_dirty.clone();
-        let static_dirty_init = static_dirty.clone();
-        // Snapshot `self.static_dirty` once, then forget the original —
-        // closures own their own copy after this.
-        {
-            let mut guard = self.static_dirty.lock().expect("atmosphere dirty lock");
-            *static_dirty.lock().unwrap() = *guard;
-            *guard = false; // Compute pipelines below latch the dirty bit.
-            let _ = static_dirty_init;
-        }
-
-        let trans_pipeline = self.transmittance_pipeline.clone();
-        let trans_storage = self.transmittance_storage.clone();
-        let ms_pipeline = self.multiscatter_pipeline.clone();
-        let ms_storage = self.multiscatter_storage.clone();
-        let ms_texture = self.luts.multiscatter.clone();
-        let ms_toggle = self.tuning_multi_scattering.clone();
-        let sv_pipeline = self.skyview_pipeline.clone();
-        let sv_storage = self.skyview_storage.clone();
-        let ap_pipeline = self.ap_pipeline.clone();
-        let ap_storage = self.ap_storage.clone();
-        let sample_trans_only = self.sample_trans_only.clone();
-        let sample_static_only = self.sample_static_only.clone();
-        let lut_bg = self.luts.bind_group.clone();
-        let sky_pipeline = self.sky_pipeline.clone();
-
+    fn register_passes(&self) -> Vec<PassDescriptor> {
         vec![
-            // 1. Transmittance — only when dirty.
-            RegisteredPass {
+            PassDescriptor {
                 name: "atmosphere::transmittance",
                 stage: PassStage::Compute,
-                run: Box::new({
-                    let dirty = static_dirty_check.clone();
-                    move |encoder, ctx| {
-                        if !*dirty.lock().unwrap() {
-                            return;
-                        }
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("atmosphere::transmittance-bake"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&trans_pipeline);
-                        pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, &trans_storage, &[]);
-                        pass.dispatch_workgroups(32, 8, 1); // 256/8, 64/8
-                    }
-                }),
+                id: PASS_TRANSMITTANCE,
             },
-            // 2. Multi-scatter — only when dirty. Latches the dirty bit
-            //    off after running, so subsequent frames skip the bake.
-            //    When the multi_scattering tuning toggle is off, clear
-            //    the LUT to zero instead of dispatching the bake.
-            RegisteredPass {
+            PassDescriptor {
                 name: "atmosphere::multiscatter",
                 stage: PassStage::Compute,
-                run: Box::new({
-                    let dirty = static_dirty_check.clone();
-                    let bg = sample_trans_only.clone();
-                    let toggle = ms_toggle.clone();
-                    let texture = ms_texture.clone();
-                    move |encoder, ctx| {
-                        let mut g = dirty.lock().unwrap();
-                        if !*g {
-                            return;
-                        }
-                        let on = *toggle.lock().expect("ms toggle lock");
-                        if on {
-                            let mut pass = encoder.begin_compute_pass(
-                                &wgpu::ComputePassDescriptor {
-                                    label: Some("atmosphere::multiscatter-bake"),
-                                    timestamp_writes: None,
-                                },
-                            );
-                            pass.set_pipeline(&ms_pipeline);
-                            pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                            pass.set_bind_group(2, &ms_storage, &[]);
-                            pass.set_bind_group(3, &bg, &[]);
-                            pass.dispatch_workgroups(4, 4, 1); // 32/8, 32/8
-                        } else {
-                            // Multi-scatter disabled: zero the 32x32
-                            // Rgba16Float LUT so the sky-view bake's
-                            // MS contribution collapses to 0.
-                            let zeros = vec![0u8; 32 * 32 * 8];
-                            ctx.queue.write_texture(
-                                wgpu::TexelCopyTextureInfo {
-                                    texture: &texture,
-                                    mip_level: 0,
-                                    origin: wgpu::Origin3d::ZERO,
-                                    aspect: wgpu::TextureAspect::All,
-                                },
-                                &zeros,
-                                wgpu::TexelCopyBufferLayout {
-                                    offset: 0,
-                                    bytes_per_row: Some(32 * 8),
-                                    rows_per_image: Some(32),
-                                },
-                                wgpu::Extent3d {
-                                    width: 32,
-                                    height: 32,
-                                    depth_or_array_layers: 1,
-                                },
-                            );
-                        }
-                        *g = false;
-                    }
-                }),
+                id: PASS_MULTISCATTER,
             },
-            // 3. Sky-view — every frame.
-            RegisteredPass {
+            PassDescriptor {
                 name: "atmosphere::skyview",
                 stage: PassStage::Compute,
-                run: Box::new({
-                    let bg = sample_static_only.clone();
-                    move |encoder, ctx| {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("atmosphere::skyview-bake"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&sv_pipeline);
-                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, &sv_storage, &[]);
-                        pass.set_bind_group(3, &bg, &[]);
-                        pass.dispatch_workgroups(24, 14, 1); // 192/8, 108/8 round up
-                    }
-                }),
+                id: PASS_SKYVIEW,
             },
-            // 4. Aerial-perspective — every frame.
-            RegisteredPass {
+            PassDescriptor {
                 name: "atmosphere::aerialperspective",
                 stage: PassStage::Compute,
-                run: Box::new({
-                    let bg = sample_static_only.clone();
-                    move |encoder, ctx| {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("atmosphere::ap-bake"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&ap_pipeline);
-                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, &ap_storage, &[]);
-                        pass.set_bind_group(3, &bg, &[]);
-                        // 32/4, 32/4, 64/4 — Phase 13.1 doubled
-                        // the Z extent to 64 slices.
-                        pass.dispatch_workgroups(8, 8, 16);
-                    }
-                }),
+                id: PASS_AP,
             },
-            // 5. Sky raymarch fragment pass at SkyBackdrop.
-            RegisteredPass {
+            PassDescriptor {
                 name: "atmosphere::sky",
                 stage: PassStage::SkyBackdrop,
-                run: Box::new({
-                    let lut_bg = lut_bg.clone();
-                    let mask_layout = self.sky_density_mask_layout.clone();
-                    let mask_sampler = self.density_mask_sampler.clone();
-                    let mask_cache = self.sky_density_mask_cache.clone();
-                    move |encoder, ctx| {
-                        // The density-mask bind group only changes when
-                        // synthesis reruns (bumping `weather.revision`).
-                        // Cache by revision so the per-frame fast path
-                        // is an `Arc::clone` rather than a wgpu hub
-                        // touch.
-                        let density_bg = mask_cache
-                            .lock()
-                            .expect("atmosphere: sky_density_mask_cache lock")
-                            .get_or_build(ctx.weather.revision, || {
-                                ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                                    label: Some("atmosphere::sky-density-mask-bg"),
-                                    layout: &mask_layout,
-                                    entries: &[
-                                        wgpu::BindGroupEntry {
-                                            binding: 0,
-                                            resource: wgpu::BindingResource::TextureView(
-                                                &ctx.weather.textures
-                                                    .top_down_density_mask_view,
-                                            ),
-                                        },
-                                        wgpu::BindGroupEntry {
-                                            binding: 1,
-                                            resource: wgpu::BindingResource::Sampler(
-                                                &mask_sampler,
-                                            ),
-                                        },
-                                    ],
-                                })
-                            });
-
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("atmosphere::sky"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &ctx.framebuffer.color_view,
-                                depth_slice: None,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Load,
-                                    store: wgpu::StoreOp::Store,
-                                },
-                            })],
-                            depth_stencil_attachment: Some(
-                                wgpu::RenderPassDepthStencilAttachment {
-                                    view: &ctx.framebuffer.depth_view,
-                                    depth_ops: Some(wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    }),
-                                    stencil_ops: None,
-                                },
-                            ),
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        pass.set_pipeline(&sky_pipeline);
-                        pass.set_bind_group(0, ctx.frame_bind_group, &[]);
-                        pass.set_bind_group(1, ctx.world_bind_group, &[]);
-                        pass.set_bind_group(2, density_bg.as_ref(), &[]);
-                        pass.set_bind_group(3, &lut_bg, &[]);
-                        pass.draw(0..3, 0..1);
-                    }
-                }),
+                id: PASS_SKY,
             },
         ]
+    }
+
+    fn dispatch_pass(
+        &mut self,
+        id: PassId,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &RenderContext<'_>,
+    ) {
+        match id {
+            PASS_TRANSMITTANCE => {
+                if !self.static_dirty {
+                    return;
+                }
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("atmosphere::transmittance-bake"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.transmittance_pipeline);
+                pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                pass.set_bind_group(2, &self.transmittance_storage, &[]);
+                pass.dispatch_workgroups(32, 8, 1); // 256/8, 64/8
+            }
+            PASS_MULTISCATTER => {
+                // Latches the dirty bit off after running — subsequent
+                // frames skip the bake. When the multi_scattering
+                // tuning toggle is off, clear the LUT to zero instead
+                // of dispatching the bake.
+                if !self.static_dirty {
+                    return;
+                }
+                if self.tuning_multi_scattering {
+                    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("atmosphere::multiscatter-bake"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.multiscatter_pipeline);
+                    pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                    pass.set_bind_group(2, &self.multiscatter_storage, &[]);
+                    pass.set_bind_group(3, &self.sample_trans_only, &[]);
+                    pass.dispatch_workgroups(4, 4, 1); // 32/8, 32/8
+                } else {
+                    // Multi-scatter disabled: zero the 32x32 Rgba16Float
+                    // LUT so the sky-view bake's MS contribution
+                    // collapses to 0.
+                    let zeros = vec![0u8; 32 * 32 * 8];
+                    ctx.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &self.luts.multiscatter,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &zeros,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(32 * 8),
+                            rows_per_image: Some(32),
+                        },
+                        wgpu::Extent3d {
+                            width: 32,
+                            height: 32,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                self.static_dirty = false;
+            }
+            PASS_SKYVIEW => {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("atmosphere::skyview-bake"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.skyview_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                pass.set_bind_group(2, &self.skyview_storage, &[]);
+                pass.set_bind_group(3, &self.sample_static_only, &[]);
+                pass.dispatch_workgroups(24, 14, 1); // 192/8, 108/8 round up
+            }
+            PASS_AP => {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("atmosphere::ap-bake"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.ap_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                pass.set_bind_group(2, &self.ap_storage, &[]);
+                pass.set_bind_group(3, &self.sample_static_only, &[]);
+                // 32/4, 32/4, 64/4 — Phase 13.1 doubled the Z extent
+                // to 64 slices.
+                pass.dispatch_workgroups(8, 8, 16);
+            }
+            PASS_SKY => {
+                // The density-mask bind group only changes when
+                // synthesis reruns (bumping `weather.revision`). Cache
+                // by revision so the per-frame fast path is an
+                // `Arc::clone` rather than a wgpu hub touch.
+                let mask_layout = &self.sky_density_mask_layout;
+                let mask_sampler = &self.density_mask_sampler;
+                let density_bg =
+                    self.sky_density_mask_cache
+                        .get_or_build(ctx.weather.revision, || {
+                            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                label: Some("atmosphere::sky-density-mask-bg"),
+                                layout: mask_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &ctx.weather.textures.top_down_density_mask_view,
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(mask_sampler),
+                                    },
+                                ],
+                            })
+                        });
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("atmosphere::sky"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &ctx.framebuffer.color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &ctx.framebuffer.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.set_bind_group(0, ctx.frame_bind_group, &[]);
+                pass.set_bind_group(1, ctx.world_bind_group, &[]);
+                pass.set_bind_group(2, density_bg.as_ref(), &[]);
+                pass.set_bind_group(3, &self.luts.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            _ => panic!("atmosphere: unknown pass id {id}"),
+        }
     }
 
     fn reconfigure(&mut self, config: &Config, _gpu: &GpuContext) -> anyhow::Result<()> {
         // Mark static LUTs dirty so they re-bake on the next frame
         // (caller invoked us because some atmosphere parameter changed).
-        *self.static_dirty.lock().expect("dirty lock") = true;
+        self.static_dirty = true;
         // Pull the multi-scatter tuning toggle. The skyview pass
-        // unconditionally samples the MS LUT; when this is off we
-        // overwrite the LUT with zeros after the regular bake (see
-        // `register_passes`).
-        *self
-            .tuning_multi_scattering
-            .lock()
-            .expect("ms tuning lock") = config.render.atmosphere.multi_scattering;
+        // unconditionally samples the MS LUT; when this is off the
+        // multi-scatter dispatch writes zeros instead of running the
+        // bake.
+        self.tuning_multi_scattering = config.render.atmosphere.multi_scattering;
         debug!("atmosphere: reconfigure → static LUTs marked dirty");
         Ok(())
-    }
-
-    fn enabled(&self) -> bool {
-        self.enabled
-    }
-    fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 

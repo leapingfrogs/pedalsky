@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::contexts::{GpuContext, PrepareContext, RenderContext};
-use crate::subsystem::{PassStage, RegisteredPass, RenderSubsystem};
+use crate::subsystem::{PassDescriptor, PassStage, RenderSubsystem};
 
 /// Errors raised by [`AppBuilder::build`].
 #[derive(Debug, Error)]
@@ -127,35 +127,12 @@ impl AppBuilder {
         }
 
         // Flatten and stably sort the pass list by PassStage. Within a stage,
-        // registration order is preserved (Rust's sort_by is stable).
-        let mut passes: Vec<(usize, RegisteredPass)> = Vec::new();
-        for (subsys_idx, sys) in subsystems.iter().enumerate() {
-            for pass in sys.register_passes() {
-                passes.push((subsys_idx, pass));
-            }
-        }
-        passes.sort_by_key(|(_, p)| p.stage);
-        let passes: Vec<RegisteredPass> = passes.into_iter().map(|(_, p)| p).collect();
-
-        // For prepare() ordering, sort subsystem indices by the minimum
-        // PassStage among each subsystem's registered passes. This ensures
-        // that e.g. atmosphere (which has a Compute LUT pass) prepares
-        // before clouds (which only has Translucent passes).
-        let mut subsystem_min_stage: Vec<(usize, PassStage)> = subsystems
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let min = s
-                    .register_passes()
-                    .into_iter()
-                    .map(|p| p.stage)
-                    .min()
-                    .unwrap_or(PassStage::Overlay);
-                (i, min)
-            })
-            .collect();
-        subsystem_min_stage.sort_by_key(|(_, stage)| *stage);
-        let prepare_order: Vec<usize> = subsystem_min_stage.into_iter().map(|(i, _)| i).collect();
+        // registration order is preserved (Rust's sort_by_key is stable).
+        // Each entry pairs the descriptor with the index of its owning
+        // subsystem — the executor uses that index to call back into the
+        // right subsystem's dispatch_pass.
+        let passes = flatten_and_sort_passes(&subsystems);
+        let prepare_order = build_prepare_order(&subsystems);
 
         // Phase 10 GPU-timestamp infrastructure. Allocate up to a small
         // ceiling (>= current pass count, with headroom for runtime
@@ -171,6 +148,45 @@ impl AppBuilder {
             timings,
         })
     }
+}
+
+/// Collect every subsystem's `PassDescriptor`s into a single execution
+/// order: stable-sorted by `PassStage`, with the owning subsystem
+/// index attached so the executor can call back into the right
+/// subsystem's `dispatch_pass`.
+fn flatten_and_sort_passes(
+    subsystems: &[Box<dyn RenderSubsystem>],
+) -> Vec<(usize, PassDescriptor)> {
+    let mut passes: Vec<(usize, PassDescriptor)> = Vec::new();
+    for (subsys_idx, sys) in subsystems.iter().enumerate() {
+        for pass in sys.register_passes() {
+            passes.push((subsys_idx, pass));
+        }
+    }
+    passes.sort_by_key(|(_, p)| p.stage);
+    passes
+}
+
+/// For `prepare()` ordering, sort subsystem indices by the minimum
+/// `PassStage` among each subsystem's registered passes. Ensures that
+/// e.g. atmosphere (which has a Compute LUT pass) prepares before
+/// clouds (which only has Translucent passes).
+fn build_prepare_order(subsystems: &[Box<dyn RenderSubsystem>]) -> Vec<usize> {
+    let mut subsystem_min_stage: Vec<(usize, PassStage)> = subsystems
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let min = s
+                .register_passes()
+                .into_iter()
+                .map(|p| p.stage)
+                .min()
+                .unwrap_or(PassStage::Overlay);
+            (i, min)
+        })
+        .collect();
+    subsystem_min_stage.sort_by_key(|(_, stage)| *stage);
+    subsystem_min_stage.into_iter().map(|(i, _)| i).collect()
 }
 
 const TIMING_CAP_PADDING: u32 = 8;
@@ -218,7 +234,9 @@ fn build_timings(gpu: &GpuContext, pass_count: usize) -> Option<TimingsState> {
 /// reconstruct subsystems whose `reconfigure()` returned an error).
 pub struct App {
     subsystems: Vec<Box<dyn RenderSubsystem>>,
-    passes: Vec<RegisteredPass>,
+    /// Flattened pass list in execution order: `(subsystem_index, descriptor)`.
+    /// The executor calls `subsystems[subsystem_index].dispatch_pass(descriptor.id, ...)`.
+    passes: Vec<(usize, PassDescriptor)>,
     prepare_order: Vec<usize>,
     factories: Vec<Box<dyn SubsystemFactory>>,
     /// Phase 10: GPU timestamp infrastructure for per-pass profiling.
@@ -279,14 +297,14 @@ impl App {
 
         let mut pass_names: Vec<&'static str> = Vec::with_capacity(self.passes.len());
 
-        for (idx, pass) in self.passes.iter().enumerate() {
+        for (idx, (subsys_idx, pass)) in self.passes.iter().enumerate() {
             tracing::trace!(target: "ps_core::app", pass = pass.name, stage = ?pass.stage, "running pass");
             if timings_active {
                 if let Some(t) = &self.timings {
                     encoder.write_timestamp(&t.query_set, (idx as u32) * 2);
                 }
             }
-            (pass.run)(encoder, render_ctx);
+            self.subsystems[*subsys_idx].dispatch_pass(pass.id, encoder, render_ctx);
             if timings_active {
                 if let Some(t) = &self.timings {
                     encoder.write_timestamp(&t.query_set, (idx as u32) * 2 + 1);
@@ -463,32 +481,9 @@ impl App {
 
         self.subsystems = new_subsystems;
 
-        // Re-flatten and sort the pass list.
-        let mut passes: Vec<RegisteredPass> = self
-            .subsystems
-            .iter()
-            .flat_map(|s| s.register_passes())
-            .collect();
-        passes.sort_by_key(|p| p.stage);
-        self.passes = passes;
-
-        // Rebuild prepare order.
-        let mut subsystem_min_stage: Vec<(usize, PassStage)> = self
-            .subsystems
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let min = s
-                    .register_passes()
-                    .into_iter()
-                    .map(|p| p.stage)
-                    .min()
-                    .unwrap_or(PassStage::Overlay);
-                (i, min)
-            })
-            .collect();
-        subsystem_min_stage.sort_by_key(|(_, stage)| *stage);
-        self.prepare_order = subsystem_min_stage.into_iter().map(|(i, _)| i).collect();
+        // Re-flatten and sort the pass list, and rebuild prepare order.
+        self.passes = flatten_and_sort_passes(&self.subsystems);
+        self.prepare_order = build_prepare_order(&self.subsystems);
         Ok(())
     }
 
@@ -509,12 +504,12 @@ impl App {
 
     /// Stages of every registered pass in execution order (test-only convenience).
     pub fn pass_stages(&self) -> Vec<PassStage> {
-        self.passes.iter().map(|p| p.stage).collect()
+        self.passes.iter().map(|(_, p)| p.stage).collect()
     }
 
     /// Names of every registered pass in execution order (test-only convenience).
     pub fn pass_names(&self) -> Vec<&'static str> {
-        self.passes.iter().map(|p| p.name).collect()
+        self.passes.iter().map(|(_, p)| p.name).collect()
     }
 
     /// Names of subsystems in `prepare()` order. Test-only convenience: this
