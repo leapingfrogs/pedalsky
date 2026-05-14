@@ -49,15 +49,22 @@ pub struct GpuContext {
 /// runs on integrated GPUs without these features; the affected phases
 /// will fail explicitly when they reach for the feature.
 fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
-    let wanted = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+    #[allow(unused_mut)]
+    let mut wanted = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::TEXTURE_BINDING_ARRAY
         | wgpu::Features::FLOAT32_FILTERABLE
-        | wgpu::Features::TIMESTAMP_QUERY
-        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
         // Phase 12.2 — RGB cloud transmittance via dual-source blending
         // (composite pass outputs src0 = luminance, src1 = transmittance,
         // blend factor (One, Src1Color) per channel).
         | wgpu::Features::DUAL_SOURCE_BLENDING;
+    // wgpu 29 + Metal: enabling TIMESTAMP_QUERY causes device.poll(wait_indefinitely)
+    // to deadlock on the buffer-map callbacks used by drain_gpu_timings/probe.read,
+    // which freezes the render loop. Skip on macOS until the wgpu issue is resolved.
+    #[cfg(not(target_os = "macos"))]
+    {
+        wanted |= wgpu::Features::TIMESTAMP_QUERY
+            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    }
     let granted = wanted & adapter_features;
     let missing = wanted - granted;
     if !missing.is_empty() {
