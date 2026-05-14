@@ -50,7 +50,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Window, WindowId};
+use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 fn main() -> Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -92,6 +92,10 @@ fn main() -> Result<()> {
         .and_then(|i| argv.get(i + 1))
         .and_then(|s| s.parse::<u64>().ok());
 
+    // CLI override: `--full-screen` (or `-F`) launches in exclusive fullscreen
+    // on the primary monitor using its highest-resolution video mode.
+    let cli_fullscreen = argv.iter().any(|a| a == "--full-screen" || a == "-F");
+
     let config_path = workspace_root.join("pedalsky.toml");
     let mut config =
         Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
@@ -123,7 +127,14 @@ fn main() -> Result<()> {
     );
 
     let event_loop = EventLoop::new().context("create EventLoop")?;
-    let mut shell = AppShell::new(config, scene, config_path, scene_path, gpu_trace_dir);
+    let mut shell = AppShell::new(
+        config,
+        scene,
+        config_path,
+        scene_path,
+        gpu_trace_dir,
+        cli_fullscreen,
+    );
     event_loop.run_app(&mut shell).context("event loop")?;
     Ok(())
 }
@@ -136,6 +147,37 @@ fn workspace_root_for_shaders(config_path: &std::path::Path) -> PathBuf {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
         .join("shaders")
+}
+
+/// Pick a `Fullscreen::Exclusive` video mode for `--full-screen`.
+///
+/// Strategy: primary monitor's highest pixel-count mode, breaking ties on
+/// refresh rate. Falls back to `Fullscreen::Borderless(None)` if the
+/// monitor reports no enumerable video modes (e.g. Wayland), and to
+/// `None` if there is no primary monitor — winit will then open windowed.
+fn pick_exclusive_fullscreen(event_loop: &ActiveEventLoop) -> Option<Fullscreen> {
+    let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next())?;
+    let mode = monitor
+        .video_modes()
+        .max_by_key(|m| {
+            let sz = m.size();
+            (sz.width as u64 * sz.height as u64, m.refresh_rate_millihertz())
+        });
+    match mode {
+        Some(m) => {
+            info!(
+                target: "ps_app",
+                size = ?m.size(),
+                refresh_mhz = m.refresh_rate_millihertz(),
+                "--full-screen: exclusive video mode selected"
+            );
+            Some(Fullscreen::Exclusive(m))
+        }
+        None => {
+            warn!(target: "ps_app", "--full-screen: no enumerable video modes; falling back to borderless");
+            Some(Fullscreen::Borderless(Some(monitor)))
+        }
+    }
 }
 
 fn workspace_root() -> Result<PathBuf> {
@@ -158,6 +200,8 @@ struct AppShell {
     /// Plan §GPU debugging — wgpu API trace output directory if `--gpu-trace`
     /// was passed on the command line.
     gpu_trace_dir: Option<PathBuf>,
+    /// `--full-screen` / `-F`: open the window in exclusive fullscreen.
+    fullscreen: bool,
     state: Option<RunState>,
 }
 
@@ -168,6 +212,7 @@ impl AppShell {
         config_path: PathBuf,
         scene_path: PathBuf,
         gpu_trace_dir: Option<PathBuf>,
+        fullscreen: bool,
     ) -> Self {
         Self {
             config,
@@ -175,6 +220,7 @@ impl AppShell {
             config_path,
             scene_path,
             gpu_trace_dir,
+            fullscreen,
             state: None,
         }
     }
@@ -312,6 +358,7 @@ impl ApplicationHandler for AppShell {
             &self.config_path,
             &self.scene_path,
             self.gpu_trace_dir.clone(),
+            self.fullscreen,
         ) {
             Ok(s) => self.state = Some(s),
             Err(e) => {
@@ -367,11 +414,20 @@ impl RunState {
         config_path: &std::path::Path,
         scene_path: &std::path::Path,
         gpu_trace_dir: Option<PathBuf>,
+        fullscreen: bool,
     ) -> Result<Self> {
         let initial_size = (config.window.width, config.window.height);
-        let attrs = Window::default_attributes()
+        let fullscreen_mode = if fullscreen {
+            pick_exclusive_fullscreen(event_loop)
+        } else {
+            None
+        };
+        let mut attrs = Window::default_attributes()
             .with_title(&config.window.title)
             .with_inner_size(PhysicalSize::new(initial_size.0, initial_size.1));
+        if fullscreen_mode.is_some() {
+            attrs = attrs.with_fullscreen(fullscreen_mode.clone());
+        }
         let window = Arc::new(event_loop.create_window(attrs).context("create_window")?);
 
         // Use the configured size for the initial swapchain rather than
