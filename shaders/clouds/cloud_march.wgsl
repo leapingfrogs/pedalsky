@@ -464,19 +464,32 @@ fn world_to_weather_uv(xz: vec2<f32>) -> vec2<f32> {
 /// The advected coverage / cloud-type readouts wrap modulo the
 /// texture extent (Repeat sampler / rem_euclid) so multi-hour
 /// `simulated_seconds` doesn't run off the end of the tile.
-fn layer_wind_offset_m(layer: CloudLayerGpu) -> vec2<f32> {
-    let strength = params.wind_drift_strength * frame.simulated_seconds;
-    if (strength == 0.0) {
-        return vec2<f32>(0.0);
-    }
-    let wind_xz = layer_wind_mps(layer);
-    return wind_xz * strength;
+/// Perf S.G3 — single 3D-texture sample of the wind field at the
+/// layer's mid-altitude, returning everything the per-sample density
+/// kernels need: the time-scaled drift offset and the unit-direction +
+/// thickness-factor that power the height-scaled skew. Previously
+/// `layer_wind_offset_m` and `layer_skew_xz` each fired a 3D
+/// `textureSampleLevel`, and `layer_skew_xz` was called once per dense
+/// step — so the wind field was being re-sampled ~10× per pixel for a
+/// per-layer constant. Caching it here drops that to one sample per
+/// layer per pixel.
+struct LayerWindCache {
+    /// `wind_xz * params.wind_drift_strength * frame.simulated_seconds`
+    /// — the per-layer XZ noise-offset shared across every sample in
+    /// the march. Zero when `freeze_time` / `wind_drift_strength = 0`.
+    wind_offset: vec2<f32>,
+    /// Unit-vector skew direction (zero when wind is calm or
+    /// `wind_skew_strength = 0`). Final per-sample skew at height
+    /// `h` is `skew_dir * (h * skew_thickness)`.
+    skew_dir: vec2<f32>,
+    /// `(layer.top_m - layer.base_m) * params.wind_skew_strength`.
+    /// Zero when skew is disabled or wind is calm.
+    skew_thickness: f32,
 }
 
 /// Phase 14.H — raw wind vector (m/s, world XZ) at the layer's
-/// mid-altitude. Returned without any `simulated_seconds` scaling so
-/// callers can use the *direction* independently of the time-based
-/// drift (the skew-with-height term wants direction at t=0 too).
+/// mid-altitude. The single 3D `textureSampleLevel` source feeding
+/// both the time-drift offset and the skew direction.
 fn layer_wind_mps(layer: CloudLayerGpu) -> vec2<f32> {
     let mid_alt = (layer.base_m + layer.top_m) * 0.5;
     let u_y = clamp(mid_alt / WIND_FIELD_TOP_M, 0.0, 0.9999);
@@ -486,32 +499,26 @@ fn layer_wind_mps(layer: CloudLayerGpu) -> vec2<f32> {
     return vec2<f32>(w_sample.x, w_sample.y);
 }
 
-/// Phase 14.H — Schneider Nubis 2017 "skew with height". Returns an
-/// additional XZ offset (metres) to apply to the noise lookup that
-/// scales linearly with height-within-layer `h ∈ [0, 1]`. At `h = 0`
-/// the offset is zero (cloud bases stay anchored); at `h = 1` the
-/// top sits `layer_thickness * params.wind_skew_strength` downwind of
-/// the base, producing the visible lean / anvil tilt that real
-/// clouds show under directional shear.
-///
-/// The skew uses only the wind **direction** (unit vector), not the
-/// magnitude — leaning a cloud further than its own thickness when
-/// the wind is strong is unrealistic (real clouds get shredded by
-/// detail erosion instead). Calm wind ⇒ zero skew (the unit-vector
-/// is well-defined only when speed > epsilon).
-fn layer_skew_xz(layer: CloudLayerGpu, h: f32) -> vec2<f32> {
-    let strength = params.wind_skew_strength;
-    if (strength == 0.0) {
-        return vec2<f32>(0.0);
-    }
+fn layer_wind_cache(layer: CloudLayerGpu) -> LayerWindCache {
     let wind_xz = layer_wind_mps(layer);
-    let speed = length(wind_xz);
-    if (speed < 0.1) {
-        return vec2<f32>(0.0);
+    let drift_strength = params.wind_drift_strength * frame.simulated_seconds;
+    let wind_offset = wind_xz * drift_strength;
+
+    let skew_strength = params.wind_skew_strength;
+    var skew_dir = vec2<f32>(0.0);
+    var skew_thickness = 0.0;
+    // Skew uses only the wind **direction** (unit vector), not the
+    // magnitude — leaning a cloud further than its own thickness when
+    // the wind is strong is unrealistic (real clouds get shredded by
+    // detail erosion instead). Calm wind ⇒ zero skew.
+    if (skew_strength != 0.0) {
+        let speed = length(wind_xz);
+        if (speed >= 0.1) {
+            skew_dir = wind_xz / speed;
+            skew_thickness = max(layer.top_m - layer.base_m, 1.0) * skew_strength;
+        }
     }
-    let dir = wind_xz / speed;
-    let thickness = max(layer.top_m - layer.base_m, 1.0);
-    return dir * (h * thickness * strength);
+    return LayerWindCache(wind_offset, skew_dir, skew_thickness);
 }
 
 /// Phase 18 — diurnal modulation factor for the per-layer
@@ -597,7 +604,8 @@ fn sample_density(
     p_alt: f32,
     layer: CloudLayerGpu,
     weather: vec4<f32>,
-    wind_offset_xz: vec2<f32>,
+    wind: LayerWindCache,
+    cloud_type: u32,
 ) -> f32 {
     let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
     if (h < 0.0 || h > 1.0) { return 0.0; }
@@ -613,22 +621,13 @@ fn sample_density(
     if (effective_cov < 0.01) { return 0.0; }
 
     // Phase 14.F — subtract the per-layer wind offset so the noise
-    // lookups effectively trail the cloud body. The offset is shared
-    // across all samples within this layer, which keeps each cloud
-    // cell coherent vertically; inter-layer altitude shear comes
-    // from different layers receiving different offsets.
-    //
-    // Phase 14.H — additionally skew the lookup XZ by a linear
-    // function of `h` (height within the layer). The skew is in
-    // the wind's direction at the layer mid-altitude. At `h = 0`
-    // skew is zero (cloud bases stay anchored); at `h = 1` the top
-    // is offset by `layer_thickness * wind_skew_strength` downwind,
-    // which is what gives cumulus its characteristic downwind lean
-    // and anvil shapes their tilt. Independent of wind speed — see
-    // `layer_skew_xz` for the rationale.
-    let skew = layer_skew_xz(layer, h);
+    // lookups effectively trail the cloud body. Phase 14.H — additional
+    // height-scaled skew. Both pre-computed in `LayerWindCache` once
+    // per layer (see audit S.G3) so the per-sample evaluation is now a
+    // vector multiply rather than a 3D texture sample.
+    let skew = wind.skew_dir * (h * wind.skew_thickness);
     let p_advected = p
-        - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y)
+        - vec3<f32>(wind.wind_offset.x, 0.0, wind.wind_offset.y)
         - vec3<f32>(skew.x, 0.0, skew.y);
 
     let base_uv = p_advected / max(params.base_scale_m, 1.0);
@@ -651,9 +650,11 @@ fn sample_density(
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
     // Phase 12.1: per-pixel cloud type override (or layer default).
-    // Phase 14.D/F: subtract the same per-layer wind offset so the
-    // cloud-type grid drifts in lock-step with the noise pattern.
-    let cloud_type = effective_cloud_type(p.xz - wind_offset_xz, layer);
+    // Perf S.G2 — `cloud_type` is now caller-provided (the primary
+    // march computes it once per dense sample and threads it through
+    // both `sample_density` and the light-march variants). Saves one
+    // `effective_cloud_type` call per dense sample plus six per cone
+    // tap in the light path.
     let profile = ndf(h, cloud_type, layer.anvil_bias);
     var cloud = base_cloud * profile;
 
@@ -708,13 +709,16 @@ fn sample_density(
 /// imperceptible at typical light-step counts because the detail tap's
 /// per-sample variance averages out across the cone.
 ///
-/// `weather` and `wind_offset_xz` semantics match the full variant.
+/// `weather`, `wind`, and `cloud_type` semantics match the full
+/// variant — the primary march pre-computes them once per dense
+/// sample and threads them through.
 fn sample_density_light(
     p: vec3<f32>,
     p_alt: f32,
     layer: CloudLayerGpu,
     weather: vec4<f32>,
-    wind_offset_xz: vec2<f32>,
+    wind: LayerWindCache,
+    cloud_type: u32,
 ) -> f32 {
     let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
     if (h < 0.0 || h > 1.0) { return 0.0; }
@@ -722,9 +726,11 @@ fn sample_density_light(
     let effective_cov = clamp(weather.r * layer.coverage, 0.0, 1.0);
     if (effective_cov < 0.01) { return 0.0; }
 
-    let skew = layer_skew_xz(layer, h);
+    // Perf S.G3 — wind cache replaces the per-step `layer_skew_xz`
+    // call (which used to fire a 3D `textureSampleLevel`).
+    let skew = wind.skew_dir * (h * wind.skew_thickness);
     let p_advected = p
-        - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y)
+        - vec3<f32>(wind.wind_offset.x, 0.0, wind.wind_offset.y)
         - vec3<f32>(skew.x, 0.0, skew.y);
 
     let base_uv = p_advected / max(params.base_scale_m, 1.0);
@@ -737,7 +743,6 @@ fn sample_density_light(
     );
     let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
 
-    let cloud_type = effective_cloud_type(p.xz - wind_offset_xz, layer);
     let profile = ndf(h, cloud_type, layer.anvil_bias);
     var cloud = base_cloud * profile;
 
@@ -765,30 +770,32 @@ fn march_to_light(
     sun_dir: vec3<f32>,
     layer: CloudLayerGpu,
     weather_sample: vec4<f32>,
+    wind: LayerWindCache,
+    cloud_type: u32,
 ) -> f32 {
     if (params.cone_light_sampling != 0u) {
-        return march_to_light_cone(p, p_alt, sun_dir, layer, weather_sample);
+        return march_to_light_cone(p, p_alt, sun_dir, layer, weather_sample, wind, cloud_type);
     }
     let cos_sun = max(sun_dir.y, 0.05);
     let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
     let step = dist_to_top / f32(params.light_steps);
 
     var od = 0.0;
-    var pos = p;
     let centre = planet_centre();
-    let r0 = length(pos - centre);
-    let cos_view = dot((pos - centre) / max(r0, 1.0), sun_dir);
-    let h0 = r0 - world.planet_radius_m;
-
-    // Phase 14.D/F — one per-layer wind offset for noise + coverage,
-    // sampled outside the loop (loop-invariant for a single light march).
-    let wind_offset = layer_wind_offset_m(layer);
+    // Perf S.G1 — caller already has the precise altitude in `p_alt`
+    // (computed via `altitude_from_entry` in the primary march), so
+    // `r0 = planet_radius_m + p_alt` and `h0 = p_alt` directly. Saves
+    // one `length()` per light-march invocation vs the previous
+    // `length(p - centre)`.
+    let r0 = world.planet_radius_m + p_alt;
+    let cos_view = dot((p - centre) / max(r0, 1.0), sun_dir);
+    let h0 = p_alt;
 
     for (var i = 0u; i < params.light_steps; i = i + 1u) {
         let t = (f32(i) + 0.5) * step;
         let pi = p + sun_dir * t;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
-        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind_offset);
+        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind, cloud_type);
         od = od + local_density * step;
     }
     return od;
@@ -834,6 +841,8 @@ fn march_to_light_cone(
     sun_dir: vec3<f32>,
     layer: CloudLayerGpu,
     weather_sample: vec4<f32>,
+    wind: LayerWindCache,
+    cloud_type: u32,
 ) -> f32 {
     let cos_sun = max(sun_dir.y, 0.05);
     let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
@@ -843,10 +852,10 @@ fn march_to_light_cone(
     let step_size = dist_to_top / f32(n_forward);
 
     let centre = planet_centre();
-    let r0 = length(p - centre);
+    // Perf S.G1 — see march_to_light for the rationale.
+    let r0 = world.planet_radius_m + p_alt;
     let cos_view = dot((p - centre) / max(r0, 1.0), sun_dir);
-    let h0 = r0 - world.planet_radius_m;
-    let wind_offset = layer_wind_offset_m(layer);
+    let h0 = p_alt;
 
     var od = 0.0;
     // Forward cone samples. The cone half-radius at sample i is
@@ -860,7 +869,7 @@ fn march_to_light_cone(
                      * step_size * (f32(i) + 1.0) / f32(n_forward);
         let pi = p + sun_dir * t + cone_off;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
-        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind_offset);
+        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind, cloud_type);
         od = od + local_density * step_size;
     }
 
@@ -874,7 +883,7 @@ fn march_to_light_cone(
     let pi_far = p + sun_dir * t_far + cone_off_far;
     let alt_far = altitude_from_entry(pi_far, r0, cos_view, h0, t_far);
     let local_density_far =
-        sample_density_light(pi_far, alt_far, layer, weather_sample, wind_offset);
+        sample_density_light(pi_far, alt_far, layer, weather_sample, wind, cloud_type);
     od = od + local_density_far * step_size * 3.0;
 
     return od;
@@ -1072,23 +1081,33 @@ fn fs_main(in: VsOut) -> CloudOut {
         let cos_view = dot((ray.origin - centre) / max(r0, 1.0), ray.dir);
         let h0 = r0 - world.planet_radius_m;
 
-        // Phase 14.D/F — one per-layer wind offset for noise +
-        // coverage. Loop-invariant within a single layer's march;
-        // declared just inside the layer loop so the code reads in
-        // the same order it executes.
-        let wind_offset_view = layer_wind_offset_m(layer);
+        // Phase 14.D/F + perf S.G3 — single wind-field 3D-texture
+        // sample per layer, packaged into a `LayerWindCache` that
+        // carries the time-scaled drift offset plus the precomputed
+        // skew direction and thickness factor. Loop-invariant within
+        // this layer's march; threaded into `sample_density`,
+        // `sample_density_light`, and the light-march helpers so they
+        // never re-sample the wind field per step.
+        let wind = layer_wind_cache(layer);
 
         for (var s = 0u; s < params.cloud_steps; s = s + 1u) {
             let p = ray.origin + ray.dir * t;
             let alt = altitude_from_entry(p, r0, cos_view, h0, t);
             let weather_sample = textureSampleLevel(
                 weather_map, noise_sampler,
-                world_to_weather_uv(p.xz - wind_offset_view), 0.0,
+                world_to_weather_uv(p.xz - wind.wind_offset), 0.0,
             );
-            let density = sample_density(p, alt, layer, weather_sample, wind_offset_view);
+            // Perf S.G2 — `effective_cloud_type` is computed once per
+            // dense sample and reused across `sample_density` plus all
+            // six cone taps in `sample_density_light`. The 6-tap cone
+            // spans a few km vs the cloud-type grid's 250 m / texel,
+            // so reusing the primary sample's lookup is sub-texel
+            // accurate.
+            let cloud_type = effective_cloud_type(p.xz - wind.wind_offset, layer);
+            let density = sample_density(p, alt, layer, weather_sample, wind, cloud_type);
 
             if (density > 1e-3) {
-                let od_to_sun = march_to_light(p, alt, sun_dir, layer, weather_sample);
+                let od_to_sun = march_to_light(p, alt, sun_dir, layer, weather_sample, wind, cloud_type);
 
                 // Schneider 2015 Beer-Powder (canonical form).
                 let beer        = exp(-sigma_t * od_to_sun);
