@@ -979,6 +979,25 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
             .ui(ui)
             .changed();
 
+        // First-octave forward bias for the multi-scatter loop. Lifts
+        // the visible "in-cloud sun-shaft" effect at the cost of
+        // physical realism. 0.0 = unbiased Hillaire baseline.
+        tuning_changed |= Slider::new(&mut c.forward_bias, 0.0..=2.0)
+            .text("Forward bias (in-cloud sun shafts)")
+            .max_decimals(3)
+            .ui(ui)
+            .on_hover_text(
+                "Multiplies the primary multi-scatter octave's energy \
+                 by (1 + forward_bias), concentrating light into the \
+                 strongly forward-peaked octave 0. Brightens visible \
+                 sun-shafts piercing cloud bodies when the camera \
+                 looks toward the sun. 0.0 reproduces the unbiased \
+                 Hillaire 2016 multi-octave model; 1.0 doubles the \
+                 primary contribution; 2.0 triples it (overdrive for \
+                 testing).",
+            )
+            .changed();
+
         // Approximate Mie (Jendersie & d'Eon 2023) — single droplet
         // diameter knob replaces the previous HG bias triple.
         // Default 1.0 ⇒ use the per-cloud-type diameter from

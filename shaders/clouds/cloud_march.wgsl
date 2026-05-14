@@ -1026,6 +1026,29 @@ fn fs_main(in: VsOut) -> CloudOut {
                     c = c * params.multi_scatter_c;
                 }
 
+                // Forward bias: directional gain on the multi-scatter
+                // sum that amplifies in-cloud forward-scatter when the
+                // camera looks roughly toward the sun. Falls off
+                // smoothly from full effect at the sun (cos_theta = 1)
+                // to zero effect perpendicular to it (cos_theta = 0).
+                // 0.0 reproduces the unbiased Hillaire model.
+                //
+                // Why this is structured as a post-multiply rather
+                // than a per-octave `a` boost: the natural HG `g` for
+                // water droplets (~0.99) gives octave 0 an extremely
+                // narrow forward peak — almost all pixels off-axis
+                // see zero from it, so scaling octave 0's energy is
+                // visually invisible at any camera angle except the
+                // sun disk. The directional-gain formulation lifts
+                // the entire wide-angle "sun glow through cloud" band
+                // that the user actually perceives as in-cloud sun
+                // shafts (Schneider's HZD paper uses a similar
+                // post-multiplier for the same reason).
+                if (params.forward_bias > 0.0) {
+                    let dir_factor = smoothstep(0.0, 1.0, max(cos_theta, 0.0));
+                    sun_in = sun_in * (1.0 + params.forward_bias * dir_factor);
+                }
+
                 let h_norm = clamp((alt - layer.base_m)
                                    / max(layer.top_m - layer.base_m, 1.0), 0.0, 1.0);
                 let ambient = sample_sky_ambient(p, sun_dir)

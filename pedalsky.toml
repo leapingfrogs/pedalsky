@@ -70,6 +70,7 @@ freeze_time           = false
 half_res_render       = false
 temporal_taa          = false
 cone_light_sampling   = false
+forward_bias          = 0.0
 
 [render.precip]
 near_particle_count = 8000

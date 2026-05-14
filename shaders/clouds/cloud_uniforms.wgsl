@@ -32,7 +32,13 @@ struct CloudParams {
     // used to hold `hg_backward_bias` so the struct size is
     // unchanged.
     cone_light_sampling: u32,
-    _pad_after_droplet_bias_1: f32, // retired hg_blend_bias slot
+    // First-octave forward bias for the multi-scatter loop.
+    // Scales octave-0's energy contribution `a` by `(1 + bias)`,
+    // concentrating light into the strongly forward-peaked primary
+    // scatter without affecting later (broader) octaves. 0.0 ⇒ no
+    // change; 1.0 ⇒ primary contribution doubled; 2.0 ⇒ tripled.
+    // Reclaims the pad slot that used to hold `hg_blend_bias`.
+    forward_bias: f32,
     detail_strength: f32,         // 0.35
     curl_strength: f32,           // 0.1
 

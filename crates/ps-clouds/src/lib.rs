@@ -529,6 +529,7 @@ impl CloudsSubsystem {
         params.powder_strength = c.powder_strength;
         params.droplet_diameter_bias = c.droplet_diameter_bias;
         params.cone_light_sampling = u32::from(c.cone_light_sampling);
+        params.forward_bias = c.forward_bias;
         // Phase 13.9 — temporal jitter is gated by both the live flag
         // and `freeze_time` (paused screenshots must not shimmer).
         params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
@@ -1136,6 +1137,7 @@ impl RenderSubsystem for CloudsSubsystem {
         self.params.powder_strength = c.powder_strength;
         self.params.droplet_diameter_bias = c.droplet_diameter_bias;
         self.params.cone_light_sampling = u32::from(c.cone_light_sampling);
+        self.params.forward_bias = c.forward_bias;
         self.params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
         // Phase 14.C — wind drift mirrors the temporal_jitter gating.
         self.params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };

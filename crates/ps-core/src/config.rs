@@ -395,6 +395,18 @@ pub struct CloudsTuning {
     /// stay valid; toggle on for the visual improvement.
     #[serde(default)]
     pub cone_light_sampling: bool,
+    /// First-octave forward bias for the Hillaire multi-octave
+    /// multiple-scattering loop. Scales the primary (octave-0)
+    /// energy contribution `a` by `(1 + forward_bias)`, so light
+    /// gets concentrated into the strongly forward-peaked primary
+    /// scatter rather than spread across broader later octaves. Use
+    /// this to dial up the visible "in-cloud sun-shaft" effect when
+    /// the camera looks roughly toward the sun through thick cloud.
+    /// 0.0 = unbiased Hillaire baseline; 1.0 doubles the primary
+    /// contribution; up to 2.0 in the UI for testing. Stays at the
+    /// default so it doesn't perturb existing scene goldens.
+    #[serde(default)]
+    pub forward_bias: f32,
 }
 
 /// Default value for `droplet_diameter_bias` — kept as a free
@@ -440,6 +452,7 @@ impl Default for CloudsTuning {
             half_res_render: false,
             temporal_taa: false,
             cone_light_sampling: false,
+            forward_bias: 0.0,
         }
     }
 }
