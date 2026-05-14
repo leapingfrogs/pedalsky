@@ -855,6 +855,14 @@ fn fs_main(in: VsOut) -> CloudOut {
     var t_weight_norm: f32 = 0.0;
 
     for (var i = 0u; i < layer_count; i = i + 1u) {
+        // Outer early-exit: stacked-layer scenes (real weather often
+        // hits 3–4 layers — boundary cumulus + altostratus + cirrus)
+        // pay ~N× the single-layer cost. Once the nearer layers have
+        // driven transmittance below 1% the back layers contribute
+        // imperceptibly per pixel, so skip them rather than running
+        // a fresh 192-step march that mostly accumulates rounding
+        // error. Mirrors the inner-loop break threshold (0.01).
+        if (max3(transmittance) < 0.01) { break; }
         let lh = hits[i];
         if (lh.hit == 0u) { continue; }
         let layer = cloud_layers.layers[lh.idx];
