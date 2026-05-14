@@ -245,9 +245,25 @@ fn ice_halo_lobe(cos_theta: f32, peak_cos: f32, width_rad: f32) -> f32 {
     return exp(-0.5 * dx * dx);
 }
 
-fn cloud_phase(
-    cos_theta: f32, layer: CloudLayerGpu, h_norm: f32, g_scale: f32,
-) -> f32 {
+/// Loop-invariant outputs of the Mie fit, computed once per dense
+/// sample and reused across each multi-scatter octave.
+///
+/// The Jendersie & d'Eon 2023 fit (Eqs. 4–7) feeds layer droplet
+/// diameter through four `exp()` calls — none of which depend on
+/// `cos_theta` or the octave's `g_scale`. Originally the full
+/// `cloud_phase` was called once per octave (typically 4×), so each
+/// dense sample paid for 16 `exp()` plus the ice smoothstep. Hoisting
+/// these out (perf §2.2 of the audit) leaves the per-octave path with
+/// just the two phase evaluations and an optional halo blend.
+struct CloudPhaseConstants {
+    g_hg: f32,
+    g_d: f32,
+    alpha: f32,
+    w_d: f32,
+    ice_fraction: f32,
+}
+
+fn cloud_phase_constants(layer: CloudLayerGpu, h_norm: f32) -> CloudPhaseConstants {
     // Layer diameter, with the Cb mixed-phase transition.
     var d = layer.droplet_diameter_um;
     if (layer.cloud_type == 7u) {
@@ -256,30 +272,35 @@ fn cloud_phase(
     }
     d = clamp(d * params.droplet_diameter_bias, APPROX_MIE_D_MIN, APPROX_MIE_D_MAX);
 
-    // Approximate Mie fit (Jendersie & d'Eon 2023, Eqs. 4–7).
-    let g_hg    = exp(-0.0990567 / (d - 1.67154));
-    let g_d     = exp(-2.20679 / (d + 3.91029)) - 0.428934;
-    let alpha   = exp(3.62489 - 8.29288 / (d + 5.52825));
-    let w_d     = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    var c: CloudPhaseConstants;
+    c.g_hg         = exp(-0.0990567 / (d - 1.67154));
+    c.g_d          = exp(-2.20679 / (d + 3.91029)) - 0.428934;
+    c.alpha        = exp(3.62489 - 8.29288 / (d + 5.52825));
+    c.w_d          = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    c.ice_fraction = smoothstep(ICE_DIAMETER_LOW, ICE_DIAMETER_HIGH, d);
+    return c;
+}
 
-    // Apply Hillaire multi-octave `g_scale` to both `g` values; α
-    // is fit-dependent and untouched. cos_theta is geometric.
-    let p_hg = henyey_greenstein(cos_theta, g_hg * g_scale);
-    let p_d  = draine_phase(cos_theta, g_d * g_scale, alpha);
-    var p_mie = (1.0 - w_d) * p_hg + w_d * p_d;
+/// Per-octave phase evaluator. `g_scale` is Hillaire's multi-octave
+/// anisotropy scale (1.0 on octave 0, `c^n` thereafter). Applies to
+/// both HG and Draine `g` values; α is fit-dependent and untouched.
+/// cos_theta is geometric and never scaled.
+fn cloud_phase_with(cos_theta: f32, g_scale: f32, c: CloudPhaseConstants) -> f32 {
+    let p_hg = henyey_greenstein(cos_theta, c.g_hg * g_scale);
+    let p_d  = draine_phase(cos_theta, c.g_d * g_scale, c.alpha);
+    var p_mie = (1.0 - c.w_d) * p_hg + c.w_d * p_d;
 
     // Ice halo lobes — ramp in from the water/ice boundary. The
     // multi-octave g_scale also broadens the halo across successive
     // octaves (physically: forward-multiply-scattered light loses
     // angular precision), which keeps the halo from "punching
     // through" the diffuse multi-scatter background.
-    let ice_fraction = smoothstep(ICE_DIAMETER_LOW, ICE_DIAMETER_HIGH, d);
-    if (ice_fraction > 0.0) {
+    if (c.ice_fraction > 0.0) {
         let width = radians(ICE_HALO_WIDTH_DEG) / max(g_scale, 0.1);
         let h22 = ice_halo_lobe(cos_theta, ICE_HALO_22_COS, width);
         let h46 = ice_halo_lobe(cos_theta, ICE_HALO_46_COS, width);
         let halo = ICE_HALO_22_PEAK * h22 + ICE_HALO_46_PEAK * h46;
-        p_mie = p_mie + ice_fraction * halo;
+        p_mie = p_mie + c.ice_fraction * halo;
     }
     return p_mie;
 }
@@ -581,6 +602,16 @@ fn sample_density(
     let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
     if (h < 0.0 || h > 1.0) { return 0.0; }
 
+    // Effective coverage gate. The Schneider remap further down
+    // (`cloud = remap(cloud, 1 - coverage, 1, 0, 1) * coverage`)
+    // silently produces near-zero density when `weather.r *
+    // layer.coverage` is below the Schneider visible threshold
+    // (≈ 0.40 at typical cloud profiles). Short-circuit here so
+    // clear-sky pixels skip the three noise-texture fetches +
+    // optional curl + detail taps on every primary march step.
+    let effective_cov = clamp(weather.r * layer.coverage, 0.0, 1.0);
+    if (effective_cov < 0.01) { return 0.0; }
+
     // Phase 14.F — subtract the per-layer wind offset so the noise
     // lookups effectively trail the cloud body. The offset is shared
     // across all samples within this layer, which keeps each cloud
@@ -667,13 +698,76 @@ fn sample_density(
     return clamp(cloud, 0.0, 1.0) * layer.density_scale;
 }
 
+/// Cheap density variant for the light march (perf §2.3 of the audit).
+///
+/// Same base-shape + coverage remap as [`sample_density`] but skips the
+/// curl + detail noise taps. The light march integrates optical depth
+/// across 6 cone samples toward the sun; high-frequency edge erosion
+/// changes the per-sample value by <5% but costs three texture fetches
+/// per step. Empirically the visual difference in shadow softness is
+/// imperceptible at typical light-step counts because the detail tap's
+/// per-sample variance averages out across the cone.
+///
+/// `weather` and `wind_offset_xz` semantics match the full variant.
+fn sample_density_light(
+    p: vec3<f32>,
+    p_alt: f32,
+    layer: CloudLayerGpu,
+    weather: vec4<f32>,
+    wind_offset_xz: vec2<f32>,
+) -> f32 {
+    let h = (p_alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0);
+    if (h < 0.0 || h > 1.0) { return 0.0; }
+
+    let effective_cov = clamp(weather.r * layer.coverage, 0.0, 1.0);
+    if (effective_cov < 0.01) { return 0.0; }
+
+    let skew = layer_skew_xz(layer, h);
+    let p_advected = p
+        - vec3<f32>(wind_offset_xz.x, 0.0, wind_offset_xz.y)
+        - vec3<f32>(skew.x, 0.0, skew.y);
+
+    let base_uv = p_advected / max(params.base_scale_m, 1.0);
+    let base = textureSampleLevel(noise_base, noise_sampler, base_uv, 0.0);
+    let diurnal = diurnal_modulation(layer.cloud_type);
+    let effective_shape_bias = layer.shape_bias * diurnal;
+    let lf_fbm = clamp(
+        base.g * 0.625 + base.b * 0.25 + base.a * 0.125 + effective_shape_bias * 0.5,
+        0.0, 1.0,
+    );
+    let base_cloud = remap(base.r, -(1.0 - lf_fbm), 1.0, 0.0, 1.0);
+
+    let cloud_type = effective_cloud_type(p.xz - wind_offset_xz, layer);
+    let profile = ndf(h, cloud_type, layer.anvil_bias);
+    var cloud = base_cloud * profile;
+
+    let coverage = effective_cov;
+    cloud = remap(cloud, 1.0 - coverage, 1.0, 0.0, 1.0);
+    cloud = cloud * coverage;
+
+    return clamp(cloud, 0.0, 1.0) * layer.density_scale;
+}
+
 // ---------------------------------------------------------------------------
 // Light march (optical depth from sample to sun)
 // ---------------------------------------------------------------------------
 
-fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLayerGpu) -> f32 {
+/// Light-march: optical depth from the primary sample `p` toward the
+/// sun. `weather_sample` is the primary ray's already-fetched
+/// `weather_map` value at `p.xz - wind_offset`; the light-march reuses
+/// it for every step rather than re-fetching. The weather map varies
+/// on a 32 km tile; a 6-step march toward the sun spans at most a
+/// couple of km, so the weather value is effectively constant across
+/// the cone (perf §2.5 of the audit).
+fn march_to_light(
+    p: vec3<f32>,
+    p_alt: f32,
+    sun_dir: vec3<f32>,
+    layer: CloudLayerGpu,
+    weather_sample: vec4<f32>,
+) -> f32 {
     if (params.cone_light_sampling != 0u) {
-        return march_to_light_cone(p, p_alt, sun_dir, layer);
+        return march_to_light_cone(p, p_alt, sun_dir, layer, weather_sample);
     }
     let cos_sun = max(sun_dir.y, 0.05);
     let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
@@ -694,11 +788,7 @@ fn march_to_light(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLaye
         let t = (f32(i) + 0.5) * step;
         let pi = p + sun_dir * t;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
-        let weather = textureSampleLevel(
-            weather_map, noise_sampler,
-            world_to_weather_uv(pi.xz - wind_offset), 0.0,
-        );
-        let local_density = sample_density(pi, alt, layer, weather, wind_offset);
+        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind_offset);
         od = od + local_density * step;
     }
     return od;
@@ -734,7 +824,17 @@ fn cone_kernel_offset(i: u32) -> vec3<f32> {
     }
 }
 
-fn march_to_light_cone(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: CloudLayerGpu) -> f32 {
+/// Cone-tap variant of [`march_to_light`]. Reuses the primary ray's
+/// `weather_sample` across all six taps — the cone spans at most a
+/// few km, well below the weather map's 32 km tile, so the variation
+/// is sub-texel.
+fn march_to_light_cone(
+    p: vec3<f32>,
+    p_alt: f32,
+    sun_dir: vec3<f32>,
+    layer: CloudLayerGpu,
+    weather_sample: vec4<f32>,
+) -> f32 {
     let cos_sun = max(sun_dir.y, 0.05);
     let dist_to_top = max((layer.top_m - p_alt) / cos_sun, 1.0);
     // 5 forward samples evenly partitioning the path to the top of
@@ -760,11 +860,7 @@ fn march_to_light_cone(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: Clou
                      * step_size * (f32(i) + 1.0) / f32(n_forward);
         let pi = p + sun_dir * t + cone_off;
         let alt = altitude_from_entry(pi, r0, cos_view, h0, t);
-        let weather = textureSampleLevel(
-            weather_map, noise_sampler,
-            world_to_weather_uv(pi.xz - wind_offset), 0.0,
-        );
-        let local_density = sample_density(pi, alt, layer, weather, wind_offset);
+        let local_density = sample_density_light(pi, alt, layer, weather_sample, wind_offset);
         od = od + local_density * step_size;
     }
 
@@ -777,12 +873,8 @@ fn march_to_light_cone(p: vec3<f32>, p_alt: f32, sun_dir: vec3<f32>, layer: Clou
     let cone_off_far = cone_kernel_offset(5u) * step_size * 3.0;
     let pi_far = p + sun_dir * t_far + cone_off_far;
     let alt_far = altitude_from_entry(pi_far, r0, cos_view, h0, t_far);
-    let weather_far = textureSampleLevel(
-        weather_map, noise_sampler,
-        world_to_weather_uv(pi_far.xz - wind_offset), 0.0,
-    );
     let local_density_far =
-        sample_density(pi_far, alt_far, layer, weather_far, wind_offset);
+        sample_density_light(pi_far, alt_far, layer, weather_sample, wind_offset);
     od = od + local_density_far * step_size * 3.0;
 
     return od;
@@ -854,6 +946,10 @@ struct LayerHit {
 fn fs_main(in: VsOut) -> CloudOut {
     let ray = compute_view_ray(in.pos.xy);
     let cos_theta = dot(ray.dir, frame.sun_direction.xyz);
+    // Perf §2.2 — forward-bias directional factor is per-pixel
+    // (cos_theta = ray·sun, fixed across the march). Hoist out of the
+    // per-sample hot loop.
+    let forward_bias_dir_factor = smoothstep(0.0, 1.0, max(cos_theta, 0.0));
 
     // Spatial blue-noise jitter (frame-deterministic — no time
     // component). Phase 13.9 adds an optional 16-frame rotation
@@ -992,7 +1088,7 @@ fn fs_main(in: VsOut) -> CloudOut {
             let density = sample_density(p, alt, layer, weather_sample, wind_offset_view);
 
             if (density > 1e-3) {
-                let od_to_sun = march_to_light(p, alt, sun_dir, layer);
+                let od_to_sun = march_to_light(p, alt, sun_dir, layer, weather_sample);
 
                 // Schneider 2015 Beer-Powder (canonical form).
                 let beer        = exp(-sigma_t * od_to_sun);
@@ -1002,12 +1098,17 @@ fn fs_main(in: VsOut) -> CloudOut {
 
                 // Sample's normalised height inside the layer. Used
                 // by the Cumulonimbus mixed-phase branch in
-                // `cloud_phase` to blend the droplet diameter from
-                // water (core) to ice (anvil); other layers ignore it.
+                // `cloud_phase_constants` to blend the droplet
+                // diameter from water (core) to ice (anvil); other
+                // layers ignore it.
                 let phase_h = clamp(
                     (alt - layer.base_m) / max(layer.top_m - layer.base_m, 1.0),
                     0.0, 1.0,
                 );
+                // Perf §2.2 — precompute the Mie fit's loop-invariant
+                // exp()s once per dense sample. The per-octave loop
+                // below only needs the cheap HG + Draine evals.
+                let phase_consts = cloud_phase_constants(layer, phase_h);
 
                 // Hillaire 2016 multi-octave multiple-scattering: each octave
                 // scales energy×a, optical-depth×b, anisotropy×c. cos_theta
@@ -1017,7 +1118,7 @@ fn fs_main(in: VsOut) -> CloudOut {
                 var b = 1.0;
                 var c = 1.0;
                 for (var n = 0u; n < params.multi_scatter_octaves; n = n + 1u) {
-                    let phase = cloud_phase(cos_theta, layer, phase_h, c);
+                    let phase = cloud_phase_with(cos_theta, c, phase_consts);
                     sun_in = sun_in + a * frame.sun_illuminance.rgb
                                     * phase
                                     * exp(-sigma_t * od_to_sun * b);
@@ -1045,8 +1146,7 @@ fn fs_main(in: VsOut) -> CloudOut {
                 // shafts (Schneider's HZD paper uses a similar
                 // post-multiplier for the same reason).
                 if (params.forward_bias > 0.0) {
-                    let dir_factor = smoothstep(0.0, 1.0, max(cos_theta, 0.0));
-                    sun_in = sun_in * (1.0 + params.forward_bias * dir_factor);
+                    sun_in = sun_in * (1.0 + params.forward_bias * forward_bias_dir_factor);
                 }
 
                 let h_norm = clamp((alt - layer.base_m)
