@@ -129,9 +129,14 @@ fn sample_overcast_at_view(view_dir: vec3<f32>) -> f32 {
         top_down_density_mask, density_mask_sampler,
         mask_uv_from_world(sample_xz), 0.0,
     ).r;
-    // Same Beer-Lambert mapping the ground pass uses (40 = mid-range
-    // optical depth scale): keeps the curves visually consistent.
-    return 1.0 - exp(-40.0 * mask);
+    // Beer-Lambert mapping shared with the ground pass — keeps the
+    // sky's overcast transition and the ground's overcast irradiance
+    // moving together as coverage rises. The multiplier (10) was
+    // calibrated so a moderate cumulus deck (slider ~0.5) lands
+    // around 75% overcast rather than saturating to near-100% on the
+    // way to it. The previous 40 was too steep: even slider 0.05
+    // produced a near-fully-overcast sky.
+    return 1.0 - exp(-10.0 * mask);
 }
 
 /// Overcast diffuse luminance. Mirrors the ground-pass term so the

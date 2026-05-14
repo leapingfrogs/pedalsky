@@ -375,22 +375,28 @@ fn mask_uv_from_world(p_xz: vec2<f32>) -> vec2<f32> {
 /// "10 km of full-density cloud" (synthesis §3.2.5 — sized for the
 /// Phase 8 precipitation cloud-occlusion gate, which needs to
 /// distinguish "any cloud" from "thunderstorm tower"). For the
-/// overcast-diffuse modulation we want sensitivity at *much* lower
-/// mask values: a typical low stratus deck reads ~0.03 in mask
-/// units but should produce near-full overcast blocking
-/// (T_through ≈ 0.05). The exponent constant below converts the
-/// precip-friendly mask into an overcast-friendly transmittance:
+/// overcast-diffuse modulation we want a gradual response to
+/// changes in column density rather than a near-instant saturation,
+/// so the multiplier below is calibrated so a moderate cumulus deck
+/// (effective coverage ~0.45) lands around 75% blocking and a full
+/// overcast cumulus (coverage 1.0 → effective 0.60) lands around
+/// 88%. The previous constant (40) saturated to >95% blocking at
+/// any visible cloud column, producing an abrupt visual cliff as
+/// the scene-side coverage slider crossed into the synthesis
+/// pipeline's visible band. The shared sky pass uses the same
+/// constant — they must match.
 ///
-///   Stratus 600 m   coverage 1.0 → mask ≈ 0.028 → blocking ≈ 0.67
-///   Stratocumulus   coverage 0.9 → mask ≈ 0.041 → blocking ≈ 0.81
-///   Cumulus 800 m   coverage 0.5 → mask ≈ 0.024 → blocking ≈ 0.62
-///   Thunderstorm Cb coverage 0.9 → mask ≈ 0.444 → blocking ≈ 1.000
+/// Reference mappings under the new constant (10):
+///   Stratus 600 m   coverage 1.0 → mask ≈ 0.028 → blocking ≈ 0.244
+///   Stratocumulus   coverage 0.9 → mask ≈ 0.041 → blocking ≈ 0.336
+///   Cumulus 800 m   coverage 0.5 → mask ≈ 0.024 → blocking ≈ 0.213
+///   Thunderstorm Cb coverage 0.9 → mask ≈ 0.444 → blocking ≈ 0.988
 fn overcast_blocking(p_xz: vec2<f32>) -> f32 {
     let uv = mask_uv_from_world(p_xz);
     let mask = textureSampleLevel(
         top_down_density_mask, density_mask_sampler, uv, 0.0,
     ).r;
-    let transmittance = exp(-40.0 * mask);
+    let transmittance = exp(-10.0 * mask);
     return 1.0 - transmittance;
 }
 

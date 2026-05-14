@@ -75,40 +75,52 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
 
 
 /// Map a scene-side coverage value in [0, 1] onto the Schneider 2015
-/// remap's "visible band" so that METAR-natural values (0.25 SCT, 0.5
-/// BKN, 1.0 OVC) produce the cloud structure a meteorologist would
-/// expect.
+/// remap's "visible band" so METAR-natural values (0.25 SCT, 0.5 BKN,
+/// 1.0 OVC) produce the cloud structure a meteorologist would expect.
 ///
 /// The Schneider remap (`cloud = remap(base, 1-coverage, 1, 0, 1) *
-/// coverage`) silently wipes coverage values below ~0.55 (the remap
-/// gives near-zero density) and saturates above ~0.78 (cloud bases
-/// read as dark slabs because the medium is too thick for sun-light
-/// to penetrate). This function pre-biases scene coverage onto the
-/// `[0.60, 0.78]` band that produces visually meaningful clouds.
+/// coverage`) silently wipes coverage values below ~`VISIBLE_LOW` (the
+/// noise rarely exceeds `1 − coverage`) and produces dark structureless
+/// "slab" bases above ~`VISIBLE_HIGH` (the medium becomes too thick
+/// for sunlight to reach the camera-facing surface). The output is
+/// therefore confined to a narrow band where the slider has visible
+/// effect, with two ramps around it:
 ///
-/// Coverage values <= 0.02 round to zero (truly clear sky); above
-/// 0.02 the input maps linearly into the visible band. Documented
-/// in followup #57.
+/// 1. A smooth knee at the low end (slider 0 → KNEE_END) so the empty
+///    zone below the visible band ramps gradually instead of jumping.
+///    This replaces the legacy step gate at `scene_coverage = 0.02`
+///    that produced an abrupt cliff in the rendered output around that
+///    slider value.
+/// 2. Linear into the visible band from `KNEE_END` to slider = 1.0 so
+///    `BKN` (input 0.5) lands mid-band and `OVC` (input 1.0) lands at
+///    the top edge.
+///
+/// `VISIBLE_LOW = 0.30` (down from the previous 0.40) widens the
+/// sparse-cumulus regime users move through most. Pushing past
+/// `VISIBLE_HIGH = 0.60` would slide into the dark-slab artifact; if
+/// that range is ever needed it requires a separate tuning pass on
+/// `sigma_t`, Beer-Powder, and the multi-octave decay so thick bases
+/// still admit ambient + multi-scatter light.
 fn remap_coverage_to_visible_band(scene_coverage: f32) -> f32 {
-    // The cloud march in cloud_march.wgsl combines weather_map.r (now
-    // a {0,1} spatial gate) with layer.coverage as a Schneider remap
-    // threshold + multiplier. Empirically the *effective* coverage the
-    // shader needs to fall inside [≈0.4, ≈0.6] for visible structure:
-    // below ≈0.4 the remap silently kills density; above ≈0.6 the
-    // medium becomes too thick for sun-light to penetrate and cloud
-    // bases read as dark slabs.
-    //
-    // Map scene-side METAR-ish input [0.02, 1] linearly onto that
-    // band so a BKN scene (input ~0.5) lands mid-band and an OVC
-    // scene (input ~1.0) lands near the top edge.
-    const VISIBLE_LOW: f32 = 0.40;
+    const VISIBLE_LOW: f32 = 0.30;
     const VISIBLE_HIGH: f32 = 0.60;
-    const CLEAR_SKY_GATE: f32 = 0.02;
-    if scene_coverage <= CLEAR_SKY_GATE {
+    /// Width of the smoothstep knee at the low end (in slider units).
+    /// Slider <= this lives in the "near-clear sparse-puff" regime
+    /// where effective coverage is below the Schneider visible
+    /// threshold; the cubic smoothstep gives that range a graceful
+    /// taper so sweeping the slider feels continuous.
+    const KNEE_END: f32 = 0.10;
+    let t = scene_coverage.clamp(0.0, 1.0);
+    if t <= 0.0 {
         return 0.0;
     }
-    let t = ((scene_coverage - CLEAR_SKY_GATE) / (1.0 - CLEAR_SKY_GATE)).clamp(0.0, 1.0);
-    VISIBLE_LOW + t * (VISIBLE_HIGH - VISIBLE_LOW)
+    if t < KNEE_END {
+        let s = t / KNEE_END;
+        let smoothed = s * s * (3.0 - 2.0 * s);
+        return smoothed * VISIBLE_LOW;
+    }
+    let band_t = ((t - KNEE_END) / (1.0 - KNEE_END)).clamp(0.0, 1.0);
+    VISIBLE_LOW + band_t * (VISIBLE_HIGH - VISIBLE_LOW)
 }
 
 /// Verify the synthesised cloud-layer envelopes don't overlap vertically.
@@ -254,5 +266,55 @@ mod tests {
         ]);
         let (a, b, _, _) = check_non_overlap(&layers).expect_err("must reject");
         assert_eq!((a, b), (0, 1));
+    }
+
+    /// Coverage remap must be monotonically non-decreasing across
+    /// `[0, 1]` and free of step jumps. A step like the old gate at
+    /// `0.02` made the slider feel discontinuous to users; this test
+    /// pins the smooth-knee replacement.
+    #[test]
+    fn coverage_remap_is_monotone_and_continuous() {
+        // 0 → 0; 1 → top of visible band.
+        let zero = remap_coverage_to_visible_band(0.0);
+        let one = remap_coverage_to_visible_band(1.0);
+        assert!(zero.abs() < 1e-6, "remap(0.0) = {zero}, expected 0");
+        assert!((one - 0.60).abs() < 1e-6, "remap(1.0) = {one}, expected 0.60");
+
+        // Sweep at 1% increments; each step must not regress and must
+        // not jump by more than a small fraction of the visible-band
+        // width (catches future step-style cliffs).
+        const MAX_STEP: f32 = 0.05;
+        let mut prev = 0.0_f32;
+        for i in 0..=100 {
+            let t = i as f32 / 100.0;
+            let v = remap_coverage_to_visible_band(t);
+            assert!(v >= prev - 1e-6, "non-monotone at t={t}: {prev} → {v}");
+            let delta = v - prev;
+            assert!(
+                delta <= MAX_STEP,
+                "step too large at t={t}: Δ = {delta} (over {MAX_STEP})",
+            );
+            prev = v;
+        }
+    }
+
+    /// Bot of the knee at slider 0.10 should land at `VISIBLE_LOW`
+    /// (the bottom of the Schneider visible band). Above the knee the
+    /// mapping is linear toward `VISIBLE_HIGH` at slider 1.0. Pinning
+    /// these endpoints makes the look-and-feel deliberate rather than
+    /// a happy accident of the smoothstep.
+    #[test]
+    fn coverage_remap_knee_endpoints() {
+        let at_knee = remap_coverage_to_visible_band(0.10);
+        assert!(
+            (at_knee - 0.30).abs() < 1e-5,
+            "knee endpoint at 0.10 = {at_knee}, expected 0.30 (VISIBLE_LOW)",
+        );
+        let mid_band = remap_coverage_to_visible_band(0.50);
+        let expected_mid = 0.30 + (0.50 - 0.10) / (1.0 - 0.10) * (0.60 - 0.30);
+        assert!(
+            (mid_band - expected_mid).abs() < 1e-5,
+            "mid-band slider 0.50 = {mid_band}, expected {expected_mid}",
+        );
     }
 }
