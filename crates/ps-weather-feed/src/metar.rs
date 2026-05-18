@@ -23,9 +23,71 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::cache::{Cache, CacheHit};
+
+/// Lenient deserializer for `Option<f32>` fields that may appear in a
+/// METAR payload as the string `"VRB"` (variable wind direction) or
+/// some other non-numeric sentinel. Numbers are accepted as-is;
+/// strings that parse as f32 are accepted; any other string yields
+/// `None`. Missing / null also yield `None`.
+///
+/// **Why:** the Aviation Weather Center endpoint occasionally reports
+/// `"wdir": "VRB"` for variable wind direction (typically at low wind
+/// speeds when direction shifts >60° in the past 10 minutes). The
+/// default `f32` deserializer rejects this with
+/// `invalid type: string "VRB"`, which surfaced as a user-visible
+/// METAR-enrichment failure in the Phase 14 weather UI.
+fn lenient_f32<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Visitor;
+    use std::fmt;
+
+    struct LenientF32Visitor;
+
+    impl<'de> Visitor<'de> for LenientF32Visitor {
+        type Value = Option<f32>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("f32, integer, string, or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_any(LenientF32Visitor)
+        }
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(Some(v as f32))
+        }
+        fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v as f32))
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v as f32))
+        }
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+            // "VRB" and similar sentinels parse as None; numeric
+            // strings like "260" parse as Some(260.0).
+            Ok(v.trim().parse::<f32>().ok())
+        }
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+            Ok(v.trim().parse::<f32>().ok())
+        }
+    }
+
+    deserializer.deserialize_any(LenientF32Visitor)
+}
 
 /// Cache TTL — METARs typically issue every 30 minutes (or sooner
 /// on rapid weather changes), so cache responses for 15 minutes to
@@ -76,11 +138,14 @@ pub struct MetarRecord {
     /// Dewpoint (°C).
     #[serde(default)]
     pub dewp: Option<f32>,
-    /// Wind direction (°, meteorological — FROM).
-    #[serde(default)]
+    /// Wind direction (°, meteorological — FROM). May arrive as the
+    /// string `"VRB"` for variable wind direction; the lenient
+    /// deserializer maps that to `None`.
+    #[serde(default, deserialize_with = "lenient_f32")]
     pub wdir: Option<f32>,
-    /// Wind speed (knots).
-    #[serde(default)]
+    /// Wind speed (knots). Lenient deserializer for the same reason
+    /// as `wdir`.
+    #[serde(default, deserialize_with = "lenient_f32")]
     pub wspd: Option<f32>,
     /// Visibility string. Free-form: "6+", "5SM", "9999", "10"…
     #[serde(default)]
@@ -308,6 +373,47 @@ mod tests {
         assert_eq!(records[0].icao_id, "EGPK");
         assert_eq!(records[0].clouds.len(), 2);
         assert_eq!(records[0].clouds[0].base, Some(1000));
+    }
+
+    /// Regression: METAR endpoint reports `"wdir": "VRB"` for
+    /// variable wind direction (low wind speed, direction shifts
+    /// >60° in 10 min). Default `Option<f32>` deserialiser rejects
+    /// this with `invalid type: string "VRB"` and the whole METAR
+    /// fetch fails, taking enrichment with it.
+    #[test]
+    fn variable_wind_direction_parses_as_none() {
+        const VRB: &str = r#"[{
+            "icaoId": "EGPN",
+            "lat": 56.45, "lon": -3.025,
+            "elev": 6.0,
+            "reportTime": "2026-05-18T10:00:00.000Z",
+            "wdir": "VRB",
+            "wspd": 3.0,
+            "temp": 10.0,
+            "dewp": 6.0,
+            "clouds": []
+        }]"#;
+        let records: Vec<MetarRecord> = serde_json::from_str(VRB).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].wdir, None);
+        assert_eq!(records[0].wspd, Some(3.0));
+    }
+
+    #[test]
+    fn wind_fields_accept_numeric_strings() {
+        // Some endpoints emit numbers as strings ("260" not 260.0).
+        const NUM_STR: &str = r#"[{
+            "icaoId": "EGPN",
+            "lat": 56.45, "lon": -3.025,
+            "elev": 6.0,
+            "reportTime": "2026-05-18T10:00:00.000Z",
+            "wdir": "260",
+            "wspd": "12",
+            "clouds": []
+        }]"#;
+        let records: Vec<MetarRecord> = serde_json::from_str(NUM_STR).unwrap();
+        assert_eq!(records[0].wdir, Some(260.0));
+        assert_eq!(records[0].wspd, Some(12.0));
     }
 
     #[test]
