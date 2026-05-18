@@ -26,14 +26,16 @@
 pub mod augment;
 pub mod cache;
 pub mod mesh;
+pub mod progress;
 pub mod simplify;
 pub mod source;
 pub mod tile;
 
-pub use augment::{HeightmapAugment, PassthroughAugment};
+pub use augment::{ErosionAugment, ErosionParams, HeightmapAugment, PassthroughAugment};
 pub use cache::BinaryCache;
 pub use mesh::{MeshData, build_grid_mesh};
-pub use simplify::{MeshSimplify, PassthroughSimplify, SimplifyTarget};
+pub use progress::{NullProgressSink, TerrainProgressSink, TerrainStage};
+pub use simplify::{DelatinSimplify, DecimationParams, MeshSimplify, PassthroughSimplify, SimplifyTarget};
 pub use source::{HeightmapSource, copernicus_glo30::CopernicusGlo30};
 pub use tile::{GeoExtent, HeightmapTile, TileRequest};
 
@@ -86,15 +88,43 @@ impl HeightmapPipeline {
         }
     }
 
-    /// Run the pipeline end-to-end. Returns a `MeshData` whose vertex
-    /// count equals `width * height` of the (augmented) heightmap tile
-    /// minus any observer-radius crop. Triangle count is
-    /// `(W-1) * (H-1) * 2`.
-    ///
-    /// The caller is responsible for the GPU upload and any
-    /// origin-shift the renderer needs (see ps-ground).
+    /// Build the pipeline used by the interactive PedalBack spec
+    /// implementation: Copernicus source, GPU-driven `ErosionAugment`
+    /// (Section 1 of `docs/pedalback_terrain_pipeline_spec.md`), and
+    /// `DelatinSimplify` (Section 2). Caller supplies a wgpu device +
+    /// queue so the augment can run compute passes off the render
+    /// thread.
+    pub fn pedalback(
+        cache_root: PathBuf,
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+        erosion: ErosionParams,
+        decimation: DecimationParams,
+    ) -> Self {
+        Self {
+            source: Box::new(CopernicusGlo30::new(cache_root)),
+            augment: Box::new(ErosionAugment::new(device, queue, erosion)),
+            simplify: Box::new(DelatinSimplify::new(decimation)),
+        }
+    }
+
+    /// Run the pipeline end-to-end with a null progress sink. See
+    /// [`Self::run_with_progress`] for the variant that reports stage
+    /// progress to a UI.
     pub fn run(&self, req: &TileRequest) -> Result<MeshData, TerrainError> {
+        self.run_with_progress(req, &NullProgressSink)
+    }
+
+    /// Run the pipeline end-to-end and report stage progress to the
+    /// caller's sink. Returns a `MeshData` ready for GPU upload.
+    pub fn run_with_progress(
+        &self,
+        req: &TileRequest,
+        progress: &dyn TerrainProgressSink,
+    ) -> Result<MeshData, TerrainError> {
+        progress.stage(TerrainStage::FetchingDem, 0, 1);
         let raw = self.source.fetch(req)?;
+        progress.stage(TerrainStage::FetchingDem, 1, 1);
         tracing::info!(
             target: "ps_terrain",
             source = raw.source,
@@ -103,7 +133,7 @@ impl HeightmapPipeline {
             "terrain: fetched raw tile"
         );
 
-        let augmented = self.augment.augment(raw)?;
+        let augmented = self.augment.augment_with_progress(raw, progress)?;
         validate_tile(&augmented)
             .map_err(TerrainError::AugmentInvalid)?;
         tracing::info!(
@@ -116,9 +146,13 @@ impl HeightmapPipeline {
         // Crop to the requested observer radius before building the
         // mesh. The crop is on the heightmap so the one-vertex-per-pixel
         // invariant in build_grid_mesh is unaffected.
+        progress.stage(TerrainStage::Cropping, 0, 1);
         let cropped = tile::crop_to_radius(augmented, req);
+        progress.stage(TerrainStage::Cropping, 1, 1);
 
+        progress.stage(TerrainStage::BuildingMesh, 0, 1);
         let mesh = build_grid_mesh(&cropped, req);
+        progress.stage(TerrainStage::BuildingMesh, 1, 1);
         tracing::info!(
             target: "ps_terrain",
             verts = mesh.positions.len(),
@@ -126,10 +160,12 @@ impl HeightmapPipeline {
             "terrain: built dense grid mesh"
         );
 
+        progress.stage(TerrainStage::Decimating, 0, 1);
         let simplified = self.simplify.simplify(
             mesh,
             req.simplify_target.unwrap_or(SimplifyTarget::Ratio(1.0)),
         )?;
+        progress.stage(TerrainStage::Decimating, 1, 1);
         tracing::info!(
             target: "ps_terrain",
             stage = self.simplify.name(),
@@ -138,6 +174,7 @@ impl HeightmapPipeline {
             "terrain: simplify stage complete"
         );
 
+        progress.stage(TerrainStage::Done, 1, 1);
         Ok(simplified)
     }
 }

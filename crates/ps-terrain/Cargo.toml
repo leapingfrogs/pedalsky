@@ -17,6 +17,11 @@ tracing.workspace   = true
 chrono.workspace    = true
 ureq.workspace      = true
 tiff.workspace      = true
+wgpu.workspace      = true
+pollster.workspace  = true
+# Section 2 — Garland-Heckbert mesh decimation. Pure-Rust port of
+# Mapbox's delatin (originally Fogleman's hmm).
+delatin             = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

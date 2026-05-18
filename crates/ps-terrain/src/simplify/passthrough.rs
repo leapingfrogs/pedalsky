@@ -1,10 +1,11 @@
-//! Identity simplify stage. v1 default.
+//! Identity simplify stage.
 
 use super::{MeshSimplify, SimplifyTarget};
 use crate::{mesh::MeshData, TerrainError};
 
 /// No-op simplifier. Returns the input mesh unchanged regardless of
-/// target. Drop-in replacement for a future QEM-based impl.
+/// target. Useful as a fallback (e.g. when the user disables
+/// decimation in the UI).
 pub struct PassthroughSimplify;
 
 impl MeshSimplify for PassthroughSimplify {

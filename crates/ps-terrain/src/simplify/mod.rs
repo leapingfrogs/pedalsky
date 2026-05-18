@@ -1,16 +1,11 @@
 //! Mesh-level simplification seam.
-//!
-//! Decimates a dense regular-grid mesh into a sparser mesh that
-//! preserves silhouette detail. Concentrates triangles on ridges,
-//! cliffs and channels (high curvature), collapses them on plains
-//! (low curvature). The default v1 impl is identity.
-//!
-//! Pays off most once the [`crate::HeightmapAugment`] stage is doing
-//! super-resolution or erosion: a 4× super-resolution turns an 8 M-tri
-//! mesh into 128 M-tri, at which point QEM decimation becomes
-//! non-optional.
 
+mod delatin_impl;
+mod params;
 mod passthrough;
+
+pub use delatin_impl::DelatinSimplify;
+pub use params::DecimationParams;
 pub use passthrough::PassthroughSimplify;
 
 use crate::{mesh::MeshData, TerrainError};
@@ -22,7 +17,8 @@ pub enum SimplifyTarget {
     MaxTriangles(u32),
     /// Aim for this fraction of the input triangle count (1.0 = identity).
     Ratio(f32),
-    /// Decimate up to this maximum quadric error (in metres²).
+    /// Decimate up to this maximum vertical error (metres). Used by
+    /// [`DelatinSimplify`].
     MaxError(f32),
 }
 

@@ -43,6 +43,18 @@ impl MeshData {
             reference_height_m: 0.0,
         }
     }
+
+    /// Test-only deep clone. MeshData isn't `Clone` to discourage
+    /// accidental copies in the hot path; tests that need to fork a
+    /// dense mesh into multiple simplify calls go through this.
+    #[doc(hidden)]
+    pub fn clone_for_test(&self) -> Self {
+        Self {
+            positions: self.positions.clone(),
+            indices: self.indices.clone(),
+            reference_height_m: self.reference_height_m,
+        }
+    }
 }
 
 /// Build a one-vertex-per-pixel grid mesh from a heightmap.
