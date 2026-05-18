@@ -119,10 +119,53 @@ pub(super) fn run(
     upload_r32f(queue, &textures.sediment_b, &zeros, w, h);
 
     // ---- Hydraulic + thermal interleaved loop ----------------------
-    let cell_size = params.target_resolution_m.max(0.01);
-    let hu = HydraulicUniformGpu::from_params(params, cell_size);
+    //
+    // Cell size is the *actual* metric pixel pitch of the upsampled
+    // tile. The bicubic upsample preserves the geographic extent, so
+    // `tile.gsd_m_centre` is the real metres-per-pixel — anywhere
+    // between 30 m (raw GLO-30) and 1 m (full Section 1.1 upsample).
+    // Using `params.target_resolution_m` here would be a bug: when
+    // `max_working_dim` caps the upsample (e.g. a 1° tile capped to
+    // 1024 px gives ~108 m/px at the equator), the shader would
+    // think the cell is 1 m while the heightmap is actually 108 m
+    // per pixel — fluxes would dramatically under-count water, the
+    // flux-scaling step couldn't bound outflow, velocities would
+    // blow up, and erosion would carve absurd peaks + valleys.
+    //
+    // Mei's `dt = 0.02` is calibrated for cell_size ~= 1 m. At
+    // larger cell sizes we need a proportionally smaller dt to
+    // respect the CFL condition `dt < cell / sqrt(g * h_max)`.
+    // Scale dt by 1/cell_size to keep flux per iter bounded.
+    let cell_size = tile.gsd_m_centre.max(0.01);
+    // The Mei flux term is `dt * pipe_cross_section * gravity * dh /
+    // pipe_length`. The spec calls for `pipe_length = cell_size` (it
+    // explicitly says "normally equal to target_resolution_m"); we
+    // enforce that here so a user who never touches the slider can't
+    // hit the case where the pipe length is calibrated for one cell
+    // size and the heightmap is at another.
+    //
+    // The remaining CFL constraint is `dt < cell_size / sqrt(g * h_max)`.
+    // The default dt = 0.02 is calibrated for cell_size = 1 m and
+    // reasonable max water depths (~1 m). At larger cell sizes we
+    // gain headroom (so smaller scaling is just conservative); at
+    // smaller cell sizes we need a proportionally smaller dt. Scale
+    // dt by `min(1, cell_size)` so a 1 m cell uses the full 0.02
+    // while a 0.5 m cell uses 0.01.
+    let cfl_scale = cell_size.min(1.0);
+    let scaled_params = ErosionParams {
+        dt: params.dt * cfl_scale,
+        pipe_length: cell_size,
+        ..*params
+    };
+    tracing::info!(
+        target: "ps_terrain::erosion",
+        cell_size, target_resolution_m = params.target_resolution_m,
+        dt_in = params.dt, dt_scaled = scaled_params.dt,
+        "erosion: dt rescaled for actual cell size"
+    );
+    let hu = HydraulicUniformGpu::from_params(&scaled_params, cell_size);
     queue.write_buffer(&rt.hydraulic.uniforms, 0, bytes_of(&hu));
-    let tu = ThermalUniformGpu::from_params(params, cell_size);
+    let tu = ThermalUniformGpu::from_params(&scaled_params, cell_size);
     queue.write_buffer(&rt.thermal.uniforms, 0, bytes_of(&tu));
 
     let terrain_view = view(&textures.terrain);
@@ -324,7 +367,9 @@ pub(super) fn run(
         height: h,
         extent_deg: tile.extent_deg,
         source: tile.source,
-        gsd_m_centre: cell_size,
+        // Erosion redistributes heights but doesn't change the grid
+        // pitch — preserve the input's metric spacing.
+        gsd_m_centre: tile.gsd_m_centre,
     })
 }
 
