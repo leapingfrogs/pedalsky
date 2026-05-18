@@ -136,6 +136,166 @@ pub struct TerrainFetchRequest {
     /// Half-extent in metres around the observer. Mirrors
     /// `ps_terrain::TileRequest::radius_m`.
     pub radius_m: f32,
+    /// Erosion + decimation parameters captured at button-click time.
+    /// The host translates these into `ps_terrain` types before
+    /// spawning the worker.
+    pub params: UiTerrainParams,
+}
+
+/// UI mirror of `ps_terrain::ErosionParams` + `DecimationParams` so
+/// the UI crate doesn't pull `ps-terrain` in just for the structs.
+/// The host translates UI → pipeline types at the worker boundary.
+/// Defaults match `docs/pedalback_terrain_pipeline_spec.md`.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct UiTerrainParams {
+    // ----- Erosion (Section 1) ------------------------------------------
+    /// Section 1.1 — working resolution in metres per cell.
+    pub target_resolution_m: f32,
+    /// Section 1.1 — hard cap on the working grid side length so we
+    /// stay within wgpu's texture-size limits.
+    pub max_working_dim: u32,
+
+    /// Section 1.2 — hydraulic erosion iteration count.
+    pub iterations: u32,
+    /// Section 1.2 — time step in seconds. CFL-bounded.
+    pub dt: f32,
+    /// Section 1.2 — metres of rain per cell per second.
+    pub rainfall_rate: f32,
+    /// Section 1.2 — water column fraction lost per second.
+    pub evaporation_rate: f32,
+    /// Section 1.2 — virtual pipe cross-section (m²).
+    pub pipe_cross_section: f32,
+    /// Section 1.2 — virtual pipe length, normally `target_resolution_m`.
+    pub pipe_length: f32,
+    /// Section 1.2 — gravitational acceleration (m/s²).
+    pub gravity: f32,
+    /// Section 1.2 — sediment capacity constant (most-impactful param).
+    pub sediment_capacity_constant: f32,
+    /// Section 1.2 — sediment dissolution rate.
+    pub dissolution_rate: f32,
+    /// Section 1.2 — sediment deposition rate.
+    pub deposition_rate: f32,
+    /// Section 1.2 — minimum effective slope to avoid divide-by-zero.
+    pub min_slope: f32,
+    /// Section 1.2 — water depth below which capacity is attenuated.
+    pub shallow_water_threshold: f32,
+
+    /// Section 1.3 — angle of repose (degrees).
+    pub talus_angle_degrees: f32,
+    /// Section 1.3 — fraction of excess material moved per thermal pass.
+    pub thermal_erosion_rate: f32,
+    /// Section 1.3 — thermal passes per cycle.
+    pub thermal_iterations_per_cycle: u32,
+    /// Section 1.3 — hydraulic iterations between thermal cycles.
+    pub hydraulic_iterations_between_thermal: u32,
+
+    /// Section 1.4 — fractal detail amplitude (metres). `0` disables.
+    pub fractal_amplitude_m: f32,
+    /// Section 1.4 — lowest-octave frequency in cycles per metre.
+    pub fractal_base_frequency: f32,
+    /// Section 1.4 — number of frequency-doubled octaves.
+    pub fractal_octaves: u32,
+    /// Section 1.4 — frequency multiplier per octave.
+    pub fractal_lacunarity: f32,
+    /// Section 1.4 — amplitude multiplier per octave.
+    pub fractal_persistence: f32,
+    /// Section 1.4 — toggle ridged (`1 - |n|`) octaves.
+    pub fractal_ridged: bool,
+    /// Section 1.4 — slope-mask strength.
+    pub slope_mask_strength: f32,
+    /// Section 1.4 — slope below which fractal detail is fully muted.
+    pub slope_mask_threshold_degrees: f32,
+
+    // ----- Decimation (Section 2) ---------------------------------------
+    /// Section 2 — max vertical error for LOD 0 in metres. v1 of the
+    /// pipeline only renders LOD 0; the other entries are stored for
+    /// the future multi-LOD work.
+    pub lod_max_error_m: f32,
+    /// `None` = no hard cap (delatin stops when `lod_max_error_m` is
+    /// met). `Some(n)` = re-run with progressively larger error
+    /// thresholds until under `n`.
+    pub max_triangles_per_lod: Option<u32>,
+}
+
+impl Default for UiTerrainParams {
+    fn default() -> Self {
+        Self {
+            target_resolution_m: 1.0,
+            max_working_dim: 1024,
+
+            iterations: 200,
+            dt: 0.02,
+            rainfall_rate: 0.012,
+            evaporation_rate: 0.015,
+            pipe_cross_section: 1.0,
+            pipe_length: 1.0,
+            gravity: 9.81,
+            sediment_capacity_constant: 0.5,
+            dissolution_rate: 0.5,
+            deposition_rate: 1.0,
+            min_slope: 0.01,
+            shallow_water_threshold: 0.05,
+
+            talus_angle_degrees: 35.0,
+            thermal_erosion_rate: 0.3,
+            thermal_iterations_per_cycle: 1,
+            hydraulic_iterations_between_thermal: 10,
+
+            fractal_amplitude_m: 0.4,
+            fractal_base_frequency: 0.5,
+            fractal_octaves: 5,
+            fractal_lacunarity: 2.0,
+            fractal_persistence: 0.5,
+            fractal_ridged: false,
+            slope_mask_strength: 1.0,
+            slope_mask_threshold_degrees: 5.0,
+
+            lod_max_error_m: 0.25,
+            max_triangles_per_lod: None,
+        }
+    }
+}
+
+/// Coarse pipeline stage label for the in-flight progress bar.
+/// Mirrors `ps_terrain::TerrainStage`.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum TerrainProgressStage {
+    /// Pipeline is idle (no fetch in flight).
+    #[default]
+    Idle,
+    /// Source fetch.
+    FetchingDem,
+    /// Section 1.1 — bicubic upsample.
+    Upsampling,
+    /// Section 1.2 — hydraulic erosion.
+    HydraulicErosion,
+    /// Section 1.3 — thermal erosion.
+    ThermalErosion,
+    /// Section 1.4 — fractal detail.
+    FractalDetail,
+    /// Section 1.5 — normal map.
+    NormalMap,
+    /// Mesh-builder + crop housekeeping.
+    BuildingMesh,
+    /// Section 2 — decimation.
+    Decimating,
+}
+
+impl TerrainProgressStage {
+    /// Short label for the UI ("Hydraulic erosion", etc.).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::FetchingDem => "Fetching DEM",
+            Self::Upsampling => "Upsampling",
+            Self::HydraulicErosion => "Hydraulic erosion",
+            Self::ThermalErosion => "Thermal erosion",
+            Self::FractalDetail => "Fractal detail",
+            Self::NormalMap => "Normal map",
+            Self::BuildingMesh => "Building mesh",
+            Self::Decimating => "Decimating",
+        }
+    }
 }
 
 /// Status of a terrain fetch — host writes; UI reads.
@@ -148,6 +308,17 @@ pub struct TerrainFetchStatus {
     /// Most recent successful summary (e.g. "Copernicus GLO-30,
     /// 2000×2000, 8 M triangles").
     pub last_summary: Option<String>,
+    /// Current pipeline stage. Drives the progress bar's label.
+    pub stage: TerrainProgressStage,
+    /// Iteration counter inside the current stage.
+    pub stage_done: u32,
+    /// Total iterations for the current stage. Stays at 1 for one-shot
+    /// stages so the bar fills cleanly.
+    pub stage_total: u32,
+    /// Persisted UI parameters. The ComboBox / DragValue widgets write
+    /// here each frame; the "Fetch / Re-run" button reads from here
+    /// when constructing the `TerrainFetchRequest`.
+    pub params: UiTerrainParams,
 }
 
 /// Resolution preset for the satellite imagery fetch. Mirrors

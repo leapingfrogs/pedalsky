@@ -32,8 +32,8 @@ const PASS_OVERLAY: PassId = 0;
 pub use state::{
     CameraSettings, GeocodeMatch, GeocodeRequest, GeocodeStatus, ImageryFetchRequest,
     ImageryFetchStatus, ImageryResolution, TerrainFetchRequest, TerrainFetchStatus,
-    UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState, UiWorldReadout,
-    WeatherFetchRequest, WeatherFetchStatus,
+    TerrainProgressStage, UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState,
+    UiTerrainParams, UiWorldReadout, WeatherFetchRequest, WeatherFetchStatus,
 };
 
 /// Stable subsystem name.

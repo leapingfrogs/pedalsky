@@ -370,6 +370,97 @@ impl ps_imagery::ImageryProgressSink for UiProgressSink {
     }
 }
 
+/// Progress sink for the terrain pipeline. Translates
+/// `ps_terrain::TerrainStage` into the UI's coarse stage enum and
+/// pushes per-iteration counts into `terrain_fetch.stage_done/total`.
+struct TerrainUiSink {
+    handle: ps_ui::UiHandle,
+}
+
+impl ps_terrain::TerrainProgressSink for TerrainUiSink {
+    fn stage(&self, stage: ps_terrain::TerrainStage, done: u32, total: u32) {
+        let ui_stage = match stage {
+            ps_terrain::TerrainStage::FetchingDem => ps_ui::TerrainProgressStage::FetchingDem,
+            ps_terrain::TerrainStage::Upsampling => ps_ui::TerrainProgressStage::Upsampling,
+            ps_terrain::TerrainStage::HydraulicErosion => {
+                ps_ui::TerrainProgressStage::HydraulicErosion
+            }
+            ps_terrain::TerrainStage::ThermalErosion => {
+                ps_ui::TerrainProgressStage::ThermalErosion
+            }
+            ps_terrain::TerrainStage::FractalDetail => {
+                ps_ui::TerrainProgressStage::FractalDetail
+            }
+            ps_terrain::TerrainStage::NormalMap => ps_ui::TerrainProgressStage::NormalMap,
+            ps_terrain::TerrainStage::Cropping | ps_terrain::TerrainStage::BuildingMesh => {
+                ps_ui::TerrainProgressStage::BuildingMesh
+            }
+            ps_terrain::TerrainStage::Decimating => ps_ui::TerrainProgressStage::Decimating,
+            ps_terrain::TerrainStage::Done => ps_ui::TerrainProgressStage::Idle,
+        };
+        let mut s = self.handle.lock();
+        s.terrain_fetch.stage = ui_stage;
+        s.terrain_fetch.stage_done = done;
+        s.terrain_fetch.stage_total = total.max(1);
+    }
+}
+
+fn translate_erosion(
+    p: &ps_ui::UiTerrainParams,
+    max_working_dim: u32,
+) -> ps_terrain::ErosionParams {
+    ps_terrain::ErosionParams {
+        target_resolution_m: p.target_resolution_m,
+        max_working_dim,
+
+        iterations: p.iterations,
+        dt: p.dt,
+        rainfall_rate: p.rainfall_rate,
+        evaporation_rate: p.evaporation_rate,
+        pipe_cross_section: p.pipe_cross_section,
+        pipe_length: p.pipe_length,
+        gravity: p.gravity,
+        sediment_capacity_constant: p.sediment_capacity_constant,
+        dissolution_rate: p.dissolution_rate,
+        deposition_rate: p.deposition_rate,
+        min_slope: p.min_slope,
+        shallow_water_threshold: p.shallow_water_threshold,
+
+        talus_angle_degrees: p.talus_angle_degrees,
+        thermal_erosion_rate: p.thermal_erosion_rate,
+        thermal_iterations_per_cycle: p.thermal_iterations_per_cycle,
+        hydraulic_iterations_between_thermal: p.hydraulic_iterations_between_thermal,
+
+        fractal_amplitude_m: p.fractal_amplitude_m,
+        fractal_base_frequency: p.fractal_base_frequency,
+        fractal_octaves: p.fractal_octaves,
+        fractal_lacunarity: p.fractal_lacunarity,
+        fractal_persistence: p.fractal_persistence,
+        fractal_ridged: if p.fractal_ridged { 1.0 } else { 0.0 },
+        slope_mask_strength: p.slope_mask_strength,
+        slope_mask_threshold_degrees: p.slope_mask_threshold_degrees,
+    }
+}
+
+fn translate_decimation(
+    p: &ps_ui::UiTerrainParams,
+) -> ps_terrain::DecimationParams {
+    // LOD 0 from the UI's single slider; carry default values for the
+    // other LODs (Section 2 multi-LOD is deferred).
+    let defaults = ps_terrain::DecimationParams::default();
+    ps_terrain::DecimationParams {
+        lod_max_errors_m: [
+            p.lod_max_error_m,
+            defaults.lod_max_errors_m[1],
+            defaults.lod_max_errors_m[2],
+            defaults.lod_max_errors_m[3],
+        ],
+        lod_distances_m: defaults.lod_distances_m,
+        skirt_depth_m: defaults.skirt_depth_m,
+        max_triangles_per_lod: p.max_triangles_per_lod,
+    }
+}
+
 /// Result delivered from the weather-fetch worker thread.
 struct WeatherFetchResult {
     /// The fetched scene, or the error string.
@@ -1017,6 +1108,9 @@ impl RunState {
             h.terrain_fetch.in_flight = true;
             h.terrain_fetch.last_error = None;
             h.terrain_fetch.last_summary = None;
+            h.terrain_fetch.stage = ps_ui::TerrainProgressStage::FetchingDem;
+            h.terrain_fetch.stage_done = 0;
+            h.terrain_fetch.stage_total = 1;
         }
 
         let cache_dir = match workspace_root() {
@@ -1024,21 +1118,49 @@ impl RunState {
             Err(_) => std::path::PathBuf::from("cache").join("terrain"),
         };
         let inbox = self.ground_mesh_inbox.clone();
+        // The pedalback pipeline runs hydraulic + thermal + fractal +
+        // normal-map compute passes on the GPU off the render thread.
+        // `wgpu::Device` and `Queue` are `Send + Sync`, so we hand
+        // Arc clones to the worker; submissions from the worker
+        // serialise behind whatever the renderer does.
+        let device = self.windowed_gpu.gpu.device.clone();
+        let queue = self.windowed_gpu.gpu.queue.clone();
+        // Use the lower of the device limit and the UI cap so a max-
+        // working-dim slider over the GPU's capability still works.
+        let max_working_dim = req
+            .params
+            .max_working_dim
+            .min(device.limits().max_texture_dimension_2d);
+        // Translate UI -> pipeline param types at the worker boundary
+        // (keeps ps-ui free of a ps-terrain dep, matching the
+        // ImageryResolution convention).
+        let erosion = translate_erosion(&req.params, max_working_dim);
+        let decimation = translate_decimation(&req.params);
         let tile_req = ps_terrain::TileRequest {
             lat: req.lat,
             lon: req.lon,
             radius_m: req.radius_m,
             cache_dir: cache_dir.clone(),
-            simplify_target: None,
+            simplify_target: Some(ps_terrain::SimplifyTarget::MaxError(
+                req.params.lod_max_error_m,
+            )),
         };
+        let progress = TerrainUiSink { handle: self.ui_handle.clone() };
         std::thread::Builder::new()
             .name("ps-terrain-fetch".into())
             .spawn(move || {
-                let pipeline = ps_terrain::HeightmapPipeline::default_copernicus(cache_dir);
-                let result = match pipeline.run(&tile_req) {
+                let pipeline = ps_terrain::HeightmapPipeline::pedalback(
+                    cache_dir,
+                    device,
+                    queue,
+                    erosion,
+                    decimation,
+                );
+                let result = match pipeline.run_with_progress(&tile_req, &progress) {
                     Ok(mesh) => {
                         let summary = format!(
-                            "Copernicus GLO-30 @ {:.3}, {:.3} — {} verts, {} tris",
+                            "{} @ {:.3}, {:.3} — {} verts, {} tris",
+                            "Copernicus GLO-30 + erosion + delatin",
                             tile_req.lat,
                             tile_req.lon,
                             mesh.positions.len(),
@@ -1070,6 +1192,9 @@ impl RunState {
                 self.terrain_fetch_rx = None;
                 let mut h = self.ui_handle.lock();
                 h.terrain_fetch.in_flight = false;
+                h.terrain_fetch.stage = ps_ui::TerrainProgressStage::Idle;
+                h.terrain_fetch.stage_done = 0;
+                h.terrain_fetch.stage_total = 1;
                 h.terrain_fetch.last_error =
                     Some("fetch thread disconnected without result".into());
                 return;
@@ -1078,6 +1203,9 @@ impl RunState {
         self.terrain_fetch_rx = None;
         let mut h = self.ui_handle.lock();
         h.terrain_fetch.in_flight = false;
+        h.terrain_fetch.stage = ps_ui::TerrainProgressStage::Idle;
+        h.terrain_fetch.stage_done = 0;
+        h.terrain_fetch.stage_total = 1;
         match result.outcome {
             Ok(summary) => {
                 info!(target: "ps_app", %summary, "terrain fetch succeeded");

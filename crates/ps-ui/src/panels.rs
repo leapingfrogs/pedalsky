@@ -435,26 +435,11 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
         });
 
         // Phase 16 — fetch terrain mesh for the current lat/lon.
-        ui.horizontal(|ui| {
-            let in_flight = state.terrain_fetch.in_flight;
-            let label = if in_flight { "Fetching terrain…" } else { "Fetch terrain" };
-            let clicked = ui
-                .add_enabled(!in_flight, egui::Button::new(label))
-                .clicked();
-            if clicked {
-                state.pending.fetch_terrain = Some(crate::state::TerrainFetchRequest {
-                    lat: state.live_config.world.latitude_deg,
-                    lon: state.live_config.world.longitude_deg,
-                    radius_m: 30_000.0,
-                });
-            }
-            if let Some(summary) = state.terrain_fetch.last_summary.as_ref() {
-                ui.label(summary);
-            }
-            if let Some(err) = state.terrain_fetch.last_error.as_ref() {
-                ui.colored_label(egui::Color32::LIGHT_RED, err);
-            }
-        });
+        // Two sections per the PedalBack spec: terrain enhancement
+        // (Section 1) and terrain meshing (Section 2). Each exposes
+        // the spec's "Parameter summary" entries prominently and the
+        // rest behind an Advanced collapse.
+        terrain_section(ui, state);
 
         // Phase 16 — satellite imagery fetch + overlay toggle +
         // resolution preset.
@@ -588,6 +573,344 @@ enum CalendarDay {
     SummerSolstice,
     AutumnalEquinox,
     WinterSolstice,
+}
+
+/// Terrain enhancement + decimation controls.
+///
+/// Two collapsing groups, mirroring the spec sections. Each surfaces
+/// the spec's "Parameter summary" entries at the top and the rest
+/// behind a nested Advanced collapse. The fetch button is shared:
+/// it captures the current params, sends a `TerrainFetchRequest` to
+/// the host, and the worker uses those values for the run.
+fn terrain_section(ui: &mut egui::Ui, state: &mut UiState) {
+    use egui::{CollapsingHeader, DragValue};
+
+    let in_flight = state.terrain_fetch.in_flight;
+
+    // ----- Run controls + progress -----------------------------------
+    ui.horizontal(|ui| {
+        // The button label differs depending on whether a successful
+        // run has happened — "Fetch terrain" first, then "Re-run with
+        // current params" once a mesh is on screen.
+        let has_run = state.terrain_fetch.last_summary.is_some();
+        let label = if in_flight {
+            "Fetching terrain…"
+        } else if has_run {
+            "Re-run terrain"
+        } else {
+            "Fetch terrain"
+        };
+        if ui
+            .add_enabled(!in_flight, egui::Button::new(label))
+            .clicked()
+        {
+            state.pending.fetch_terrain = Some(crate::state::TerrainFetchRequest {
+                lat: state.live_config.world.latitude_deg,
+                lon: state.live_config.world.longitude_deg,
+                radius_m: 30_000.0,
+                params: state.terrain_fetch.params,
+            });
+        }
+        if let Some(summary) = state.terrain_fetch.last_summary.as_ref() {
+            ui.label(summary);
+        }
+    });
+    if let Some(err) = state.terrain_fetch.last_error.as_ref() {
+        ui.colored_label(egui::Color32::LIGHT_RED, err);
+    }
+
+    // Progress bar — visible only while in flight. Bar text shows
+    // current stage name + a count for stages that iterate.
+    if in_flight {
+        let stage = state.terrain_fetch.stage;
+        let total = state.terrain_fetch.stage_total.max(1);
+        let done = state.terrain_fetch.stage_done.min(total);
+        let frac = done as f32 / total as f32;
+        let txt = if total > 1 {
+            format!("{} ({}/{})", stage.label(), done, total)
+        } else {
+            stage.label().to_string()
+        };
+        ui.add(egui::ProgressBar::new(frac).text(txt));
+    }
+
+    // ----- Section 1 — terrain enhancement ---------------------------
+    let p = &mut state.terrain_fetch.params;
+    CollapsingHeader::new("Terrain enhancement (Section 1)")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Iterations");
+                ui.add(DragValue::new(&mut p.iterations).range(0u32..=2000).speed(1.0));
+            })
+            .response
+            .on_hover_text(
+                "Number of full hydraulic erosion steps. 50 = preview, 200 = standard, 500+ approaches steady state.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Sediment capacity");
+                ui.add(
+                    DragValue::new(&mut p.sediment_capacity_constant)
+                        .range(0.0..=2.0)
+                        .speed(0.01)
+                        .max_decimals(3),
+                );
+            })
+            .response
+            .on_hover_text(
+                "Highest-impact parameter for visual character. Higher = more dramatic V-shaped river valleys.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Rainfall");
+                ui.add(
+                    DragValue::new(&mut p.rainfall_rate)
+                        .range(0.0..=0.1)
+                        .speed(0.0005)
+                        .max_decimals(4),
+                );
+                ui.label("Evaporation");
+                ui.add(
+                    DragValue::new(&mut p.evaporation_rate)
+                        .range(0.0..=0.1)
+                        .speed(0.0005)
+                        .max_decimals(4),
+                );
+            })
+            .response
+            .on_hover_text(
+                "Rainfall / evaporation ratio sets wetness of the terrain. Higher rainfall = wider rivers; higher evaporation = sharper channels.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Talus angle (°)");
+                ui.add(
+                    DragValue::new(&mut p.talus_angle_degrees)
+                        .range(10.0..=70.0)
+                        .speed(0.5),
+                );
+            })
+            .response
+            .on_hover_text(
+                "Angle of repose. 35° = scree / loose dirt; 45° = cohesive / blockier.",
+            );
+            ui.horizontal(|ui| {
+                ui.label("Fractal amplitude (m)");
+                ui.add(
+                    DragValue::new(&mut p.fractal_amplitude_m)
+                        .range(0.0..=5.0)
+                        .speed(0.05)
+                        .max_decimals(2),
+                );
+                ui.checkbox(&mut p.fractal_ridged, "Ridged");
+            })
+            .response
+            .on_hover_text(
+                "Sub-metre surface detail. 0 = disabled. Ridged = sharper rocky features.",
+            );
+
+            CollapsingHeader::new("Advanced — hydraulic")
+                .default_open(false)
+                .show(ui, |ui| {
+                    drag_row(ui, "dt", &mut p.dt, 0.001..=0.2, 0.001, 4);
+                    drag_row(
+                        ui,
+                        "Pipe cross-section",
+                        &mut p.pipe_cross_section,
+                        0.1..=5.0,
+                        0.05,
+                        2,
+                    );
+                    drag_row(ui, "Pipe length", &mut p.pipe_length, 0.1..=5.0, 0.05, 2);
+                    drag_row(ui, "Gravity", &mut p.gravity, 1.0..=20.0, 0.1, 2);
+                    drag_row(
+                        ui,
+                        "Dissolution rate",
+                        &mut p.dissolution_rate,
+                        0.0..=5.0,
+                        0.05,
+                        2,
+                    );
+                    drag_row(
+                        ui,
+                        "Deposition rate",
+                        &mut p.deposition_rate,
+                        0.0..=5.0,
+                        0.05,
+                        2,
+                    );
+                    drag_row(ui, "Min slope", &mut p.min_slope, 0.0..=1.0, 0.005, 3);
+                    drag_row(
+                        ui,
+                        "Shallow water threshold",
+                        &mut p.shallow_water_threshold,
+                        0.0..=1.0,
+                        0.005,
+                        3,
+                    );
+                });
+
+            CollapsingHeader::new("Advanced — thermal")
+                .default_open(false)
+                .show(ui, |ui| {
+                    drag_row(
+                        ui,
+                        "Thermal erosion rate",
+                        &mut p.thermal_erosion_rate,
+                        0.0..=0.5,
+                        0.01,
+                        2,
+                    );
+                    drag_u32_row(
+                        ui,
+                        "Thermal iters per cycle",
+                        &mut p.thermal_iterations_per_cycle,
+                        0..=10,
+                        1.0,
+                    );
+                    drag_u32_row(
+                        ui,
+                        "Hydraulic iters between thermal",
+                        &mut p.hydraulic_iterations_between_thermal,
+                        1..=50,
+                        1.0,
+                    );
+                });
+
+            CollapsingHeader::new("Advanced — fractal")
+                .default_open(false)
+                .show(ui, |ui| {
+                    drag_row(
+                        ui,
+                        "Base frequency",
+                        &mut p.fractal_base_frequency,
+                        0.01..=10.0,
+                        0.05,
+                        3,
+                    );
+                    drag_u32_row(ui, "Octaves", &mut p.fractal_octaves, 1..=10, 1.0);
+                    drag_row(
+                        ui,
+                        "Lacunarity",
+                        &mut p.fractal_lacunarity,
+                        1.0..=4.0,
+                        0.05,
+                        2,
+                    );
+                    drag_row(
+                        ui,
+                        "Persistence",
+                        &mut p.fractal_persistence,
+                        0.0..=1.0,
+                        0.01,
+                        2,
+                    );
+                    drag_row(
+                        ui,
+                        "Slope-mask strength",
+                        &mut p.slope_mask_strength,
+                        0.0..=1.0,
+                        0.05,
+                        2,
+                    );
+                    drag_row(
+                        ui,
+                        "Slope-mask threshold (°)",
+                        &mut p.slope_mask_threshold_degrees,
+                        0.0..=45.0,
+                        0.5,
+                        1,
+                    );
+                });
+
+            CollapsingHeader::new("Advanced — working resolution")
+                .default_open(false)
+                .show(ui, |ui| {
+                    drag_row(
+                        ui,
+                        "Target resolution (m)",
+                        &mut p.target_resolution_m,
+                        0.1..=30.0,
+                        0.1,
+                        2,
+                    );
+                    drag_u32_row(
+                        ui,
+                        "Max working dim",
+                        &mut p.max_working_dim,
+                        256..=4096,
+                        16.0,
+                    );
+                });
+        });
+
+    // ----- Section 2 — terrain meshing -------------------------------
+    CollapsingHeader::new("Terrain meshing (Section 2)")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("LOD 0 max error (m)");
+                ui.add(
+                    DragValue::new(&mut p.lod_max_error_m)
+                        .range(0.01..=10.0)
+                        .speed(0.01)
+                        .max_decimals(3),
+                );
+            })
+            .response
+            .on_hover_text(
+                "Maximum vertical error of the decimated mesh. Lower = sharper, more triangles.",
+            );
+
+            CollapsingHeader::new("Advanced — triangle budget")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let mut has_cap = p.max_triangles_per_lod.is_some();
+                    if ui.checkbox(&mut has_cap, "Enforce max triangle count").changed() {
+                        p.max_triangles_per_lod = if has_cap { Some(200_000) } else { None };
+                    }
+                    if let Some(cap) = p.max_triangles_per_lod.as_mut() {
+                        ui.horizontal(|ui| {
+                            ui.label("Max triangles");
+                            ui.add(
+                                DragValue::new(cap)
+                                    .range(1_000u32..=10_000_000)
+                                    .speed(1000.0),
+                            );
+                        });
+                    }
+                });
+        });
+}
+
+fn drag_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    speed: f32,
+    max_decimals: usize,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(speed)
+                .max_decimals(max_decimals),
+        );
+    });
+}
+
+fn drag_u32_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut u32,
+    range: std::ops::RangeInclusive<u32>,
+    speed: f32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::DragValue::new(value).range(range).speed(speed));
+    });
 }
 
 fn jump_calendar(state: &mut UiState, day: CalendarDay) {
