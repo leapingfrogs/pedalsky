@@ -319,6 +319,55 @@ struct RunState {
     /// time; the UI's "Searching…" button disables clicks while
     /// `Some`.
     geocode_rx: Option<crossbeam_channel::Receiver<GeocodeWorkerResult>>,
+
+    /// Phase 16 — inbox handed to the ground subsystem at build time.
+    /// The terrain-fetch worker thread posts its completed `MeshData`
+    /// here; the next `GroundSubsystem::prepare()` drains it.
+    ground_mesh_inbox: ps_ground::PendingMeshInbox,
+    /// Phase 16 — receiver for in-flight terrain fetches. Same
+    /// single-in-flight gating as the weather fetch.
+    terrain_fetch_rx: Option<crossbeam_channel::Receiver<TerrainFetchResult>>,
+
+    /// Phase 16 — inbox handed to the ground subsystem at build time
+    /// for satellite imagery. The imagery-fetch worker thread posts
+    /// completed `RgbTile` values here.
+    ground_imagery_inbox: ps_ground::PendingImageryInbox,
+    /// Phase 16 — overlay controller (shared with the ground
+    /// subsystem). UI checkbox writes flow through this.
+    ground_overlay: ps_ground::GroundOverlayController,
+    /// Phase 16 — receiver for in-flight imagery fetches.
+    imagery_fetch_rx: Option<crossbeam_channel::Receiver<ImageryFetchResult>>,
+}
+
+/// Result delivered from the terrain-fetch worker thread.
+struct TerrainFetchResult {
+    /// Short summary line ("Copernicus GLO-30, 2000x2000, 8 M tris"),
+    /// or the error string in the `Err` branch.
+    outcome: Result<String, String>,
+}
+
+/// Result delivered from the imagery-fetch worker thread.
+struct ImageryFetchResult {
+    /// Summary string or error message.
+    outcome: Result<String, String>,
+}
+
+/// Progress sink that writes tile counts back into the UI handle.
+///
+/// Cheap to clone (Arc inside `UiHandle`); the worker thread calls
+/// `update` after every tile so the UI can render a smooth progress
+/// bar. Lock contention is negligible because the UI only reads
+/// the value during its per-frame draw.
+struct UiProgressSink {
+    handle: ps_ui::UiHandle,
+}
+
+impl ps_imagery::ImageryProgressSink for UiProgressSink {
+    fn update(&self, done: u32, total: u32) {
+        let mut s = self.handle.lock();
+        s.imagery_fetch.progress_done = done;
+        s.imagery_fetch.progress_total = total;
+    }
 }
 
 /// Result delivered from the weather-fetch worker thread.
@@ -471,7 +520,16 @@ impl RunState {
 
         let probe = ps_app::probe::ProbeReadback::new(&windowed.gpu);
         let ui_handle = ps_ui::UiHandle::new(config.clone());
-        let (app, atmosphere_luts_cell, lightning_cell, tonemap_handle, ui_bridge) = build_app(
+        let (
+            app,
+            atmosphere_luts_cell,
+            lightning_cell,
+            tonemap_handle,
+            ui_bridge,
+            ground_mesh_inbox,
+            ground_imagery_inbox,
+            ground_overlay,
+        ) = build_app(
             config,
             &windowed.gpu,
             tonemap.clone(),
@@ -598,6 +656,11 @@ impl RunState {
             shader_hot_reload,
             weather_fetch_rx: None,
             geocode_rx: None,
+            ground_mesh_inbox,
+            terrain_fetch_rx: None,
+            ground_imagery_inbox,
+            ground_overlay,
+            imagery_fetch_rx: None,
         })
     }
 
@@ -929,6 +992,230 @@ impl RunState {
                 h.weather_fetch.in_flight = false;
                 h.weather_fetch.last_error = Some(err_msg);
                 h.weather_fetch.last_summary = None;
+            }
+        }
+    }
+
+    /// Phase 16 — spawn a background thread that runs the terrain
+    /// pipeline. Drops the new request if a previous fetch is still
+    /// in flight (single-in-flight gating, matches the weather fetch).
+    /// The worker posts its completed `MeshData` straight into the
+    /// `ground_mesh_inbox`; the host only tracks the in-flight flag
+    /// and the result summary for the UI.
+    fn spawn_terrain_fetch(&mut self, req: ps_ui::TerrainFetchRequest) {
+        if self.terrain_fetch_rx.is_some() {
+            tracing::debug!(
+                target: "ps_app::terrain_fetch",
+                "fetch already in flight; ignoring new request"
+            );
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded::<TerrainFetchResult>(1);
+        self.terrain_fetch_rx = Some(rx);
+        {
+            let mut h = self.ui_handle.lock();
+            h.terrain_fetch.in_flight = true;
+            h.terrain_fetch.last_error = None;
+            h.terrain_fetch.last_summary = None;
+        }
+
+        let cache_dir = match workspace_root() {
+            Ok(p) => p.join("cache").join("terrain"),
+            Err(_) => std::path::PathBuf::from("cache").join("terrain"),
+        };
+        let inbox = self.ground_mesh_inbox.clone();
+        let tile_req = ps_terrain::TileRequest {
+            lat: req.lat,
+            lon: req.lon,
+            radius_m: req.radius_m,
+            cache_dir: cache_dir.clone(),
+            simplify_target: None,
+        };
+        std::thread::Builder::new()
+            .name("ps-terrain-fetch".into())
+            .spawn(move || {
+                let pipeline = ps_terrain::HeightmapPipeline::default_copernicus(cache_dir);
+                let result = match pipeline.run(&tile_req) {
+                    Ok(mesh) => {
+                        let summary = format!(
+                            "Copernicus GLO-30 @ {:.3}, {:.3} — {} verts, {} tris",
+                            tile_req.lat,
+                            tile_req.lon,
+                            mesh.positions.len(),
+                            mesh.indices.len() / 3,
+                        );
+                        inbox.post(mesh);
+                        TerrainFetchResult { outcome: Ok(summary) }
+                    }
+                    Err(e) => TerrainFetchResult {
+                        outcome: Err(format!("terrain fetch failed: {e}")),
+                    },
+                };
+                let _ = tx.send(result);
+            })
+            .expect("spawn terrain-fetch thread");
+    }
+
+    /// Drain a completed terrain fetch (if any). Updates the UI
+    /// status fields; the mesh itself has already been posted to
+    /// `ground_mesh_inbox` by the worker.
+    fn poll_terrain_fetch(&mut self) {
+        let Some(rx) = &self.terrain_fetch_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.terrain_fetch_rx = None;
+                let mut h = self.ui_handle.lock();
+                h.terrain_fetch.in_flight = false;
+                h.terrain_fetch.last_error =
+                    Some("fetch thread disconnected without result".into());
+                return;
+            }
+        };
+        self.terrain_fetch_rx = None;
+        let mut h = self.ui_handle.lock();
+        h.terrain_fetch.in_flight = false;
+        match result.outcome {
+            Ok(summary) => {
+                info!(target: "ps_app", %summary, "terrain fetch succeeded");
+                h.terrain_fetch.last_summary = Some(summary);
+                h.terrain_fetch.last_error = None;
+            }
+            Err(err_msg) => {
+                warn!(target: "ps_app", error = %err_msg, "terrain fetch failed");
+                h.terrain_fetch.last_error = Some(err_msg);
+                h.terrain_fetch.last_summary = None;
+            }
+        }
+    }
+
+    /// Phase 16 — spawn a background thread that runs the imagery
+    /// pipeline (EOX s2cloudless via the `ps_imagery` crate). Single
+    /// in flight at a time. The worker posts the completed `RgbTile`
+    /// straight into the ground subsystem's imagery inbox; the host
+    /// only tracks the in-flight flag + the result summary.
+    fn spawn_imagery_fetch(&mut self, req: ps_ui::ImageryFetchRequest) {
+        if self.imagery_fetch_rx.is_some() {
+            tracing::debug!(
+                target: "ps_app::imagery_fetch",
+                "fetch already in flight; ignoring new request"
+            );
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded::<ImageryFetchResult>(1);
+        self.imagery_fetch_rx = Some(rx);
+        {
+            let mut h = self.ui_handle.lock();
+            h.imagery_fetch.in_flight = true;
+            h.imagery_fetch.last_error = None;
+            h.imagery_fetch.last_summary = None;
+            h.imagery_fetch.progress_done = 0;
+            h.imagery_fetch.progress_total = 0;
+        }
+
+        let cache_dir = match workspace_root() {
+            Ok(p) => p.join("cache").join("imagery"),
+            Err(_) => std::path::PathBuf::from("cache").join("imagery"),
+        };
+        let inbox = self.ground_imagery_inbox.clone();
+        // UI enum → pipeline enum. Kept separate so ps-ui doesn't
+        // need to depend on ps-imagery, matching the
+        // WeatherFetchRequest / FetchOptions convention.
+        let resolution = match req.resolution {
+            ps_ui::ImageryResolution::Standard => ps_imagery::ImageryResolution::Standard,
+            ps_ui::ImageryResolution::High => ps_imagery::ImageryResolution::High,
+            ps_ui::ImageryResolution::Max => ps_imagery::ImageryResolution::Max,
+        };
+        // Read the adapter's max-texture-size limit so ps-imagery
+        // can cap the stitched raster to whatever the GPU can hold.
+        // Without this, the Max preset at z=14 produces 11520×11520
+        // px which exceeds the typical 8192 wgpu limit and panics
+        // during `Device::create_texture`.
+        let max_texture_dim = self
+            .windowed_gpu
+            .gpu
+            .device
+            .limits()
+            .max_texture_dimension_2d;
+        let imagery_req = ps_imagery::ImageryRequest {
+            lat: req.lat,
+            lon: req.lon,
+            radius_m: req.radius_m,
+            cache_dir: cache_dir.clone(),
+            resolution,
+            max_texture_dim,
+        };
+        let sink = UiProgressSink { handle: self.ui_handle.clone() };
+        std::thread::Builder::new()
+            .name("ps-imagery-fetch".into())
+            .spawn(move || {
+                let pipeline = ps_imagery::ImageryPipeline::default_eox(cache_dir);
+                let result = match pipeline.run_with_progress(&imagery_req, &sink) {
+                    Ok(tile) => {
+                        let summary = format!(
+                            "EOX s2cloudless @ {:.3}, {:.3} — {}x{} px",
+                            imagery_req.lat, imagery_req.lon, tile.width, tile.height
+                        );
+                        inbox.post(tile);
+                        ImageryFetchResult { outcome: Ok(summary) }
+                    }
+                    Err(e) => ImageryFetchResult {
+                        outcome: Err(format!("imagery fetch failed: {e}")),
+                    },
+                };
+                let _ = tx.send(result);
+            })
+            .expect("spawn imagery-fetch thread");
+    }
+
+    /// Drain a completed imagery fetch (if any). Updates the UI
+    /// status; the texture itself has already been posted to the
+    /// inbox by the worker.
+    fn poll_imagery_fetch(&mut self) {
+        let Some(rx) = &self.imagery_fetch_rx else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.imagery_fetch_rx = None;
+                let mut h = self.ui_handle.lock();
+                h.imagery_fetch.in_flight = false;
+                h.imagery_fetch.last_error =
+                    Some("fetch thread disconnected without result".into());
+                return;
+            }
+        };
+        self.imagery_fetch_rx = None;
+        let mut h = self.ui_handle.lock();
+        h.imagery_fetch.in_flight = false;
+        // Reset progress so the bar disappears immediately; the next
+        // fetch will publish fresh values before the bar is drawn
+        // again.
+        h.imagery_fetch.progress_done = 0;
+        h.imagery_fetch.progress_total = 0;
+        match result.outcome {
+            Ok(summary) => {
+                info!(target: "ps_app", %summary, "imagery fetch succeeded");
+                h.imagery_fetch.last_summary = Some(summary);
+                h.imagery_fetch.last_error = None;
+                // Auto-enable the overlay on first successful fetch
+                // so the user actually sees the imagery they just
+                // pulled down without an extra click. Subsequent
+                // fetches honour whatever the checkbox state is.
+                if !h.imagery_fetch.overlay_enabled {
+                    h.imagery_fetch.overlay_enabled = true;
+                    self.ground_overlay.set_satellite_enabled(true);
+                }
+            }
+            Err(err_msg) => {
+                warn!(target: "ps_app", error = %err_msg, "imagery fetch failed");
+                h.imagery_fetch.last_error = Some(err_msg);
+                h.imagery_fetch.last_summary = None;
             }
         }
     }
@@ -1468,6 +1755,25 @@ impl RunState {
         }
         self.poll_geocode();
 
+        // Phase 16 — terrain fetch request from the World panel's
+        // "Fetch terrain" button. Single-in-flight; the worker posts
+        // the completed mesh directly into `ground_mesh_inbox`, which
+        // `GroundSubsystem::prepare` drains on the next frame.
+        if let Some(req) = pending.fetch_terrain {
+            self.spawn_terrain_fetch(req);
+        }
+        self.poll_terrain_fetch();
+
+        // Phase 16 — satellite imagery fetch + overlay toggle.
+        if let Some(req) = pending.fetch_imagery {
+            self.spawn_imagery_fetch(req);
+        }
+        self.poll_imagery_fetch();
+        if let Some(enabled) = pending.set_satellite_overlay_enabled {
+            self.ground_overlay.set_satellite_enabled(enabled);
+            self.ui_handle.lock().imagery_fetch.overlay_enabled = enabled;
+        }
+
         // Push live mirrors into the UI for the next frame's panels.
         {
             let mut s = self.ui_handle.lock();
@@ -1741,6 +2047,9 @@ fn build_app(
     LightningPublishCell,
     ps_postprocess::TonemapHandle,
     std::sync::Arc<ps_ui::UiBridge>,
+    ps_ground::PendingMeshInbox,
+    ps_ground::PendingImageryInbox,
+    ps_ground::GroundOverlayController,
 )> {
     let (atmosphere_factory, luts_cell) = AtmosphereFactory::new();
     let (lightning_factory, lightning_cell) = LightningFactory::new();
@@ -1757,10 +2066,18 @@ fn build_app(
     );
     let (ui_factory, ui_injector, ui_bridge) = ps_ui::UiFactory::new();
     ui_injector.inject(tonemap_target_format, window, ui_handle);
+    // Phase 16 — ground factory holds three side-channels: the
+    // terrain-mesh inbox, the satellite-imagery inbox, and the
+    // overlay-toggle controller. Capture all three before moving the
+    // factory into the AppBuilder.
+    let ground_factory = GroundFactory::new();
+    let ground_mesh_inbox = ground_factory.mesh_inbox();
+    let ground_imagery_inbox = ground_factory.imagery_inbox();
+    let ground_overlay = ground_factory.overlay_controller();
     let app = AppBuilder::new()
         .with_factory(Box::new(BackdropFactory))
         .with_factory(Box::new(atmosphere_factory))
-        .with_factory(Box::new(GroundFactory))
+        .with_factory(Box::new(ground_factory))
         // Phase 13.5 — water draws after ground at PassStage::Opaque
         // (registration order tie-break). Gated by both the
         // [render.subsystems].water flag and the scene having a
@@ -1791,5 +2108,14 @@ fn build_app(
         .with_factory(Box::new(ui_factory))
         .build(config, gpu)
         .context("AppBuilder::build")?;
-    Ok((app, luts_cell, lightning_cell, tonemap_handle, ui_bridge))
+    Ok((
+        app,
+        luts_cell,
+        lightning_cell,
+        tonemap_handle,
+        ui_bridge,
+        ground_mesh_inbox,
+        ground_imagery_inbox,
+        ground_overlay,
+    ))
 }

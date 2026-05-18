@@ -8,9 +8,11 @@ publish.workspace = true
 description = "PedalSky ground subsystem: Phase 0 checker plane (Phase 7 replaces with PBR + wet surface)"
 
 [dependencies]
-ps-core.workspace  = true
-wgpu.workspace     = true
-bytemuck.workspace = true
-glam.workspace     = true
-tracing.workspace  = true
-anyhow.workspace   = true
+ps-core.workspace    = true
+ps-terrain.workspace = true
+ps-imagery.workspace = true
+wgpu.workspace       = true
+bytemuck.workspace   = true
+glam.workspace       = true
+tracing.workspace    = true
+anyhow.workspace     = true

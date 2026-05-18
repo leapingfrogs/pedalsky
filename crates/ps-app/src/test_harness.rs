@@ -144,7 +144,7 @@ impl HeadlessApp {
         let app = AppBuilder::new()
             .with_factory(Box::new(BackdropFactory))
             .with_factory(Box::new(atmosphere_factory))
-            .with_factory(Box::new(GroundFactory))
+            .with_factory(Box::new(GroundFactory::new()))
             .with_factory(Box::new(WaterFactory))
             .with_factory(Box::new(clouds_factory))
             .with_factory(Box::new(PrecipFactory))

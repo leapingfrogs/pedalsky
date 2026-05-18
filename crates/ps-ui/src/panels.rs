@@ -434,6 +434,101 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             }
         });
 
+        // Phase 16 — fetch terrain mesh for the current lat/lon.
+        ui.horizontal(|ui| {
+            let in_flight = state.terrain_fetch.in_flight;
+            let label = if in_flight { "Fetching terrain…" } else { "Fetch terrain" };
+            let clicked = ui
+                .add_enabled(!in_flight, egui::Button::new(label))
+                .clicked();
+            if clicked {
+                state.pending.fetch_terrain = Some(crate::state::TerrainFetchRequest {
+                    lat: state.live_config.world.latitude_deg,
+                    lon: state.live_config.world.longitude_deg,
+                    radius_m: 30_000.0,
+                });
+            }
+            if let Some(summary) = state.terrain_fetch.last_summary.as_ref() {
+                ui.label(summary);
+            }
+            if let Some(err) = state.terrain_fetch.last_error.as_ref() {
+                ui.colored_label(egui::Color32::LIGHT_RED, err);
+            }
+        });
+
+        // Phase 16 — satellite imagery fetch + overlay toggle +
+        // resolution preset.
+        ui.horizontal(|ui| {
+            let in_flight = state.imagery_fetch.in_flight;
+            let label = if in_flight {
+                "Fetching imagery…"
+            } else {
+                "Fetch satellite imagery"
+            };
+            let clicked = ui
+                .add_enabled(!in_flight, egui::Button::new(label))
+                .clicked();
+            if clicked {
+                state.pending.fetch_imagery = Some(crate::state::ImageryFetchRequest {
+                    lat: state.live_config.world.latitude_deg,
+                    lon: state.live_config.world.longitude_deg,
+                    radius_m: 30_000.0,
+                    resolution: state.imagery_fetch.selected_resolution,
+                });
+            }
+
+            // Resolution dropdown — disabled while a fetch is in
+            // flight so the user can't change the preset mid-fetch
+            // (the request value is captured at click time anyway,
+            // but the disabled state makes the in-flight state
+            // visually consistent with the button).
+            let mut sel = state.imagery_fetch.selected_resolution;
+            ui.add_enabled_ui(!in_flight, |ui| {
+                egui::ComboBox::from_id_salt("imagery-resolution")
+                    .selected_text(sel.label())
+                    .show_ui(ui, |ui| {
+                        for option in [
+                            crate::state::ImageryResolution::Standard,
+                            crate::state::ImageryResolution::High,
+                            crate::state::ImageryResolution::Max,
+                        ] {
+                            ui.selectable_value(&mut sel, option, option.label());
+                        }
+                    });
+            });
+            if sel != state.imagery_fetch.selected_resolution {
+                state.imagery_fetch.selected_resolution = sel;
+            }
+        });
+        // Progress bar — shown while a fetch is in flight. Tile-count
+        // granularity matches the source's notifications. Cache-hit
+        // tiles complete near-instantly so the bar fills in a burst
+        // up to the cache boundary, then progresses at network speed
+        // for the remaining tiles.
+        if state.imagery_fetch.in_flight && state.imagery_fetch.progress_total > 0 {
+            let total = state.imagery_fetch.progress_total;
+            let done = state.imagery_fetch.progress_done.min(total);
+            let frac = done as f32 / total as f32;
+            let pct = (frac * 100.0).round() as u32;
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .text(format!("{pct}% — {done} / {total} tiles")),
+            );
+        }
+        ui.horizontal(|ui| {
+            let mut overlay_on = state.imagery_fetch.overlay_enabled;
+            if ui.checkbox(&mut overlay_on, "Show satellite overlay").changed() {
+                state.imagery_fetch.overlay_enabled = overlay_on;
+                state.pending.set_satellite_overlay_enabled = Some(overlay_on);
+            }
+        });
+        if let Some(summary) = state.imagery_fetch.last_summary.as_ref() {
+            ui.label(summary);
+        }
+        if let Some(err) = state.imagery_fetch.last_error.as_ref() {
+            ui.colored_label(egui::Color32::LIGHT_RED, err);
+        }
+
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Time scale ×");

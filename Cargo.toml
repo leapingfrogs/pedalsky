@@ -18,6 +18,8 @@ members = [
     "crates/ps-windsock",
     "crates/ps-water",
     "crates/ps-weather-feed",
+    "crates/ps-terrain",
+    "crates/ps-imagery",
     "crates/ps-app",
 ]
 
@@ -92,12 +94,19 @@ ps-bloom       = { path = "crates/ps-bloom" }
 ps-windsock    = { path = "crates/ps-windsock" }
 ps-water       = { path = "crates/ps-water" }
 ps-weather-feed = { path = "crates/ps-weather-feed" }
+ps-terrain     = { path = "crates/ps-terrain" }
+ps-imagery     = { path = "crates/ps-imagery" }
 
 # Phase 14 — HTTP client for the real-weather ingestion crate.
 # `ureq` chosen for: zero async runtime (synchronous, off-thread is
 # `std::thread::spawn`); native-tls so we get OS-trust roots for
 # free; small dep tree.
 ureq            = { version = "2.10", features = ["json"] }
+
+# Phase 16 — Cloud-Optimized GeoTIFF reader for the terrain crate.
+# Pure-Rust, no GDAL/C deps. Supports DEFLATE compression which is
+# what Copernicus GLO-30 COGs use.
+tiff            = "0.11"
 
 [profile.dev]
 opt-level = 1            # debug builds with shader compilation are slow at -O0

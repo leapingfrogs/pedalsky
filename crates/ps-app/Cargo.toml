@@ -32,6 +32,8 @@ ps-bloom.workspace       = true
 ps-windsock.workspace    = true
 ps-water.workspace       = true
 ps-weather-feed.workspace = true
+ps-terrain.workspace     = true
+ps-imagery.workspace     = true
 ps-ui.workspace          = true
 toml.workspace           = true
 

@@ -32,6 +32,25 @@
 @group(2) @binding(1) var overcast_field: texture_2d<f32>;
 @group(2) @binding(2) var density_mask_sampler: sampler;
 
+// Phase 16 — satellite imagery overlay. When `overlay.enabled != 0`,
+// the fragment shader replaces the procedural Voronoi albedo with the
+// sampled satellite RGB at the fragment's world XZ position. UV is
+// computed from `overlay.centre_xz` + `overlay.half_extent_xz` so the
+// raster lines up with the heightmap-tessellated mesh (both are
+// observer-anchored).
+struct GroundOverlayParams {
+    centre_xz: vec2<f32>,
+    half_extent_xz: vec2<f32>,
+    enabled: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(2) @binding(3) var satellite_tex: texture_2d<f32>;
+@group(2) @binding(4) var satellite_sampler: sampler;
+@group(2) @binding(5) var<uniform> overlay: GroundOverlayParams;
+
 @group(3) @binding(0) var transmittance_lut: texture_2d<f32>;
 @group(3) @binding(1) var multiscatter_lut:  texture_2d<f32>;
 @group(3) @binding(2) var skyview_lut:       texture_2d<f32>;
@@ -50,12 +69,20 @@ const DENSITY_MASK_EXTENT_M: f32 = 32000.0;
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) world_pos: vec3<f32>,
+    // Phase 16 — per-vertex outward normal. The Phase 7 quad supplied a
+    // hardcoded (0,1,0); the terrain mesh feeds heightmap-derived
+    // normals so the BRDF reads correct shading on slopes.
+    @location(1) normal: vec3<f32>,
 };
 
 @vertex
-fn vs_main(@location(0) pos: vec3<f32>) -> VsOut {
+fn vs_main(
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+) -> VsOut {
     var out: VsOut;
     out.world_pos = pos;
+    out.normal = normal;
     out.clip_pos = frame.view_proj * vec4<f32>(pos, 1.0);
     return out;
 }
@@ -474,7 +501,10 @@ fn sun_visibility(p_world: vec3<f32>, sun_dir: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let n = vec3<f32>(0.0, 1.0, 0.0); // ground normal
+    // Phase 16 — outward normal comes from the vertex shader (heightmap-
+    // derived). For the flat-quad startup fallback the buffer carries
+    // (0,1,0) so this still reads as a flat plane.
+    let n = normalize(in.normal);
     let p = in.world_pos;
     let v = normalize(frame.camera_position_world.xyz - p);
     let sun_dir = frame.sun_direction.xyz;
@@ -490,7 +520,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // world.ground_albedo tint is applied as a multiplicative scale
     // around the v1 reference value (0.18) so the existing global
     // tint slider keeps working without overriding material colour.
-    let base_albedo = palette * (world.ground_albedo.rgb / 0.18);
+    let procedural_albedo = palette * (world.ground_albedo.rgb / 0.18);
+
+    // Phase 16 — satellite overlay. When the UI has toggled it on and
+    // a real raster has been uploaded, replace the procedural albedo
+    // with the sampled satellite RGB at this fragment's world XZ. The
+    // raster is anchored at `overlay.centre_xz` and covers
+    // (2 * half_extent_xz) metres. Outside that bbox the sampler
+    // clamps to the edge.
+    var base_albedo = procedural_albedo;
+    if (overlay.enabled > 0.5) {
+        let local = (p.xz - overlay.centre_xz) / (2.0 * overlay.half_extent_xz);
+        // local in [-0.5, 0.5] inside the raster; map to [0, 1] UV.
+        // Y axis: world Z = +south, image V = +south (row 0 is
+        // northmost in our RgbTile convention), so V = local.y + 0.5
+        // matches a direct top-down lookup.
+        let uv = vec2<f32>(local.x + 0.5, local.y + 0.5);
+        let sat_rgb = textureSampleLevel(
+            satellite_tex, satellite_sampler, uv, 0.0,
+        ).rgb;
+        base_albedo = sat_rgb;
+    }
+
     let base_roughness = material_roughness(material);
     let dielectric_f0 = material_f0(material);
 

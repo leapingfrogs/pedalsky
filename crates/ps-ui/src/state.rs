@@ -66,6 +66,22 @@ pub struct UiPending {
     /// `UiState.geocode.results`. While the search is in-flight,
     /// `UiState.geocode.in_flight = true`.
     pub geocode_query: Option<GeocodeRequest>,
+
+    /// Phase 16 — user clicked "Fetch terrain". Host runs the
+    /// `ps_terrain` pipeline on a background thread and, on success,
+    /// uploads the resulting mesh to the ground subsystem.
+    pub fetch_terrain: Option<TerrainFetchRequest>,
+
+    /// Phase 16 — user clicked "Fetch satellite imagery". Host runs
+    /// the `ps_imagery` pipeline on a background thread and, on
+    /// success, uploads the resulting RGB texture to the ground
+    /// subsystem.
+    pub fetch_imagery: Option<ImageryFetchRequest>,
+
+    /// Phase 16 — user toggled the "Show satellite overlay"
+    /// checkbox. The host forwards this to the ground subsystem's
+    /// overlay controller.
+    pub set_satellite_overlay_enabled: Option<bool>,
 }
 
 /// One-shot weather fetch request. Sent from the UI to the host
@@ -105,6 +121,102 @@ pub struct WeatherFetchStatus {
     /// Most recent successful fetch's source description (e.g.
     /// "Open-Meteo + METAR EGPF, 0.4° away"). Cleared on error.
     pub last_summary: Option<String>,
+}
+
+/// Phase 16 — one-shot terrain fetch request. Sent from the UI to the
+/// host when the user clicks "Fetch terrain". The host runs the
+/// `ps_terrain::HeightmapPipeline` and uploads the resulting mesh to
+/// the ground subsystem on completion.
+#[derive(Debug, Clone)]
+pub struct TerrainFetchRequest {
+    /// Observer latitude (degrees north).
+    pub lat: f64,
+    /// Observer longitude (degrees east).
+    pub lon: f64,
+    /// Half-extent in metres around the observer. Mirrors
+    /// `ps_terrain::TileRequest::radius_m`.
+    pub radius_m: f32,
+}
+
+/// Status of a terrain fetch — host writes; UI reads.
+#[derive(Default, Debug, Clone)]
+pub struct TerrainFetchStatus {
+    /// True while a fetch is in flight (button shows "Fetching…").
+    pub in_flight: bool,
+    /// Most recent error string, cleared on next success.
+    pub last_error: Option<String>,
+    /// Most recent successful summary (e.g. "Copernicus GLO-30,
+    /// 2000×2000, 8 M triangles").
+    pub last_summary: Option<String>,
+}
+
+/// Resolution preset for the satellite imagery fetch. Mirrors
+/// `ps_imagery::ImageryResolution` — duplicated here so the UI crate
+/// doesn't pull in `ps-imagery` just for the enum, matching the
+/// `WeatherFetchRequest` convention. The host translates UI value →
+/// `ps_imagery` value in `spawn_imagery_fetch`.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum ImageryResolution {
+    /// ~2048 px stitched. Fast first fetch, low detail.
+    #[default]
+    Standard,
+    /// ~4096 px stitched. ~4× tile count of Standard.
+    High,
+    /// ~8192 px stitched, at Sentinel-2's native ~10 m floor.
+    /// ~16× tile count of Standard.
+    Max,
+}
+
+impl ImageryResolution {
+    /// Short label for the UI dropdown.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard (~30 m/px)",
+            Self::High => "High (~15 m/px)",
+            Self::Max => "Max (~7 m/px)",
+        }
+    }
+}
+
+/// Phase 16 — one-shot satellite imagery fetch request.
+#[derive(Debug, Clone)]
+pub struct ImageryFetchRequest {
+    /// Observer latitude (degrees north).
+    pub lat: f64,
+    /// Observer longitude (degrees east).
+    pub lon: f64,
+    /// Half-extent in metres around the observer.
+    pub radius_m: f32,
+    /// Resolution preset.
+    pub resolution: ImageryResolution,
+}
+
+/// Status of an imagery fetch — host writes; UI reads.
+#[derive(Default, Debug, Clone)]
+pub struct ImageryFetchStatus {
+    /// True while a fetch is in flight.
+    pub in_flight: bool,
+    /// Most recent error string, cleared on next success.
+    pub last_error: Option<String>,
+    /// Most recent successful summary.
+    pub last_summary: Option<String>,
+    /// Whether the satellite overlay is currently visible. Mirrors
+    /// the `GroundOverlayController` state; the UI checkbox writes to
+    /// `pending.set_satellite_overlay_enabled` and the host echoes
+    /// the new value back here once it has been applied.
+    pub overlay_enabled: bool,
+    /// Persisted dropdown selection. The ComboBox writes here each
+    /// frame so it survives across redraws; the button reads it when
+    /// constructing `ImageryFetchRequest`.
+    pub selected_resolution: ImageryResolution,
+    /// Tile-download progress mirrored from the worker thread. The
+    /// host's progress sink writes (done, total); the UI renders a
+    /// progress bar while `in_flight` is true. Both fields reset to
+    /// 0 between fetches.
+    pub progress_done: u32,
+    /// Total tile count for the in-flight fetch (constant once the
+    /// worker has computed the tile grid).
+    pub progress_total: u32,
 }
 
 /// Phase 16.B — one-shot geocoding request, sent from the UI to the
@@ -260,6 +372,14 @@ pub struct UiState {
     /// search; UI reads to render the result dropdown and any
     /// error.
     pub geocode: GeocodeStatus,
+
+    /// Phase 16 — terrain fetch status. Host writes after each
+    /// attempt; UI reads to render the button state.
+    pub terrain_fetch: TerrainFetchStatus,
+
+    /// Phase 16 — satellite imagery fetch status. Host writes after
+    /// each attempt; UI reads to render button + overlay-toggle.
+    pub imagery_fetch: ImageryFetchStatus,
 }
 
 /// Debug-panel toggles that don't belong in `Config`.
@@ -298,6 +418,8 @@ impl UiState {
             latest_camera: None,
             weather_fetch: WeatherFetchStatus::default(),
             geocode: GeocodeStatus::default(),
+            terrain_fetch: TerrainFetchStatus::default(),
+            imagery_fetch: ImageryFetchStatus::default(),
         }
     }
 }

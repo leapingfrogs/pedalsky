@@ -30,8 +30,10 @@ use ps_core::{
 const PASS_OVERLAY: PassId = 0;
 
 pub use state::{
-    CameraSettings, GeocodeMatch, GeocodeRequest, GeocodeStatus, UiDebugSelection, UiFrameStats,
-    UiHandle, UiPending, UiState, WeatherFetchRequest, WeatherFetchStatus, UiWorldReadout,
+    CameraSettings, GeocodeMatch, GeocodeRequest, GeocodeStatus, ImageryFetchRequest,
+    ImageryFetchStatus, ImageryResolution, TerrainFetchRequest, TerrainFetchStatus,
+    UiDebugSelection, UiFrameStats, UiHandle, UiPending, UiState, UiWorldReadout,
+    WeatherFetchRequest, WeatherFetchStatus,
 };
 
 /// Stable subsystem name.

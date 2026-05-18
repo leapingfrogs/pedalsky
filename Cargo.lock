@@ -2519,10 +2519,12 @@ dependencies = [
  "ps-core",
  "ps-godrays",
  "ps-ground",
+ "ps-imagery",
  "ps-lightning",
  "ps-postprocess",
  "ps-precip",
  "ps-synthesis",
+ "ps-terrain",
  "ps-tint",
  "ps-ui",
  "ps-water",
@@ -2636,8 +2638,24 @@ dependencies = [
  "bytemuck",
  "glam",
  "ps-core",
+ "ps-imagery",
+ "ps-terrain",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "ps-imagery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "image",
+ "ps-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -2690,6 +2708,22 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "ps-terrain"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "chrono",
+ "glam",
+ "ps-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tiff",
+ "tracing",
+ "ureq",
 ]
 
 [[package]]
