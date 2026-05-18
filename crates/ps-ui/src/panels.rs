@@ -5,7 +5,7 @@
 //! direct numeric input; edits flip `pending.config_dirty` so the host
 //! reconfigures the next frame.
 
-use chrono::{Datelike, TimeZone, Utc};
+use chrono::{Datelike, TimeZone, Timelike, Utc};
 use egui::{Color32, ComboBox, DragValue, Slider, Widget};
 
 use crate::state::UiState;
@@ -276,12 +276,28 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
 
         ui.separator();
         ui.label("Date / time (UTC)");
-        let mut y = state.live_config.time.year;
-        let mut mo = state.live_config.time.month as i32;
-        let mut d = state.live_config.time.day as i32;
-        let mut hh = state.live_config.time.hour as i32;
-        let mut mm = state.live_config.time.minute as i32;
-        let mut ss = state.live_config.time.second as i32;
+        // Display the *current* simulated UTC (advances at
+        // `time_scale × real_seconds`) when the host has pushed one;
+        // fall back to the configured start time on the very first
+        // frame before the host fills in the read-out. Widgets that
+        // the user is interacting with this frame win — egui reports
+        // `.changed()` on the exact frame the value changes, so we
+        // only push back to `live_config` + `pending.set_world_utc`
+        // when at least one DragValue changed. On other frames the
+        // displayed seconds tick forward from the read-out.
+        let live = state.world_readout.current_utc.unwrap_or_else(|| {
+            // Pre-first-frame fallback: build a UTC from the config.
+            let t = &state.live_config.time;
+            Utc.with_ymd_and_hms(t.year, t.month, t.day, t.hour, t.minute, t.second)
+                .single()
+                .unwrap_or_else(Utc::now)
+        });
+        let mut y = live.year();
+        let mut mo = live.month() as i32;
+        let mut d = live.day() as i32;
+        let mut hh = live.hour() as i32;
+        let mut mm = live.minute() as i32;
+        let mut ss = live.second() as i32;
         let mut changed = false;
         ui.horizontal(|ui| {
             ui.label("YYYY");
@@ -312,6 +328,19 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 state.pending.set_world_utc = Some(utc);
                 state.pending.config_dirty = true;
             }
+        }
+        // "Reset to current system time" — convenience for jumping
+        // back to wall-clock now after exploring a forecast.
+        if ui.button("Reset to current time").clicked() {
+            let now = Utc::now();
+            state.live_config.time.year = now.year();
+            state.live_config.time.month = now.month();
+            state.live_config.time.day = now.day();
+            state.live_config.time.hour = now.hour();
+            state.live_config.time.minute = now.minute();
+            state.live_config.time.second = now.second();
+            state.pending.set_world_utc = Some(now);
+            state.pending.config_dirty = true;
         }
 
         ui.separator();
@@ -403,8 +432,12 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
         }
 
         ui.separator();
+        // Observer-origin lat/lon — the geographic point the terrain
+        // mesh is anchored at (world XZ = (0, 0)). Edit to warp the
+        // world; the camera read-out below shows where the camera
+        // actually is after WASD movement.
         ui.horizontal(|ui| {
-            ui.label("Latitude");
+            ui.label("Origin lat");
             let mut lat = state.live_config.world.latitude_deg;
             if DragValue::new(&mut lat)
                 .range(-90.0..=90.0)
@@ -418,7 +451,7 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     Some((lat, state.live_config.world.longitude_deg));
                 state.pending.config_dirty = true;
             }
-            ui.label("Longitude");
+            ui.label("lon");
             let mut lon = state.live_config.world.longitude_deg;
             if DragValue::new(&mut lon)
                 .range(-180.0..=180.0)
@@ -432,6 +465,20 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     Some((state.live_config.world.latitude_deg, lon));
                 state.pending.config_dirty = true;
             }
+        });
+        // Camera read-out — origin + camera-XZ-offset converted back
+        // to degrees. Altitude is camera Y plus the observer's
+        // ground_elevation_m, so it reads as "metres above mean sea
+        // level" (matching the Copernicus DEM's WGS84 ellipsoid
+        // reference closely enough for sense-of-place purposes).
+        let cam_lat = state.world_readout.camera_lat_deg;
+        let cam_lon = state.world_readout.camera_lon_deg;
+        let cam_alt = state.world_readout.camera_altitude_m;
+        ui.horizontal(|ui| {
+            ui.label("Camera");
+            ui.monospace(format!(
+                "{cam_lat:>9.5}°, {cam_lon:>9.5}°  alt {cam_alt:>7.1} m"
+            ));
         });
 
         // Phase 16 — fetch terrain mesh for the current lat/lon.
@@ -1035,8 +1082,6 @@ fn jump_solar(state: &mut UiState, event: SolarEvent) {
     }
 }
 
-// chrono::Timelike for hour/minute/second on DateTime.
-use chrono::Timelike;
 
 // ---------------------------------------------------------------------------
 // Camera panel — fov / near / speed (plan §0.4)

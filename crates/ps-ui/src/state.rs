@@ -505,6 +505,24 @@ pub struct UiWorldReadout {
     /// upper-air samples are present (synthetic scenes); the compass
     /// rose falls back to the surface-only barb.
     pub winds_aloft: Vec<WindAloftSample>,
+
+    /// Current simulated UTC. Advances each real-time second by the
+    /// configured `time_scale`. `None` until the host has pushed at
+    /// least one update. The date/time widgets bind to this when the
+    /// user isn't actively editing them.
+    pub current_utc: Option<DateTime<Utc>>,
+
+    /// Effective camera latitude in degrees. The observer-origin lat
+    /// (`live_config.world.latitude_deg`) is where the terrain mesh is
+    /// anchored; the camera position is metres-offset from that
+    /// origin. This field is the origin plus that offset converted
+    /// back to degrees — i.e. where the camera actually is.
+    pub camera_lat_deg: f64,
+    /// Effective camera longitude in degrees, same convention.
+    pub camera_lon_deg: f64,
+    /// Camera altitude in metres AMSL — `ground_elevation_m` (the
+    /// observer-origin ground level) plus the camera's local Y.
+    pub camera_altitude_m: f32,
 }
 
 /// The full shared state cell.

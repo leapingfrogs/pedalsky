@@ -1646,6 +1646,22 @@ impl RunState {
             if dt > 1e-4 {
                 state.frame_stats.fps = 1.0 / dt;
             }
+            // Camera lat/lon: the world's lat/lon is the observer
+            // origin (where the terrain mesh is anchored at XZ=0).
+            // The camera position is metres-offset from that origin;
+            // +X east, +Z south. Convert back to degrees using the
+            // standard ~111.32 km/° lat factor and cos(lat)-scaled
+            // lon factor.
+            let origin_lat = config.world.latitude_deg;
+            let origin_lon = config.world.longitude_deg;
+            let cam_pos = self.camera.position;
+            let m_per_deg_lat = 111_320.0_f64;
+            let cos_lat = origin_lat.to_radians().cos().abs().max(0.05);
+            let m_per_deg_lon = m_per_deg_lat * cos_lat;
+            let camera_lat_deg = origin_lat - (cam_pos.z as f64) / m_per_deg_lat;
+            let camera_lon_deg = origin_lon + (cam_pos.x as f64) / m_per_deg_lon;
+            let camera_altitude_m = cam_pos.y + config.world.ground_elevation_m;
+
             state.world_readout = ps_ui::UiWorldReadout {
                 sun_alt_deg: f64::from(self.world.sun.altitude_rad).to_degrees(),
                 sun_az_deg: f64::from(self.world.sun.azimuth_rad).to_degrees(),
@@ -1664,6 +1680,10 @@ impl RunState {
                 // per-level barbs. Cloned each frame; the vec is at
                 // most ~4 entries so the allocation is negligible.
                 winds_aloft: scene.surface.winds_aloft.clone(),
+                current_utc: Some(self.world.clock.current_utc()),
+                camera_lat_deg,
+                camera_lon_deg,
+                camera_altitude_m,
             };
         }
         self.ui_bridge.build_ui_frame(&self.window);
