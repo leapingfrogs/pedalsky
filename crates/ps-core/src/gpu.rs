@@ -103,6 +103,18 @@ fn required_limits(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
             .max_sampled_textures_per_shader_stage
             .max(32)
             .min(adapter_limits.max_sampled_textures_per_shader_stage),
+        // PedalBack terrain Section 1.2 (Mei hydraulic erosion) binds
+        // 8 storage textures in a single compute shader — terrain,
+        // water_in/out, sediment_in/out, flux_in/out, velocity. The
+        // wgpu downlevel default is 4 (OpenGL ES floor); every
+        // Vulkan / d3d12 adapter exposes ≥ 16. Clamp to whatever
+        // the adapter advertises so this still degrades on
+        // genuinely-low-spec hardware (where the request_device
+        // call returns an error the user can act on).
+        max_storage_textures_per_shader_stage: base
+            .max_storage_textures_per_shader_stage
+            .max(8)
+            .min(adapter_limits.max_storage_textures_per_shader_stage),
         max_color_attachments: base
             .max_color_attachments
             .max(8)
