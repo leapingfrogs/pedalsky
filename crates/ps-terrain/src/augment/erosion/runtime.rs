@@ -134,8 +134,15 @@ pub(super) fn run(
     let flux_b_view = view(&textures.flux_b);
     let velocity_view = view(&textures.velocity);
 
-    // Two hydraulic bind groups, one per ping-pong direction (water/flux
-    // in -> out and vice versa). We swap which one we bind each iter.
+    // Two hydraulic bind groups. Water + flux ping-pong each iter
+    // because pass 1 reads `flux_in` (binding 4) and writes
+    // `flux_out` (binding 7) — pass 2 then needs `flux_out` as its
+    // primary input. Sediment, by contrast, does NOT swap: pass 3
+    // writes an intermediate to `sediment_out` (binding 8 = sed_b),
+    // and pass 4 reads that intermediate and writes the final
+    // advected result back to `sediment_in` (binding 3 = sed_a).
+    // Next iteration's pass 3 needs to read the same sed_a, so the
+    // sediment bindings must stay constant across bg_a / bg_b.
     let bg_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("erosion-hydraulic-bg-a"),
         layout: &rt.hydraulic.bgl,
@@ -158,12 +165,12 @@ pub(super) fn run(
             wgpu::BindGroupEntry { binding: 0, resource: rt.hydraulic.uniforms.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&water_b_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&flux_b_view) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&velocity_view) },
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&water_a_view) },
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&flux_a_view) },
-            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
+            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
         ],
     });
 
