@@ -832,12 +832,28 @@ fn terrain_section(ui: &mut egui::Ui, state: &mut UiState) {
                         0.1,
                         2,
                     );
-                    drag_u32_row(
-                        ui,
-                        "Max working dim",
-                        &mut p.max_working_dim,
-                        256..=4096,
-                        16.0,
+                    // The host clamps `max_working_dim` to the GPU's
+                    // max_texture_dimension_2d at fetch time, so values
+                    // above the adapter's tier silently fall back —
+                    // 16384 here covers modern desktop Vulkan/d3d12
+                    // adapters; 8192 is the universal downlevel cap.
+                    // Note: each doubling 4×s VRAM cost. The erosion
+                    // working set allocates 11 R32Float/RGBA32Float
+                    // textures, so 4096²=740 MB, 8192²=2.9 GB,
+                    // 16384²=12 GB.
+                    ui.horizontal(|ui| {
+                        ui.label("Max working dim");
+                        ui.add(
+                            egui::DragValue::new(&mut p.max_working_dim)
+                                .range(256u32..=16384)
+                                .speed(64.0),
+                        );
+                        let mb = working_set_mb(p.max_working_dim);
+                        ui.label(format!("(~{mb} MB VRAM)"));
+                    })
+                    .response
+                    .on_hover_text(
+                        "Hard cap on the working grid side length. Higher values resolve finer erosion features but cost VRAM quadratically. Host clamps to the GPU's max_texture_dimension_2d (typically 8192 or 16384) so values above the adapter's limit fall back silently.",
                     );
                 });
         });
@@ -911,6 +927,18 @@ fn drag_u32_row(
         ui.label(label);
         ui.add(egui::DragValue::new(value).range(range).speed(speed));
     });
+}
+
+/// Quick VRAM estimate for the erosion working set: 11 storage
+/// textures of `dim²` cells. R32Float = 4 B/cell; one Rgba32Float
+/// flux ping-pong pair (2 textures × 16 B/cell) and a Rg32Float
+/// velocity (8 B/cell) push the per-cell average to ~6 B. Round up.
+fn working_set_mb(dim: u32) -> u64 {
+    let cells = (dim as u64) * (dim as u64);
+    // 11 textures, mixed formats — see the comment above. The average
+    // cell footprint comes out to ~7 bytes; we round up to 8 so the
+    // estimate is conservative.
+    (cells * 11 * 8) / (1024 * 1024)
 }
 
 fn jump_calendar(state: &mut UiState, day: CalendarDay) {
