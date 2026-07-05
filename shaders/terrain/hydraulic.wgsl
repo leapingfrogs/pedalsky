@@ -14,15 +14,21 @@
 //   binding 2  water_in      : texture_storage_2d<r32float, read_write>
 //   binding 3  sediment_in   : texture_storage_2d<r32float, read_write>
 //   binding 4  flux_in       : texture_storage_2d<rgba32float, read_write>
-//   binding 5  velocity      : texture_storage_2d<rg32float, read_write>
+//   binding 5  velocity      : texture_storage_2d<rg32float, write>
 //   binding 6  water_out     : texture_storage_2d<r32float, read_write>
 //   binding 7  flux_out      : texture_storage_2d<rgba32float, read_write>
 //   binding 8  sediment_out  : texture_storage_2d<r32float, read_write>
+//   binding 9  velocity_read : texture_2d<f32>                  // read view of binding 5
 //
 // We don't ping-pong terrain: the erosion pass writes back into
 // `terrain_in` directly because each cell only modifies its own
 // elevation. Water and flux ping-pong because pass 1's flux output
 // becomes pass 2's input.
+//
+// Velocity is split into a write-only storage view (binding 5) and a
+// sampled read view (binding 9) of the *same* underlying texture. Metal
+// doesn't support `read_write` on rg32float (it's not in either
+// MTLReadWriteTextureTier), so split views are the portable workaround.
 
 struct HydraulicUniform {
     cell_size:                  f32,
@@ -47,10 +53,11 @@ struct HydraulicUniform {
 @group(0) @binding(2) var water_in     : texture_storage_2d<r32float,    read_write>;
 @group(0) @binding(3) var sediment_in  : texture_storage_2d<r32float,    read_write>;
 @group(0) @binding(4) var flux_in      : texture_storage_2d<rgba32float, read_write>;
-@group(0) @binding(5) var velocity     : texture_storage_2d<rg32float,   read_write>;
+@group(0) @binding(5) var velocity     : texture_storage_2d<rg32float,   write>;
 @group(0) @binding(6) var water_out    : texture_storage_2d<r32float,    read_write>;
 @group(0) @binding(7) var flux_out     : texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(8) var sediment_out : texture_storage_2d<r32float,    read_write>;
+@group(0) @binding(9) var velocity_read: texture_2d<f32>;
 
 fn dims() -> vec2<i32> {
     return vec2<i32>(textureDimensions(terrain));
@@ -177,7 +184,7 @@ fn erosion_deposition(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sin_tilt = sqrt(dx * dx + dy * dy) / max(denom, 1e-6);
     let tilt = max(sin_tilt, u.min_slope);
 
-    let vel = textureLoad(velocity, p).xy;
+    let vel = textureLoad(velocity_read, p, 0).xy;
     let speed = length(vel);
 
     let water = textureLoad(water_out, p).r;
@@ -211,7 +218,7 @@ fn advect_sediment(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d = dims();
     if (p.x >= d.x || p.y >= d.y) { return; }
 
-    let vel = textureLoad(velocity, p).xy;
+    let vel = textureLoad(velocity_read, p, 0).xy;
     let prev = vec2<f32>(f32(p.x), f32(p.y)) - vel * u.dt / u.cell_size;
     // Clamp the trace inside the domain.
     let cx = clamp(prev.x, 0.0, f32(d.x - 1));

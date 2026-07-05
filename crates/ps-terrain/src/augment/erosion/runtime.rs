@@ -60,7 +60,9 @@ struct Textures {
 
 impl Textures {
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let mk = |label: &'static str, format: wgpu::TextureFormat| {
+        let mk_with = |label: &'static str,
+                       format: wgpu::TextureFormat,
+                       usage: wgpu::TextureUsages| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -68,11 +70,15 @@ impl Textures {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
+                usage,
                 view_formats: &[],
             })
+        };
+        let default_usage = wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC;
+        let mk = |label: &'static str, format: wgpu::TextureFormat| {
+            mk_with(label, format, default_usage)
         };
         Self {
             terrain: mk("erosion-terrain", wgpu::TextureFormat::R32Float),
@@ -82,7 +88,15 @@ impl Textures {
             sediment_b: mk("erosion-sediment-b", wgpu::TextureFormat::R32Float),
             flux_a: mk("erosion-flux-a", wgpu::TextureFormat::Rgba32Float),
             flux_b: mk("erosion-flux-b", wgpu::TextureFormat::Rgba32Float),
-            velocity: mk("erosion-velocity", wgpu::TextureFormat::Rg32Float),
+            // Velocity needs TEXTURE_BINDING in addition to
+            // STORAGE_BINDING because we bind a sampled read view at
+            // binding 9 (see hydraulic.wgsl header — Metal can't do
+            // read_write on rg32float).
+            velocity: mk_with(
+                "erosion-velocity",
+                wgpu::TextureFormat::Rg32Float,
+                default_usage | wgpu::TextureUsages::TEXTURE_BINDING,
+            ),
             thermal_out_a: mk("erosion-thermal-out-a", wgpu::TextureFormat::Rgba32Float),
             thermal_out_b: mk("erosion-thermal-out-b", wgpu::TextureFormat::Rgba32Float),
             normal_map: mk("erosion-normal-map", wgpu::TextureFormat::Rgba8Unorm),
@@ -176,46 +190,77 @@ pub(super) fn run(
     let flux_a_view = view(&textures.flux_a);
     let flux_b_view = view(&textures.flux_b);
     let velocity_view = view(&textures.velocity);
+    let velocity_read_view = view(&textures.velocity);
 
-    // Two hydraulic bind groups. Water + flux ping-pong each iter
-    // because pass 1 reads `flux_in` (binding 4) and writes
-    // `flux_out` (binding 7) — pass 2 then needs `flux_out` as its
-    // primary input. Sediment, by contrast, does NOT swap: pass 3
-    // writes an intermediate to `sediment_out` (binding 8 = sed_b),
-    // and pass 4 reads that intermediate and writes the final
-    // advected result back to `sediment_in` (binding 3 = sed_a).
-    // Next iteration's pass 3 needs to read the same sed_a, so the
-    // sediment bindings must stay constant across bg_a / bg_b.
-    let bg_a = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("erosion-hydraulic-bg-a"),
-        layout: &rt.hydraulic.bgl,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: rt.hydraulic.uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&water_a_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&flux_a_view) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&velocity_view) },
-            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&water_b_view) },
-            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&flux_b_view) },
-            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
-        ],
+    // Water + flux ping-pong each iter because pass 1 reads `flux_in`
+    // (binding 4) and writes `flux_out` (binding 7) — pass 2 then needs
+    // `flux_out` as its primary input. Sediment, by contrast, does NOT
+    // swap: pass 3 writes an intermediate to `sediment_out` (binding 8
+    // = sed_b), and pass 4 reads that intermediate and writes the final
+    // advected result back to `sediment_in` (binding 3 = sed_a). Next
+    // iteration's pass 3 needs to read the same sed_a, so the sediment
+    // bindings must stay constant across bg_a / bg_b.
+    //
+    // Velocity is also split across the iteration: pass 2 writes it via
+    // a write-only storage view at binding 5, and passes 3+4 read it
+    // via a sampled view at binding 9 (Metal has no read_write tier for
+    // rg32float — see shader header). The two views can't coexist in a
+    // single bind group because wgpu validates per-dispatch using *all*
+    // bindings of the active bind group regardless of which the shader
+    // actually accesses: STORAGE_WRITE_ONLY is exclusive of RESOURCE on
+    // the same texture, so the merge fails. We work around this with
+    // separate "write" and "read" bind groups per ping-pong state and a
+    // 1×1 dummy texture in whichever slot is unused for that phase.
+    let velocity_dummy = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("erosion-velocity-dummy"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rg32Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
     });
-    let bg_b = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("erosion-hydraulic-bg-b"),
-        layout: &rt.hydraulic.bgl,
-        entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: rt.hydraulic.uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&water_b_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&flux_b_view) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&velocity_view) },
-            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&water_a_view) },
-            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&flux_a_view) },
-            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
-        ],
-    });
+    let velocity_dummy_view = view(&velocity_dummy);
+
+    let mk_bg = |label: &'static str,
+                 water_in: &wgpu::TextureView,
+                 flux_in: &wgpu::TextureView,
+                 water_out: &wgpu::TextureView,
+                 flux_out: &wgpu::TextureView,
+                 vel_write: &wgpu::TextureView,
+                 vel_read: &wgpu::TextureView| {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &rt.hydraulic.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: rt.hydraulic.uniforms.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(water_in) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(flux_in) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(vel_write) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(water_out) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(flux_out) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(vel_read) },
+            ],
+        })
+    };
+    // Write phase (passes 1+2): velocity at binding 5, dummy at binding 9.
+    // Read phase (passes 3+4): dummy at binding 5, velocity at binding 9.
+    let bg_a_write = mk_bg("erosion-hydraulic-bg-a-write",
+        &water_a_view, &flux_a_view, &water_b_view, &flux_b_view,
+        &velocity_view, &velocity_dummy_view);
+    let bg_a_read = mk_bg("erosion-hydraulic-bg-a-read",
+        &water_a_view, &flux_a_view, &water_b_view, &flux_b_view,
+        &velocity_dummy_view, &velocity_read_view);
+    let bg_b_write = mk_bg("erosion-hydraulic-bg-b-write",
+        &water_b_view, &flux_b_view, &water_a_view, &flux_a_view,
+        &velocity_view, &velocity_dummy_view);
+    let bg_b_read = mk_bg("erosion-hydraulic-bg-b-read",
+        &water_b_view, &flux_b_view, &water_a_view, &flux_a_view,
+        &velocity_dummy_view, &velocity_read_view);
 
     let thermal_out_a_view = view(&textures.thermal_out_a);
     let thermal_out_b_view = view(&textures.thermal_out_b);
@@ -237,7 +282,11 @@ pub(super) fn run(
 
     for iter in 0..params.iterations {
         let pingpong_a = (iter % 2) == 0;
-        let bind = if pingpong_a { &bg_a } else { &bg_b };
+        let (bind_write, bind_read) = if pingpong_a {
+            (&bg_a_write, &bg_a_read)
+        } else {
+            (&bg_b_write, &bg_b_read)
+        };
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -248,21 +297,19 @@ pub(super) fn run(
                 label: Some("erosion-hydraulic-pass"),
                 timestamp_writes: None,
             });
-            // Pass 1
+            // Passes 1+2 use the write-velocity bind group.
             pass.set_pipeline(&rt.hydraulic.pipeline_add_water_and_flux);
-            pass.set_bind_group(0, bind, &[]);
+            pass.set_bind_group(0, bind_write, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
-            // Pass 2
             pass.set_pipeline(&rt.hydraulic.pipeline_update_water_and_velocity);
-            pass.set_bind_group(0, bind, &[]);
+            pass.set_bind_group(0, bind_write, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
-            // Pass 3
+            // Passes 3+4 swap to the read-velocity bind group.
             pass.set_pipeline(&rt.hydraulic.pipeline_erosion_deposition);
-            pass.set_bind_group(0, bind, &[]);
+            pass.set_bind_group(0, bind_read, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
-            // Pass 4
             pass.set_pipeline(&rt.hydraulic.pipeline_advect_sediment);
-            pass.set_bind_group(0, bind, &[]);
+            pass.set_bind_group(0, bind_read, &[]);
             pass.dispatch_workgroups(wg_x, wg_y, 1);
         }
         queue.submit(Some(encoder.finish()));

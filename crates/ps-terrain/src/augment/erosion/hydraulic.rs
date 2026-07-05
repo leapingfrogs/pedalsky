@@ -49,10 +49,24 @@ impl HydraulicBindings {
                 storage_2d(2, wgpu::TextureFormat::R32Float),
                 storage_2d(3, wgpu::TextureFormat::R32Float),
                 storage_2d(4, wgpu::TextureFormat::Rgba32Float),
-                storage_2d(5, wgpu::TextureFormat::Rg32Float),
+                // Velocity: split write-only storage (binding 5) and
+                // sampled read view (binding 9) of the same texture.
+                // Metal has no read_write tier for rg32float, so we
+                // can't use ReadWrite here. See shader header.
+                storage_2d_write(5, wgpu::TextureFormat::Rg32Float),
                 storage_2d(6, wgpu::TextureFormat::R32Float),
                 storage_2d(7, wgpu::TextureFormat::Rgba32Float),
                 storage_2d(8, wgpu::TextureFormat::R32Float),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -101,6 +115,19 @@ fn storage_2d(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGroupLayou
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::StorageTexture {
             access: wgpu::StorageTextureAccess::ReadWrite,
+            format,
+            view_dimension: wgpu::TextureViewDimension::D2,
+        },
+        count: None,
+    }
+}
+
+fn storage_2d_write(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::StorageTexture {
+            access: wgpu::StorageTextureAccess::WriteOnly,
             format,
             view_dimension: wgpu::TextureViewDimension::D2,
         },
