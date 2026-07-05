@@ -101,7 +101,17 @@ impl HeightmapSource for CopernicusGlo30 {
 }
 
 fn download(url: &str) -> Result<Vec<u8>, anyhow::Error> {
-    let resp = ureq::get(url)
+    // Explicit timeouts so a stalled IPv6 dial (macOS will try AAAA
+    // first and block ~30 s before falling back to IPv4) doesn't sit
+    // on the OS TCP-connect timeout. Body read gets the longer budget
+    // because GLO-30 tiles can be 20 MiB on a slow link.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(60))
+        .timeout_write(Duration::from_secs(30))
+        .build();
+    let resp = agent
+        .get(url)
         .set("User-Agent", UA)
         .call()
         .with_context(|| format!("GET {url}"))?;

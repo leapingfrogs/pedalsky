@@ -192,6 +192,20 @@ fn workspace_root() -> Result<PathBuf> {
     }
 }
 
+/// Walk a std error's `.source()` chain and render every link, so a
+/// `terrain fetch failed` log line shows the underlying ureq/io cause
+/// instead of just the outermost wrapper.
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut src = err.source();
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
+}
+
 struct AppShell {
     config: Config,
     scene: Scene,
@@ -1170,7 +1184,10 @@ impl RunState {
                         TerrainFetchResult { outcome: Ok(summary) }
                     }
                     Err(e) => TerrainFetchResult {
-                        outcome: Err(format!("terrain fetch failed: {e}")),
+                        outcome: Err(format!(
+                            "terrain fetch failed: {}",
+                            format_error_chain(&e),
+                        )),
                     },
                 };
                 let _ = tx.send(result);
