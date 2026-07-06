@@ -88,6 +88,10 @@ pub struct Hourly {
     /// Convective available potential energy (J/kg). Drives
     /// thunderstorm gating in the scene mapping.
     pub cape: Vec<f32>,
+    /// WMO weather interpretation code (0-99). Carried through to
+    /// [`crate::FeedExtras`]; the Scene mapping does not read it.
+    #[serde(default)]
+    pub weather_code: Vec<f32>,
 
     // Per-pressure-level cloud cover (%). Each Vec matches the
     // `time` array's length.
@@ -256,6 +260,11 @@ pub fn build_url(lat: f64, lon: f64) -> String {
         "snowfall",
         "cloud_cover",
         "cape",
+        // WMO weather interpretation code — not used by the Scene mapping
+        // itself, but exposed via FeedExtras for hosts that key
+        // behaviour off specific codes (e.g. pedalback derives hail
+        // from codes 96/99 until PrecipKind grows a Hail variant).
+        "weather_code",
     ];
     let level_vars: Vec<String> = PRESSURE_LEVELS_HPA
         .iter()

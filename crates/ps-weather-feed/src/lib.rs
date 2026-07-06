@@ -109,6 +109,18 @@ pub enum FetchError {
     SceneInvalid(#[source] ps_core::SceneError),
 }
 
+/// Raw feed values that do not belong in the [`Scene`] model but that
+/// hosts may key behaviour off. Returned by [`fetch_scene_with_extras`];
+/// plain [`fetch_scene`] discards it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FeedExtras {
+    /// WMO weather interpretation code (0-99) at the selected forecast
+    /// hour, when the response carried one. Not read by the Scene
+    /// mapping; pedalback derives hail (codes 96/99) from it until
+    /// `PrecipKind` grows a `Hail` variant.
+    pub weather_code: Option<u8>,
+}
+
 /// Top-level: fetch live weather and return a populated `Scene`.
 ///
 /// Steps: pull Open-Meteo for the configured (lat, lon, hour),
@@ -120,6 +132,12 @@ pub enum FetchError {
 /// All HTTP calls go through the disk cache; if a request fails
 /// the cache's last-known good response is served as a fallback.
 pub fn fetch_scene(opts: &FetchOptions) -> Result<Scene, FetchError> {
+    fetch_scene_with_extras(opts).map(|(scene, _)| scene)
+}
+
+/// [`fetch_scene`], additionally returning the [`FeedExtras`]
+/// side-channel of raw feed values.
+pub fn fetch_scene_with_extras(opts: &FetchOptions) -> Result<(Scene, FeedExtras), FetchError> {
     let resp = open_meteo::fetch(
         &opts.cache_dir,
         opts.lat,
@@ -128,6 +146,11 @@ pub fn fetch_scene(opts: &FetchOptions) -> Result<Scene, FetchError> {
         open_meteo::DEFAULT_TTL,
     )
     .map_err(FetchError::OpenMeteo)?;
+
+    let idx = resp.hourly.nearest_index(opts.time).unwrap_or(0);
+    let extras = FeedExtras {
+        weather_code: resp.hourly.weather_code.get(idx).map(|c| *c as u8),
+    };
 
     let mut scene = open_meteo_to_scene(&resp, opts.time);
 
@@ -242,7 +265,7 @@ pub fn fetch_scene(opts: &FetchOptions) -> Result<Scene, FetchError> {
     }
 
     scene.validate().map_err(FetchError::SceneInvalid)?;
-    Ok(scene)
+    Ok((scene, extras))
 }
 
 #[doc(hidden)]
