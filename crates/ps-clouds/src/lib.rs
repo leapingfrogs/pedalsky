@@ -675,6 +675,16 @@ impl CloudsSubsystem {
         &self.params_buffer
     }
 
+    /// The fixed-size (`MAX_CLOUD_LAYERS` × 48 B) cloud-layer storage
+    /// buffer the march binds, uploaded in `prepare` on weather-revision
+    /// change. Host shadow passes MUST bind this rather than
+    /// `WeatherState::cloud_layers_buffer` — the synthesis-side buffer is
+    /// sized to the run's actual layer count and fails validation
+    /// against the shader's fixed-length `CloudLayerArray`.
+    pub fn layers_buffer(&self) -> &wgpu::Buffer {
+        &self.layers_buffer
+    }
+
     /// Plumb the atmosphere LUTs reference (called by the factory once
     /// AtmosphereSubsystem has published its bundle, before the
     /// subsystem is installed into the App).
