@@ -42,10 +42,12 @@ const HALF_RES_SCALE: f32 = 0.5;
 const TAA_BLEND_WEIGHT: f32 = 1.0 / 8.0;
 
 /// Cache-key tuple for the cloud-march `data_bg` cache: weather
-/// revision, framebuffer width, framebuffer height, half-res flag.
-/// Captures every input that can change which bind-group object
-/// the march should be using.
-type DataBgKey = (u64, u32, u32, bool);
+/// revision, framebuffer width, framebuffer height, half-res flag,
+/// active view. Captures every input that can change which
+/// bind-group object the march should be using — the view index
+/// matters because the bind group holds the framebuffer's DEPTH view,
+/// which differs per eye on stereo hosts.
+type DataBgKey = (u64, u32, u32, bool, usize);
 
 /// CPU mirror of the WGSL `CloudCompositeParams` uniform. 32 bytes.
 #[repr(C)]
@@ -826,6 +828,7 @@ impl CloudsSubsystem {
             ctx.framebuffer.size.0,
             ctx.framebuffer.size.1,
             half_res,
+            view,
         );
         let noise = &self.noise;
         let params_buffer = &self.params_buffer;
