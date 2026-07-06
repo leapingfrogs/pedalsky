@@ -71,6 +71,12 @@ pub struct GodraysSubsystem {
     radial_bg_cache: BindGroupCache<(u32, u32)>,
     composite_bg_cache: BindGroupCache<(u32, u32)>,
     tuning: TuningSnapshot,
+    /// Host-driven runtime multiplier on the configured intensity
+    /// (default 1.0). Hosts modulate rays by weather — e.g. broken
+    /// cloud + humid air reads strong, clear or overcast skies read
+    /// near zero. Applied in `prepare` to both the radial and
+    /// composite intensity terms.
+    intensity_scale: f32,
 }
 
 struct ScratchState {
@@ -298,7 +304,14 @@ impl GodraysSubsystem {
                 intensity: g.intensity,
                 bright_threshold: g.bright_threshold,
             },
+            intensity_scale: 1.0,
         }
+    }
+
+    /// Set the host-driven runtime intensity multiplier (see the field
+    /// doc). Cheap — takes effect at the next `prepare`.
+    pub fn set_intensity_scale(&mut self, scale: f32) {
+        self.intensity_scale = scale.max(0.0);
     }
 }
 
@@ -338,12 +351,13 @@ impl RenderSubsystem for GodraysSubsystem {
         }
 
         let tuning = self.tuning;
+        let intensity = tuning.intensity * self.intensity_scale;
         let radial = GodraysParamsGpu {
             sun_ndc: [sun_ndc[0], sun_ndc[1], sun_on_screen, 0.0],
             tunables: [
                 tuning.samples as f32,
                 tuning.decay,
-                tuning.intensity,
+                intensity,
                 tuning.bright_threshold,
             ],
         };
@@ -351,7 +365,7 @@ impl RenderSubsystem for GodraysSubsystem {
             .write_buffer(&self.radial_params, 0, bytemuck::bytes_of(&radial));
 
         let composite = GodraysCompositeParamsGpu {
-            config: [tuning.intensity, sun_on_screen, 0.0, 0.0],
+            config: [intensity, sun_on_screen, 0.0, 0.0],
         };
         ctx.queue
             .write_buffer(&self.composite_params, 0, bytemuck::bytes_of(&composite));
@@ -440,7 +454,13 @@ impl RenderSubsystem for GodraysSubsystem {
                     wgpu::TexelCopyTextureInfo {
                         texture: &hdr.color,
                         mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
+                        // Stereo hosts render into an array texture; copy
+                        // the layer this framebuffer's color_view targets.
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: hdr.color_layer,
+                        },
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {

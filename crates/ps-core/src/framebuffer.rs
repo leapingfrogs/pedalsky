@@ -20,6 +20,11 @@ pub struct HdrFramebufferImpl {
     pub depth_view: wgpu::TextureView,
     /// Pixel size (width, height).
     pub size: (u32, u32),
+    /// Array layer of `color` that `color_view` refers to. 0 for
+    /// single-view rendering; stereo hosts set the eye index so passes
+    /// that copy from `color` (rather than sampling `color_view`)
+    /// source the correct eye layer (e.g. the godrays HDR copy).
+    pub color_layer: u32,
 }
 
 impl HdrFramebufferImpl {
@@ -70,6 +75,7 @@ impl HdrFramebufferImpl {
             depth,
             depth_view,
             size: (w, h),
+            color_layer: 0,
         }
     }
 
