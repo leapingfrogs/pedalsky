@@ -667,6 +667,14 @@ impl CloudsSubsystem {
         &self.noise
     }
 
+    /// The `CloudParams` uniform buffer this subsystem uploads each
+    /// frame. Host shadow passes bind the same buffer so their density
+    /// evaluation (via [`pipeline::density_common_wgsl`]) picks up the
+    /// exact same tuning as the cloud march.
+    pub fn params_buffer(&self) -> &wgpu::Buffer {
+        &self.params_buffer
+    }
+
     /// Plumb the atmosphere LUTs reference (called by the factory once
     /// AtmosphereSubsystem has published its bundle, before the
     /// subsystem is installed into the App).

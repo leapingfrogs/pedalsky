@@ -13,6 +13,9 @@ use ps_core::{
 
 const CLOUD_UNIFORMS_BAKED: &str = include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
 const CLOUD_UNIFORMS_REL: &str = "clouds/cloud_uniforms.wgsl";
+const CLOUD_DENSITY_COMMON_BAKED: &str =
+    include_str!("../../../shaders/clouds/cloud_density_common.wgsl");
+const CLOUD_DENSITY_COMMON_REL: &str = "clouds/cloud_density_common.wgsl";
 const CLOUD_MARCH_BAKED: &str = include_str!("../../../shaders/clouds/cloud_march.wgsl");
 const CLOUD_MARCH_REL: &str = "clouds/cloud_march.wgsl";
 const CLOUD_COMPOSITE_BAKED: &str = include_str!("../../../shaders/clouds/cloud_composite.wgsl");
@@ -22,6 +25,32 @@ const CLOUD_COMPOSITE_HALFRES_BAKED: &str =
 const CLOUD_COMPOSITE_HALFRES_REL: &str = "clouds/cloud_composite_halfres.wgsl";
 const CLOUD_TAA_BAKED: &str = include_str!("../../../shaders/clouds/cloud_taa.wgsl");
 const CLOUD_TAA_REL: &str = "clouds/cloud_taa.wgsl";
+
+/// Shared cloud density kernel (`clouds/cloud_density_common.wgsl`) —
+/// the exact density evaluation the cloud march uses, factored out so
+/// host-owned shadow passes (e.g. a terrain cloud-shadow projection)
+/// stay bit-consistent with the rendered clouds.
+///
+/// A host shadow shader composes this with
+/// `ps_core::shaders::{COMMON_UNIFORMS_WGSL, COMMON_MATH_WGSL}` and
+/// [`cloud_uniforms_wgsl`], plus its own module-scope bindings named
+/// `frame`, `params`, `cloud_layers`, `wind_field`, `noise_base`,
+/// `noise_sampler`, and `cloud_type_grid` (see the file's doc header
+/// for the exact types). Hot-reload aware via
+/// `ps_core::shaders::load_shader`.
+pub fn density_common_wgsl() -> String {
+    ps_core::shaders::load_shader(CLOUD_DENSITY_COMMON_REL, CLOUD_DENSITY_COMMON_BAKED)
+}
+
+/// Cloud uniform declarations (`clouds/cloud_uniforms.wgsl`) —
+/// `CloudParams`, `CloudLayerGpu`, and `CloudLayerArray`. Part of the
+/// include set a host shadow shader composes with
+/// `ps_core::shaders::{COMMON_UNIFORMS_WGSL, COMMON_MATH_WGSL}` and
+/// [`density_common_wgsl`]. Hot-reload aware via
+/// `ps_core::shaders::load_shader`.
+pub fn cloud_uniforms_wgsl() -> String {
+    ps_core::shaders::load_shader(CLOUD_UNIFORMS_REL, CLOUD_UNIFORMS_BAKED)
+}
 
 /// Group-0 bind layout for the full-res composite pass: cloud-
 /// luminance RT view + cloud-transmittance RT view + shared
@@ -308,11 +337,14 @@ impl CloudPipelines {
         // March pipeline.
         let cloud_uniforms_src =
             ps_core::shaders::load_shader(CLOUD_UNIFORMS_REL, CLOUD_UNIFORMS_BAKED);
+        let cloud_density_common_src =
+            ps_core::shaders::load_shader(CLOUD_DENSITY_COMMON_REL, CLOUD_DENSITY_COMMON_BAKED);
         let cloud_march_src = ps_core::shaders::load_shader(CLOUD_MARCH_REL, CLOUD_MARCH_BAKED);
         let march_src = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_MATH_WGSL,
             &cloud_uniforms_src,
+            &cloud_density_common_src,
             &cloud_march_src,
         ]);
         let march_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -377,6 +409,7 @@ impl CloudPipelines {
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_MATH_WGSL,
             &cloud_uniforms_src,
+            &cloud_density_common_src,
             &patch_cloud_march_for_halfres(&cloud_march_src)
                 .expect("cloud_march.wgsl half-res patch failed (shader markers drifted)"),
         ]);
