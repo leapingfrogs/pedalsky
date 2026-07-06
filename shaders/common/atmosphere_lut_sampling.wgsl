@@ -4,6 +4,19 @@
 // `lut_sampler`. See `atmosphere.wgsl` for the parametrisation function.
 
 fn sample_transmittance_lut(p: vec3<f32>, dir: vec3<f32>) -> vec3<f32> {
+    // Earth shadow: a ray that intersects the planet has ZERO
+    // transmittance — the sun is geometrically occluded, which is what
+    // ends twilight. The Bruneton parametrisation below only covers
+    // rays escaping to the top of the atmosphere; without this test it
+    // returns horizon-grazing (sunset) transmittance for arbitrarily
+    // negative sun altitudes, freezing the whole sky at sunset. That
+    // was invisible under the app's fixed daytime ev100 but glows a
+    // bright red dome under any night-adapted exposure.
+    var t_planet = vec2<f32>(0.0);
+    if (ray_sphere_intersect_origin(p, dir, world.planet_radius_m, &t_planet)
+        && t_planet.x > 0.0) {
+        return vec3<f32>(0.0);
+    }
     let uv = transmittance_lut_uv(p, dir);
     return textureSampleLevel(transmittance_lut, lut_sampler, uv, 0.0).rgb;
 }
