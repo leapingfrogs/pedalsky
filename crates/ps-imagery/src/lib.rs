@@ -60,8 +60,7 @@ use std::path::PathBuf;
 /// Attribution string required by the EOX s2cloudless CC BY 4.0
 /// licence. Display this anywhere the satellite imagery is visible
 /// (UI corner, screenshot watermark, etc.).
-pub const ATTRIBUTION: &str =
-    "Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH \
+pub const ATTRIBUTION: &str = "Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH \
      (Contains modified Copernicus Sentinel data 2024)";
 
 /// Errors raised by the imagery pipeline.

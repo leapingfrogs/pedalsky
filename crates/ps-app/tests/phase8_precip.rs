@@ -82,12 +82,8 @@ fn rain_changes_image_vs_no_precip() {
     // ground lighting (Phase 12.6); only the precip particles
     // should differ between the two.
     let dry = SurfaceParams::default();
-    let dry_pixels = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        forward_camera(),
-        Some(dry),
-        Some(1.0),
-    );
+    let dry_pixels =
+        app.render_one_frame_with_surface_and_mask(gpu, forward_camera(), Some(dry), Some(1.0));
 
     // Rain at 5 mm/h with cloud mask present.
     let with_rain = SurfaceParams {
@@ -141,12 +137,8 @@ fn rain_disappears_when_cloud_mask_zero() {
     };
     let dry = SurfaceParams::default();
 
-    let dry_pixels = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        forward_camera(),
-        Some(dry),
-        Some(0.0),
-    );
+    let dry_pixels =
+        app.render_one_frame_with_surface_and_mask(gpu, forward_camera(), Some(dry), Some(0.0));
     let no_clouds_pixels = app.render_one_frame_with_surface_and_mask(
         gpu,
         forward_camera(),
@@ -216,12 +208,8 @@ fn rain_ripples_change_wet_ground_appearance() {
         Some(calm_water),
         Some(1.0),
     );
-    let rainy = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        camera,
-        Some(rainy_water),
-        Some(1.0),
-    );
+    let rainy =
+        app.render_one_frame_with_surface_and_mask(gpu, camera, Some(rainy_water), Some(1.0));
 
     // The ripple-perturbed normal redistributes the specular highlight.
     // We expect a non-trivial difference in the ground region.
@@ -262,12 +250,8 @@ fn marshall_palmer_intensity_scales_visibility() {
         ..SurfaceParams::default()
     };
 
-    let dry_pixels = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        forward_camera(),
-        Some(dry),
-        Some(1.0),
-    );
+    let dry_pixels =
+        app.render_one_frame_with_surface_and_mask(gpu, forward_camera(), Some(dry), Some(1.0));
     let light_pixels = app.render_one_frame_with_surface_and_mask(
         gpu,
         forward_camera(),
@@ -320,18 +304,10 @@ fn snow_kind_renders_distinct_pixels() {
     // Force cloud mask = 1 so rain/snow particles aren't gated out
     // by the Phase 8 cloud-occlusion mask (Phase 12.6 changed the
     // stub default to 0 / "clear sky" — explicit override here).
-    let rain_pixels = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        forward_camera(),
-        Some(rain),
-        Some(1.0),
-    );
-    let snow_pixels = app.render_one_frame_with_surface_and_mask(
-        gpu,
-        forward_camera(),
-        Some(snow),
-        Some(1.0),
-    );
+    let rain_pixels =
+        app.render_one_frame_with_surface_and_mask(gpu, forward_camera(), Some(rain), Some(1.0));
+    let snow_pixels =
+        app.render_one_frame_with_surface_and_mask(gpu, forward_camera(), Some(snow), Some(1.0));
 
     // Snow particles use a different sprite (round splat, white tint vs
     // rain's blue-grey streak). The two images should differ.

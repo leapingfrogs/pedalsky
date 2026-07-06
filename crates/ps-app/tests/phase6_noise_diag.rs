@@ -46,8 +46,14 @@ fn base_noise_volume_has_variation() {
         }
         let avg = sum as f32 / (pixels.len() / 4) as f32;
         eprintln!("base.{name}: min={min} max={max} avg={avg:.1}");
-        assert!(max > min + 16, "base.{name}: not enough variation (min={min} max={max})");
-        assert!(avg > 8.0 && avg < 248.0, "base.{name}: degenerate avg={avg}");
+        assert!(
+            max > min + 16,
+            "base.{name}: not enough variation (min={min} max={max})"
+        );
+        assert!(
+            avg > 8.0 && avg < 248.0,
+            "base.{name}: degenerate avg={avg}"
+        );
     }
 }
 
@@ -121,17 +127,19 @@ fn blue_noise_tile_is_uniform() {
 fn readback_3d_rgba8(gpu: &GpuContext, texture: &wgpu::Texture, size: u32) -> Vec<u8> {
     let bytes_per_pixel = 4u32;
     let unpadded = size * bytes_per_pixel;
-    let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let aligned =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("noise-diag-staging-3d"),
         size: (aligned * size * size) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("noise-diag-copy-3d"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("noise-diag-copy-3d"),
+        });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -187,17 +195,19 @@ fn readback_2d_r8(gpu: &GpuContext, texture: &wgpu::Texture, size: u32) -> Vec<u
 
 fn readback_2d_n(gpu: &GpuContext, texture: &wgpu::Texture, size: u32, bpp: u32) -> Vec<u8> {
     let unpadded = size * bpp;
-    let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let aligned =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("noise-diag-staging-2d"),
         size: (aligned * size) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("noise-diag-copy-2d"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("noise-diag-copy-2d"),
+        });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture,

@@ -268,13 +268,7 @@ mod tests {
     #[test]
     fn search_returns_empty_for_blank_query() {
         let dir = tempfile::tempdir().unwrap();
-        let results = search(
-            &dir.path().to_path_buf(),
-            "   ",
-            5,
-            Duration::from_secs(60),
-        )
-        .unwrap();
+        let results = search(&dir.path().to_path_buf(), "   ", 5, Duration::from_secs(60)).unwrap();
         assert!(results.is_empty());
     }
 }

@@ -89,23 +89,13 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
             "--scene" => scene = iter.next().map(PathBuf::from),
             "--time" => time_str = iter.next().cloned(),
             "--time-end" => time_end_str = iter.next().cloned(),
-            "--fps" => {
-                fps = iter.next().and_then(|s| s.parse().ok()).unwrap_or(24.0)
-            }
+            "--fps" => fps = iter.next().and_then(|s| s.parse().ok()).unwrap_or(24.0),
             "--synthesise-once" => synthesise_once = true,
             "--output" => output = iter.next().map(PathBuf::from),
-            "--width" => {
-                width = iter.next().and_then(|s| s.parse().ok()).unwrap_or(1280)
-            }
-            "--height" => {
-                height = iter.next().and_then(|s| s.parse().ok()).unwrap_or(720)
-            }
-            "--yaw-deg" => {
-                yaw_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0.0)
-            }
-            "--pitch-deg" => {
-                pitch_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(5.0)
-            }
+            "--width" => width = iter.next().and_then(|s| s.parse().ok()).unwrap_or(1280),
+            "--height" => height = iter.next().and_then(|s| s.parse().ok()).unwrap_or(720),
+            "--yaw-deg" => yaw_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(0.0),
+            "--pitch-deg" => pitch_deg = iter.next().and_then(|s| s.parse().ok()).unwrap_or(5.0),
             "--seed" => {
                 seed = iter.next().and_then(|s| s.parse().ok());
             }
@@ -125,9 +115,7 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
         Some(s) => DateTime::parse_from_rfc3339(&s)
             .ok()
             .map(|t| t.with_timezone(&Utc))
-            .or_else(|| {
-                Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).single()
-            })?,
+            .or_else(|| Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).single())?,
         None => Utc.with_ymd_and_hms(2000, 1, 1, 12, 0, 0).single()?,
     };
     let time_end = time_end_str.and_then(|s| {
@@ -155,8 +143,8 @@ pub fn parse_args(argv: &[String]) -> Option<RenderArgs> {
 pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     // Load engine config + scene.
     let config_path = workspace_root.join("pedalsky.toml");
-    let mut config = Config::load(&config_path)
-        .with_context(|| format!("loading {}", config_path.display()))?;
+    let mut config =
+        Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
     config
         .validate_with_base(config_path.parent())
         .context("validating engine config")?;
@@ -165,8 +153,8 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     } else {
         workspace_root.join(&args.scene)
     };
-    let scene = Scene::load(&scene_path)
-        .with_context(|| format!("loading {}", scene_path.display()))?;
+    let scene =
+        Scene::load(&scene_path).with_context(|| format!("loading {}", scene_path.display()))?;
     scene.validate().context("validating scene")?;
 
     // Disable backdrop / debug subsystems for the headless render.
@@ -213,9 +201,20 @@ pub fn run(workspace_root: &Path, args: RenderArgs) -> Result<()> {
     // frame fall-through writes the original four documentation
     // outputs.
     if let Some(time_end) = args.time_end {
-        return run_sequence(&gpu, &mut app, &scene, &config, camera, args.time, time_end,
-                            args.fps, args.synthesise_once, &args.output, args.width,
-                            args.height);
+        return run_sequence(
+            &gpu,
+            &mut app,
+            &scene,
+            &config,
+            camera,
+            args.time,
+            time_end,
+            args.fps,
+            args.synthesise_once,
+            &args.output,
+            args.width,
+            args.height,
+        );
     }
 
     // Render via the scene-synthesis path so cloud layers, wind field

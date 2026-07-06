@@ -201,7 +201,11 @@ impl RenderSubsystem for TintSubsystem {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.scratch = Some(ScratchState { texture, view, size });
+            self.scratch = Some(ScratchState {
+                texture,
+                view,
+                size,
+            });
         }
         let scratch = self.scratch.as_ref().expect("just allocated");
 

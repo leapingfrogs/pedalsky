@@ -31,14 +31,19 @@ const RENDER_H: u32 = 720;
 /// cloud base rather than at the horizon; otherwise the deck
 /// renders edge-on through 9+ km of haze and reads as a thin band.
 const SCENES: &[(&str, &str, f32, f32)] = &[
-    ("clear_summer_noon",        "2026-06-21T11:00:00Z", 14.0,  5.0),
-    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0,  5.0),
-    ("overcast_drizzle",         "2026-04-12T10:00:00Z", 14.0, 45.0),
-    ("thunderstorm",             "2026-08-16T16:00:00Z", 14.0,  5.0),
-    ("high_cirrus_sunset",       "2026-09-22T17:30:00Z", 11.0,  5.0),
-    ("winter_overcast_snow",     "2026-01-08T12:00:00Z", 14.0, 60.0),
-    ("twilight_civil",           "2026-12-21T04:30:00Z",  8.0,  5.0),
-    ("mountain_wave_clouds",     "2026-03-15T13:00:00Z", 14.0,  5.0),
+    ("clear_summer_noon", "2026-06-21T11:00:00Z", 14.0, 5.0),
+    (
+        "broken_cumulus_afternoon",
+        "2026-05-10T14:30:00Z",
+        14.0,
+        5.0,
+    ),
+    ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0, 45.0),
+    ("thunderstorm", "2026-08-16T16:00:00Z", 14.0, 5.0),
+    ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0, 5.0),
+    ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0, 60.0),
+    ("twilight_civil", "2026-12-21T08:05:00Z", 8.0, 5.0),
+    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 14.0, 5.0),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -78,8 +83,13 @@ pub fn render_scene(
     let root = workspace_root();
     let config_path = root.join("pedalsky.toml");
     let mut config = Config::load(&config_path).expect("load engine config");
-    config.validate_with_base(config_path.parent()).expect("validate config");
-    let scene_path = root.join("tests").join("scenes").join(format!("{scene_name}.toml"));
+    config
+        .validate_with_base(config_path.parent())
+        .expect("validate config");
+    let scene_path = root
+        .join("tests")
+        .join("scenes")
+        .join(format!("{scene_name}.toml"));
     let scene = Scene::load(&scene_path).expect("load scene");
     scene.validate().expect("validate scene");
     config.render.subsystems.backdrop = false;
@@ -126,8 +136,7 @@ pub fn render_scene(
 fn ssim(a: &image::RgbaImage, b: &image::RgbaImage) -> f64 {
     let a_rgb = image::DynamicImage::ImageRgba8(a.clone()).to_rgb8();
     let b_rgb = image::DynamicImage::ImageRgba8(b.clone()).to_rgb8();
-    let result = image_compare::rgb_hybrid_compare(&a_rgb, &b_rgb)
-        .expect("image-compare failed");
+    let result = image_compare::rgb_hybrid_compare(&a_rgb, &b_rgb).expect("image-compare failed");
     result.score
 }
 
@@ -137,16 +146,14 @@ fn all_scenes_match_goldens() {
     let root = workspace_root();
     let golden_dir = root.join("tests").join("golden");
     if !golden_dir.exists() {
-        eprintln!(
-            "tests/golden/ does not exist — run `cargo run --bin ps-bless` to seed it."
-        );
+        eprintln!("tests/golden/ does not exist — run `cargo run --bin ps-bless` to seed it.");
         return;
     }
     let mut failures = Vec::new();
     for (name, time_iso, ev100, pitch_deg) in SCENES {
         let actual = render_scene(gpu, name, time_iso, *ev100, *pitch_deg);
-        let actual_img = image::RgbaImage::from_raw(RENDER_W, RENDER_H, actual)
-            .expect("rgba buffer length");
+        let actual_img =
+            image::RgbaImage::from_raw(RENDER_W, RENDER_H, actual).expect("rgba buffer length");
         let golden_path = golden_dir.join(format!("{name}.png"));
         if !golden_path.exists() {
             failures.push(format!(
@@ -176,6 +183,10 @@ fn all_scenes_match_goldens() {
         for f in &failures {
             eprintln!("FAIL {f}");
         }
-        panic!("{} golden(s) failed:\n{}", failures.len(), failures.join("\n"));
+        panic!(
+            "{} golden(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }

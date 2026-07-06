@@ -6,12 +6,11 @@
 //!
 //! Pipeline: two passes, both at `PassStage::PostProcess`:
 //!
-//!   1. `radial`    — reads the HDR target (sampled via a scratch
-//!                    copy), runs N radial samples toward the sun
-//!                    NDC, writes the accumulation to a half-res
-//!                    scratch RT.
+//!   1. `radial` — reads the HDR target (sampled via a scratch
+//!      copy), runs N radial samples toward the sun NDC, writes the
+//!      accumulation to a half-res scratch RT.
 //!   2. `composite` — reads the half-res RT and blends additively
-//!                    into the HDR target.
+//!      into the HDR target.
 //!
 //! The pass is a no-op when the sun is below the horizon or off
 //! screen — those cases write zero into the scratch and the
@@ -101,83 +100,79 @@ impl GodraysSubsystem {
 
         // --- Radial pipeline ---
         let radial_src = ps_core::shaders::load_shader(RADIAL_REL, RADIAL_BAKED);
-        let composed_radial = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &radial_src,
-        ]);
+        let composed_radial =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &radial_src]);
         let radial_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("godrays/radial.wgsl"),
             source: wgpu::ShaderSource::Wgsl(composed_radial.into()),
         });
 
         let frame_layout = ps_core::frame_bind_group_layout(device);
-        let radial_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("godrays-radial-bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let radial_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("godrays-radial-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
         let radial_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("godrays-radial-pl"),
                 bind_group_layouts: &[Some(&frame_layout), Some(&radial_layout)],
                 immediate_size: 0,
             });
-        let radial_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("godrays-radial-rp"),
-                layout: Some(&radial_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &radial_module,
-                    entry_point: Some("vs_fullscreen"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &radial_module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let radial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("godrays-radial-rp"),
+            layout: Some(&radial_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &radial_module,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &radial_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HdrFramebuffer::COLOR_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // --- Composite pipeline (additive blend) ---
         let composite_src = ps_core::shaders::load_shader(COMPOSITE_REL, COMPOSITE_BAKED);
@@ -185,85 +180,83 @@ impl GodraysSubsystem {
             label: Some("godrays/composite.wgsl"),
             source: wgpu::ShaderSource::Wgsl(composite_src.into()),
         });
-        let composite_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("godrays-composite-bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("godrays-composite-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
         let composite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("godrays-composite-pl"),
                 bind_group_layouts: &[Some(&composite_layout)],
                 immediate_size: 0,
             });
-        let composite_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("godrays-composite-rp"),
-                layout: Some(&composite_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &composite_module,
-                    entry_point: Some("vs_fullscreen"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &composite_module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        // Additive blend: dst = dst + src.
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("godrays-composite-rp"),
+            layout: Some(&composite_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &composite_module,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HdrFramebuffer::COLOR_FORMAT,
+                    // Additive blend: dst = dst + src.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("godrays-sampler"),
@@ -360,11 +353,8 @@ impl RenderSubsystem for GodraysSubsystem {
         let composite = GodraysCompositeParamsGpu {
             config: [tuning.intensity, sun_on_screen, 0.0, 0.0],
         };
-        ctx.queue.write_buffer(
-            &self.composite_params,
-            0,
-            bytemuck::bytes_of(&composite),
-        );
+        ctx.queue
+            .write_buffer(&self.composite_params, 0, bytemuck::bytes_of(&composite));
     }
 
     fn register_passes(&self) -> Vec<PassDescriptor> {
@@ -397,7 +387,10 @@ impl RenderSubsystem for GodraysSubsystem {
                     (full_size.0 / HALF_RES_FACTOR).max(1),
                     (full_size.1 / HALF_RES_FACTOR).max(1),
                 );
-                let needs_alloc = self.scratch.as_ref().is_none_or(|s| s.full_size != full_size);
+                let needs_alloc = self
+                    .scratch
+                    .as_ref()
+                    .is_none_or(|s| s.full_size != full_size);
                 if needs_alloc {
                     let hdr_copy = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("godrays-hdr-copy"),
@@ -410,8 +403,7 @@ impl RenderSubsystem for GodraysSubsystem {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: HdrFramebuffer::COLOR_FORMAT,
-                        usage: wgpu::TextureUsages::COPY_DST
-                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                         view_formats: &[],
                     });
                     let hdr_copy_view =
@@ -431,8 +423,7 @@ impl RenderSubsystem for GodraysSubsystem {
                             | wgpu::TextureUsages::TEXTURE_BINDING,
                         view_formats: &[],
                     });
-                    let rays_rt_view =
-                        rays_rt.create_view(&wgpu::TextureViewDescriptor::default());
+                    let rays_rt_view = rays_rt.create_view(&wgpu::TextureViewDescriptor::default());
                     self.scratch = Some(ScratchState {
                         hdr_copy,
                         hdr_copy_view,
@@ -536,9 +527,7 @@ impl RenderSubsystem for GodraysSubsystem {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &scratch.rays_rt_view,
-                                ),
+                                resource: wgpu::BindingResource::TextureView(&scratch.rays_rt_view),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
@@ -597,11 +586,7 @@ impl SubsystemFactory for GodraysFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.godrays
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(GodraysSubsystem::new(config, gpu)))
     }
 }

@@ -197,15 +197,15 @@ fn probe_transmittance_returns_sensible_rgb() {
 
     // Now run the probe.
     let probe = ps_app::probe::ProbeReadback::new(gpu);
-    let luts = app
-        .atmosphere_luts_for_diag()
-        .expect("LUTs published");
+    let luts = app.atmosphere_luts_for_diag().expect("LUTs published");
     // Build minimal frame + world bind groups via the test harness's
     // shared bindings.
     let result = {
-        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("probe-test"),
-        });
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("probe-test"),
+            });
         probe.dispatch(
             &mut encoder,
             &gpu.queue,

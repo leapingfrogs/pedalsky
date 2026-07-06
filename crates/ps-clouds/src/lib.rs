@@ -312,8 +312,7 @@ impl CloudRt {
             (tex, view)
         };
         let (luminance, luminance_view) = make_attachment("clouds-rt-luminance");
-        let (transmittance, transmittance_view) =
-            make_attachment("clouds-rt-transmittance");
+        let (transmittance, transmittance_view) = make_attachment("clouds-rt-transmittance");
         let composite_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("clouds-composite-bg"),
             layout: composite_layout,
@@ -467,9 +466,7 @@ impl CloudRt {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &history[slot].luminance_view,
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&history[slot].luminance_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -491,9 +488,7 @@ impl CloudRt {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(
-                            &history[slot].luminance_view,
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&history[slot].luminance_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -513,10 +508,7 @@ impl CloudRt {
             })
         };
         let composite_bg = [make_composite_bg(0), make_composite_bg(1)];
-        let composite_halfres_bg = [
-            make_composite_halfres_bg(0),
-            make_composite_halfres_bg(1),
-        ];
+        let composite_halfres_bg = [make_composite_halfres_bg(0), make_composite_halfres_bg(1)];
 
         self.taa = Some(TaaState {
             history,
@@ -534,11 +526,7 @@ impl CloudsSubsystem {
     pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         let device = &gpu.device;
         let noise = CloudNoise::bake(gpu);
-        let pipelines = CloudPipelines::new(
-            device,
-            &noise.layout,
-            &noise.layout_halfres,
-        );
+        let pipelines = CloudPipelines::new(device, &noise.layout, &noise.layout_halfres);
 
         // Seed CloudParamsGpu from config so the very first frame
         // honours the user's initial cloud_steps / detail_strength etc.
@@ -558,7 +546,11 @@ impl CloudsSubsystem {
         // Phase 14.C — wind drift follows the same freeze_time pattern
         // so paused screenshots don't continue to advect noise after
         // the user clicks pause.
-        params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
+        params.wind_drift_strength = if c.freeze_time {
+            0.0
+        } else {
+            c.wind_drift_strength
+        };
         // Phase 18 — diurnal modulation is sun-direction driven, not
         // simulated_seconds driven, so freeze_time doesn't need to
         // gate it (the world clock pausing already freezes the sun).
@@ -743,11 +735,8 @@ impl CloudsSubsystem {
             let taa_params = CloudTaaParamsGpu {
                 config: [blend_weight, history_valid_flag, 0.0, 0.0],
             };
-            ctx.queue.write_buffer(
-                &self.taa_params_buffer,
-                0,
-                bytemuck::bytes_of(&taa_params),
-            );
+            ctx.queue
+                .write_buffer(&self.taa_params_buffer, 0, bytemuck::bytes_of(&taa_params));
             // After this frame's TAA pass writes the new resolved
             // slot, next frame's history is unconditionally valid.
             taa_state.history_valid = true;
@@ -878,7 +867,12 @@ impl CloudsSubsystem {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -887,7 +881,12 @@ impl CloudsSubsystem {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -930,7 +929,12 @@ impl CloudsSubsystem {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -939,7 +943,12 @@ impl CloudsSubsystem {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 1.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -957,11 +966,7 @@ impl CloudsSubsystem {
 
     /// Composite the cloud RT (or TAA-resolved history) over the HDR
     /// target.
-    fn dispatch_composite(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        ctx: &RenderContext<'_>,
-    ) {
+    fn dispatch_composite(&mut self, encoder: &mut wgpu::CommandEncoder, ctx: &RenderContext<'_>) {
         let half_res = self.half_res_render;
         let taa_slot = self.taa_dispatch;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1026,11 +1031,11 @@ impl RenderSubsystem for CloudsSubsystem {
                 {
                     self.cpu_layers[i] = *l;
                 }
-                self.params.cloud_layer_count = ctx
-                    .weather
-                    .cloud_layers
-                    .len()
-                    .min(MAX_CLOUD_LAYERS as usize) as u32;
+                self.params.cloud_layer_count =
+                    ctx.weather
+                        .cloud_layers
+                        .len()
+                        .min(MAX_CLOUD_LAYERS as usize) as u32;
             } else {
                 self.params.cloud_layer_count = 1;
             }
@@ -1101,7 +1106,11 @@ impl RenderSubsystem for CloudsSubsystem {
         self.params.forward_bias = c.forward_bias;
         self.params.temporal_jitter = u32::from(c.temporal_jitter && !c.freeze_time);
         // Phase 14.C — wind drift mirrors the temporal_jitter gating.
-        self.params.wind_drift_strength = if c.freeze_time { 0.0 } else { c.wind_drift_strength };
+        self.params.wind_drift_strength = if c.freeze_time {
+            0.0
+        } else {
+            c.wind_drift_strength
+        };
         // Phase 14.H — skew is spatial; not gated by freeze_time.
         self.params.wind_skew_strength = c.wind_skew_strength;
         // Phase 18 — diurnal modulation; the world clock pausing

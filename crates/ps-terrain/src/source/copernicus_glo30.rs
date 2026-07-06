@@ -56,8 +56,16 @@ impl CopernicusGlo30 {
 
     /// Build the public S3 URL for a 1° tile corner.
     fn url(lat_floor: i32, lon_floor: i32) -> String {
-        let (ns, lat) = if lat_floor >= 0 { ('N', lat_floor) } else { ('S', -lat_floor) };
-        let (ew, lon) = if lon_floor >= 0 { ('E', lon_floor) } else { ('W', -lon_floor) };
+        let (ns, lat) = if lat_floor >= 0 {
+            ('N', lat_floor)
+        } else {
+            ('S', -lat_floor)
+        };
+        let (ew, lon) = if lon_floor >= 0 {
+            ('E', lon_floor)
+        } else {
+            ('W', -lon_floor)
+        };
         let stem = format!("Copernicus_DSM_COG_10_{ns}{lat:02}_00_{ew}{lon:03}_00_DEM");
         format!("https://copernicus-dem-30m.s3.amazonaws.com/{stem}/{stem}.tif")
     }
@@ -95,8 +103,7 @@ impl HeightmapSource for CopernicusGlo30 {
             }
         };
 
-        decode_tiff(&body, lat_floor, lon_floor)
-            .map_err(TerrainError::Decode)
+        decode_tiff(&body, lat_floor, lon_floor).map_err(TerrainError::Decode)
     }
 }
 
@@ -135,8 +142,7 @@ fn decode_tiff(
     lon_floor: i32,
 ) -> Result<HeightmapTile, anyhow::Error> {
     let cursor = Cursor::new(body);
-    let mut decoder = Decoder::new(cursor)
-        .context("open TIFF decoder")?;
+    let mut decoder = Decoder::new(cursor).context("open TIFF decoder")?;
 
     let (width, height) = decoder.dimensions().context("read TIFF dimensions")?;
     if width < 2 || height < 2 {

@@ -188,9 +188,11 @@ fn auto_exposure_derives_ev100_from_avg_log_luminance() {
     // construction submits this dispatch's slot for mapping and reads
     // the opposite (still-Idle) slot, returning None. Wait between
     // frames so the GPU has time to complete the map_async.
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("ae-test"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ae-test"),
+        });
     ae.dispatch(&mut encoder);
     gpu.queue.submit([encoder.finish()]);
     let _ = ae.read_back_ev100(&gpu.device); // first call submits, returns None
@@ -198,9 +200,11 @@ fn auto_exposure_derives_ev100_from_avg_log_luminance() {
         submission_index: None,
         timeout: None,
     }); // wait for the just-submitted map
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("ae-test-2"),
-    });
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ae-test-2"),
+        });
     ae.dispatch(&mut encoder);
     gpu.queue.submit([encoder.finish()]);
     let ev100 = ae.read_back_ev100(&gpu.device).expect("readback");
@@ -246,7 +250,10 @@ fn midday_at_ev15_is_believable() {
     let total = avg[0] + avg[1] + avg[2];
     // Mid-day blue sky at EV=15 should be visibly bright, blue-dominant,
     // not clipped to white.
-    assert!(total > 0.3 && total < 2.6, "total RGB out of range: {total:.3}");
+    assert!(
+        total > 0.3 && total < 2.6,
+        "total RGB out of range: {total:.3}"
+    );
     assert!(avg[2] > avg[0] + 0.1, "expected blue-dominant midday sky");
     // No fully-clipped pixels (we want headroom).
     let clipped = pixels
@@ -355,7 +362,9 @@ fn sunset_at_ev12_has_warm_tint() {
     // 20:30 UTC at 60° N on the prime meridian, June solstice → sun
     // close to the horizon (~5°). Late evening pushes the long-Rayleigh
     // path to its maximum, producing the strongest sunset tint.
-    let sunset_utc = chrono::Utc.with_ymd_and_hms(2026, 6, 21, 20, 30, 0).unwrap();
+    let sunset_utc = chrono::Utc
+        .with_ymd_and_hms(2026, 6, 21, 20, 30, 0)
+        .unwrap();
     let world = ps_core::WorldState::new(sunset_utc, 60.0, 0.0, 0.0);
     eprintln!("sunset sun_dir = {:?}", world.sun_direction_world);
     assert!(
@@ -383,7 +392,10 @@ fn sunset_at_ev12_has_warm_tint() {
     let avg = average_rgb(&pixels);
     eprintln!("sunset EV=12 avg = {avg:?}");
     let total = avg[0] + avg[1] + avg[2];
-    assert!(total > 0.2, "sunset EV=12 should be visible (total={total:.3})");
+    assert!(
+        total > 0.2,
+        "sunset EV=12 should be visible (total={total:.3})"
+    );
 
     // Compare R/B chromatic ratio against the equivalent midday scene at
     // the same EV. The sunset path traverses much more atmosphere (low
@@ -398,8 +410,11 @@ fn sunset_at_ev12_has_warm_tint() {
         pitch: 60_f32.to_radians(),
         ..FlyCamera::default()
     };
-    let midday_pixels =
-        midday_app.render_one_frame_with_surface(gpu, midday_camera, Some(SurfaceParams::default()));
+    let midday_pixels = midday_app.render_one_frame_with_surface(
+        gpu,
+        midday_camera,
+        Some(SurfaceParams::default()),
+    );
     let midday_avg = average_rgb(&midday_pixels);
     eprintln!("midday EV=12 avg = {midday_avg:?}");
 

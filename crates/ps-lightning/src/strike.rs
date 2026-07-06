@@ -50,8 +50,7 @@ impl StrikeStore {
         for s in &mut self.active {
             s.age_s += dt_s;
         }
-        self.active
-            .retain(|s| s.age_s <= crate::STRIKE_LIFETIME_S);
+        self.active.retain(|s| s.age_s <= crate::STRIKE_LIFETIME_S);
     }
 
     /// Sample N from a Poisson with mean λ. Forwarded to the RNG.

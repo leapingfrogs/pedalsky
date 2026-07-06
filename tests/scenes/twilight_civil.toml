@@ -4,9 +4,12 @@
 # Validates the low-illuminance path of the atmosphere LUTs and the
 # auto-exposure debug path. The scene itself has no clouds; the time-
 # of-day comes from the per-render --time CLI argument and observer
-# latitude. Dunblane on 2026-12-21 around 04:30 UTC puts the sun
+# latitude. Dunblane on 2026-12-21 around 08:05 UTC puts the sun
 # approximately 5° below the horizon (twilight wedge to the
-# south-east).
+# south-east). The original 04:30 UTC was actually sun ~-33° — deep
+# night — and the old golden captured the frozen-sunset transmittance
+# bug rather than twilight (fixed alongside the earth-shadow test in
+# atmosphere_lut_sampling.wgsl).
 
 schema_version = 1
 

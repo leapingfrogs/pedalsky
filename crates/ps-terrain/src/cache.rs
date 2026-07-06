@@ -38,8 +38,16 @@ impl BinaryCache {
     /// `lat_floor`/`lon_floor` are the integer 1° corners (south-west of
     /// the tile per the Copernicus convention).
     fn key(source: &str, lat_floor: i32, lon_floor: i32) -> String {
-        let (ns, lat) = if lat_floor >= 0 { ('N', lat_floor) } else { ('S', -lat_floor) };
-        let (ew, lon) = if lon_floor >= 0 { ('E', lon_floor) } else { ('W', -lon_floor) };
+        let (ns, lat) = if lat_floor >= 0 {
+            ('N', lat_floor)
+        } else {
+            ('S', -lat_floor)
+        };
+        let (ew, lon) = if lon_floor >= 0 {
+            ('E', lon_floor)
+        } else {
+            ('W', -lon_floor)
+        };
         format!("{source}-{ns}{lat:02}_{ew}{lon:03}.tif")
     }
 

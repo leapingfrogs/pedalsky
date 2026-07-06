@@ -19,8 +19,7 @@ use ps_core::GpuContext;
 
 const BASE_NOISE_BAKED: &str = include_str!("../../../shaders/clouds/noise_base.comp.wgsl");
 const BASE_NOISE_REL: &str = "clouds/noise_base.comp.wgsl";
-const DETAIL_NOISE_BAKED: &str =
-    include_str!("../../../shaders/clouds/noise_detail.comp.wgsl");
+const DETAIL_NOISE_BAKED: &str = include_str!("../../../shaders/clouds/noise_detail.comp.wgsl");
 const DETAIL_NOISE_REL: &str = "clouds/noise_detail.comp.wgsl";
 const CURL_NOISE_BAKED: &str = include_str!("../../../shaders/clouds/noise_curl.comp.wgsl");
 const CURL_NOISE_REL: &str = "clouds/noise_curl.comp.wgsl";
@@ -73,7 +72,12 @@ impl CloudNoise {
         let device = &gpu.device;
         let queue = &gpu.queue;
 
-        let base = make_3d(device, "clouds-noise-base", BASE_SIZE, wgpu::TextureFormat::Rgba8Unorm);
+        let base = make_3d(
+            device,
+            "clouds-noise-base",
+            BASE_SIZE,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
         let base_view = base.create_view(&wgpu::TextureViewDescriptor::default());
         let detail = make_3d(
             device,
@@ -141,8 +145,7 @@ impl CloudNoise {
 
         // Bake passes. Hot-reload-aware shader sources.
         let base_src = ps_core::shaders::load_shader(BASE_NOISE_REL, BASE_NOISE_BAKED);
-        let detail_src =
-            ps_core::shaders::load_shader(DETAIL_NOISE_REL, DETAIL_NOISE_BAKED);
+        let detail_src = ps_core::shaders::load_shader(DETAIL_NOISE_REL, DETAIL_NOISE_BAKED);
         let curl_src = ps_core::shaders::load_shader(CURL_NOISE_REL, CURL_NOISE_BAKED);
         bake_3d(
             device,
@@ -284,9 +287,8 @@ fn bake_3d(
             resource: wgpu::BindingResource::TextureView(target),
         }],
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some(label),
-    });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(label),
@@ -347,9 +349,8 @@ fn bake_2d(
             resource: wgpu::BindingResource::TextureView(target),
         }],
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some(label),
-    });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
     {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(label),
@@ -717,7 +718,10 @@ mod tests {
         let avg = pixels.len() as f32 / 16.0;
         for (i, &h) in hist.iter().enumerate() {
             let dev = (h as f32 - avg).abs() / avg;
-            assert!(dev < 0.5, "blue-noise bucket {i} = {h}, avg {avg}, dev {dev}");
+            assert!(
+                dev < 0.5,
+                "blue-noise bucket {i} = {h}, avg {avg}, dev {dev}"
+            );
         }
     }
 }

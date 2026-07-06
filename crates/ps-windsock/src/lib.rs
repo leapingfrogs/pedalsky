@@ -91,10 +91,8 @@ impl WindsockSubsystem {
         let device = &gpu.device;
 
         let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
-        let composed = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &live_src,
-        ]);
+        let composed =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &live_src]);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("windsock/windsock.wgsl"),
             source: wgpu::ShaderSource::Wgsl(composed.into()),
@@ -308,8 +306,8 @@ fn build_params(ctx: &PrepareContext<'_>) -> WindsockParamsGpu {
     // Compose the sock-local axis (+Z_local maps to downwind) as a
     // rotation that tilts the horizontal downwind direction downward
     // by `droop_rad`.
-    let cone_axis = (downwind_horiz * droop_rad.cos() + Vec3::NEG_Y * droop_rad.sin())
-        .normalize_or_zero();
+    let cone_axis =
+        (downwind_horiz * droop_rad.cos() + Vec3::NEG_Y * droop_rad.sin()).normalize_or_zero();
 
     // Build an orthonormal basis with `cone_axis` as the Z column.
     // Pick an "up" reference that isn't parallel to the axis (the
@@ -337,7 +335,12 @@ fn build_params(ctx: &PrepareContext<'_>) -> WindsockParamsGpu {
     let model = Mat4::from_cols(
         Vec4::new(x_axis.x * sx, x_axis.y * sx, x_axis.z * sx, 0.0),
         Vec4::new(y_axis.x * sy, y_axis.y * sy, y_axis.z * sy, 0.0),
-        Vec4::new(z_axis.x * sz_scale, z_axis.y * sz_scale, z_axis.z * sz_scale, 0.0),
+        Vec4::new(
+            z_axis.x * sz_scale,
+            z_axis.y * sz_scale,
+            z_axis.z * sz_scale,
+            0.0,
+        ),
         Vec4::new(anchor.x, anchor.y, anchor.z, 1.0),
     );
 
@@ -469,11 +472,7 @@ impl SubsystemFactory for WindsockFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.windsock
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(WindsockSubsystem::new(config, gpu)))
     }
 }

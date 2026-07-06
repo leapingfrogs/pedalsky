@@ -158,7 +158,7 @@ impl Hourly {
         for (i, raw) in self.time.iter().enumerate() {
             let parsed = parse_open_meteo_ts(raw)?;
             let diff_secs = (target - parsed).num_seconds().abs();
-            if best.map_or(true, |(d, _)| diff_secs < d) {
+            if best.is_none_or(|(d, _)| diff_secs < d) {
                 best = Some((diff_secs, i));
             }
         }
@@ -207,8 +207,12 @@ impl Hourly {
             };
             // Either vec may be empty (older cached response) or
             // shorter than `time` (rare API edge case) — guard both.
-            let Some(speed) = speed_vec.get(i).copied() else { continue };
-            let Some(dir) = dir_vec.get(i).copied() else { continue };
+            let Some(speed) = speed_vec.get(i).copied() else {
+                continue;
+            };
+            let Some(dir) = dir_vec.get(i).copied() else {
+                continue;
+            };
             if !speed.is_finite() || !dir.is_finite() {
                 continue;
             }
@@ -308,9 +312,12 @@ pub fn fetch(
 ) -> anyhow::Result<OpenMeteoResponse> {
     let cache = Cache::new(cache_root);
     let hour = target
-        .with_minute(0).expect("0 minutes valid")
-        .with_second(0).expect("0 seconds valid")
-        .with_nanosecond(0).expect("0 nanos valid");
+        .with_minute(0)
+        .expect("0 minutes valid")
+        .with_second(0)
+        .expect("0 seconds valid")
+        .with_nanosecond(0)
+        .expect("0 nanos valid");
 
     // Try fresh cache.
     if let Some(body) = cache.read_fresh("openmeteo", lat, lon, hour, ttl)? {
@@ -381,7 +388,10 @@ mod tests {
     #[test]
     fn parse_timestamp_short_form() {
         let dt = parse_open_meteo_ts("2026-05-12T13:00").unwrap();
-        assert_eq!(dt.format("%Y-%m-%dT%H:%M:%S").to_string(), "2026-05-12T13:00:00");
+        assert_eq!(
+            dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-05-12T13:00:00"
+        );
     }
 
     /// Recorded slice of a real Open-Meteo response. Exercises the
@@ -441,7 +451,7 @@ mod tests {
         let levels: Vec<u32> = cov.iter().map(|(l, _)| *l).collect();
         assert_eq!(levels, vec![300, 500, 700, 850, 925, 1000]);
         assert_eq!(cov[0].1, 15.0); // 300 hPa @ row 1
-        assert_eq!(cov[5].1, 0.0);  // 1000 hPa @ row 1
+        assert_eq!(cov[5].1, 0.0); // 1000 hPa @ row 1
     }
 
     /// Older cached responses (predating the wind-aloft addition)
@@ -506,7 +516,7 @@ mod tests {
         assert_eq!(winds[0].1, 25.0);
         assert_eq!(winds[3].1, 130.0);
         assert_eq!(winds[4].1, 165.0); // 200 hPa @ ~46 m/s — typical jet
-        // Directions kept as-supplied (meteorological).
+                                       // Directions kept as-supplied (meteorological).
         assert_eq!(winds[2].2, 260.0);
     }
 

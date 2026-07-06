@@ -9,11 +9,7 @@ use crate::{mesh::MeshData, TerrainError};
 pub struct PassthroughSimplify;
 
 impl MeshSimplify for PassthroughSimplify {
-    fn simplify(
-        &self,
-        mesh: MeshData,
-        _target: SimplifyTarget,
-    ) -> Result<MeshData, TerrainError> {
+    fn simplify(&self, mesh: MeshData, _target: SimplifyTarget) -> Result<MeshData, TerrainError> {
         Ok(mesh)
     }
 

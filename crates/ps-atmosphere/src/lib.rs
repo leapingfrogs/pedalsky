@@ -26,9 +26,9 @@ use ps_core::{
     atmosphere_lut_bind_group_layout, atmosphere_static_only_bind_group,
     atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
     atmosphere_transmittance_only_bind_group_layout, frame_bind_group_layout,
-    world_bind_group_layout, AtmosphereLuts, BindGroupCache, Config, GpuContext,
-    HdrFramebuffer, PassDescriptor, PassId, PassStage, PrepareContext, RenderContext,
-    RenderSubsystem, SubsystemFactory,
+    world_bind_group_layout, AtmosphereLuts, BindGroupCache, Config, GpuContext, HdrFramebuffer,
+    PassDescriptor, PassId, PassStage, PrepareContext, RenderContext, RenderSubsystem,
+    SubsystemFactory,
 };
 use tracing::{debug, info};
 
@@ -47,8 +47,7 @@ pub const NAME: &str = "atmosphere";
 const TRANSMITTANCE_BAKED: &str =
     include_str!("../../../shaders/atmosphere/transmittance.comp.wgsl");
 const TRANSMITTANCE_REL: &str = "atmosphere/transmittance.comp.wgsl";
-const MULTISCATTER_BAKED: &str =
-    include_str!("../../../shaders/atmosphere/multiscatter.comp.wgsl");
+const MULTISCATTER_BAKED: &str = include_str!("../../../shaders/atmosphere/multiscatter.comp.wgsl");
 const MULTISCATTER_REL: &str = "atmosphere/multiscatter.comp.wgsl";
 const SKYVIEW_BAKED: &str = include_str!("../../../shaders/atmosphere/skyview.comp.wgsl");
 const SKYVIEW_REL: &str = "atmosphere/skyview.comp.wgsl";
@@ -101,9 +100,7 @@ fn sky_density_mask_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 binding: 0,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float {
-                        filterable: true,
-                    },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -199,8 +196,7 @@ impl AtmosphereSubsystem {
         // armed and the baked source otherwise.
         let transmittance_src =
             ps_core::shaders::load_shader(TRANSMITTANCE_REL, TRANSMITTANCE_BAKED);
-        let multiscatter_src =
-            ps_core::shaders::load_shader(MULTISCATTER_REL, MULTISCATTER_BAKED);
+        let multiscatter_src = ps_core::shaders::load_shader(MULTISCATTER_REL, MULTISCATTER_BAKED);
         let skyview_src = ps_core::shaders::load_shader(SKYVIEW_REL, SKYVIEW_BAKED);
         let ap_src = ps_core::shaders::load_shader(AP_REL, AP_BAKED);
         let sky_fs_src = ps_core::shaders::load_shader(SKY_FS_REL, SKY_FS_BAKED);

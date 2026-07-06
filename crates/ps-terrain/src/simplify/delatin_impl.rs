@@ -43,11 +43,7 @@ impl MeshSimplify for DelatinSimplify {
         "delatin"
     }
 
-    fn simplify(
-        &self,
-        mesh: MeshData,
-        target: SimplifyTarget,
-    ) -> Result<MeshData, TerrainError> {
+    fn simplify(&self, mesh: MeshData, target: SimplifyTarget) -> Result<MeshData, TerrainError> {
         // Resolve effective max_error: explicit target overrides the
         // configured LOD 0; ratio targets fall back to the LOD-0
         // setting because delatin only understands error thresholds.
@@ -73,7 +69,10 @@ impl MeshSimplify for DelatinSimplify {
         if mesh.positions.len() != total_verts {
             return Err(TerrainError::SimplifyInvalid(format!(
                 "expected dense {}x{} grid ({} verts), got {}",
-                width, height, total_verts, mesh.positions.len()
+                width,
+                height,
+                total_verts,
+                mesh.positions.len()
             )));
         }
 
@@ -162,6 +161,31 @@ fn grid_dims_from_positions(mesh: &MeshData) -> Result<(u32, u32), TerrainError>
     Ok((width, height))
 }
 
+/// Wrap `delatin::triangulate`. delatin doesn't expose a hard
+/// triangle cap, so we honour the spec's "memory safety net" by
+/// re-running with progressively higher `max_error` until under the
+/// cap.
+#[allow(clippy::type_complexity)] // (points, triangles) tuple mirrors delatin's return
+fn run_delatin(
+    heights: &[f64],
+    width: usize,
+    height: usize,
+    max_error: f32,
+    max_triangles: Option<u32>,
+) -> Result<(Vec<(usize, usize)>, Vec<(usize, usize, usize)>), String> {
+    let mut err = max_error as f64;
+    let mut last = delatin::triangulate(heights, (width, height), delatin::Error(err))
+        .map_err(|e| format!("{e:?}"))?;
+    if let Some(cap) = max_triangles {
+        while last.1.len() > cap as usize && err < 1_000.0 {
+            err *= 1.5;
+            last = delatin::triangulate(heights, (width, height), delatin::Error(err))
+                .map_err(|e| format!("{e:?}"))?;
+        }
+    }
+    Ok(last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,7 +209,12 @@ mod tests {
             heights_m: heights,
             width: side,
             height: side,
-            extent_deg: GeoExtent { west: 0.0, east: 1.0, south: 0.0, north: 1.0 },
+            extent_deg: GeoExtent {
+                west: 0.0,
+                east: 1.0,
+                south: 0.0,
+                north: 1.0,
+            },
             source: "test",
             gsd_m_centre: 1.0,
         }
@@ -240,28 +269,4 @@ mod tests {
             coarse.indices.len() / 3,
         );
     }
-}
-
-/// Wrap `delatin::triangulate`. delatin doesn't expose a hard
-/// triangle cap, so we honour the spec's "memory safety net" by
-/// re-running with progressively higher `max_error` until under the
-/// cap.
-fn run_delatin(
-    heights: &[f64],
-    width: usize,
-    height: usize,
-    max_error: f32,
-    max_triangles: Option<u32>,
-) -> Result<(Vec<(usize, usize)>, Vec<(usize, usize, usize)>), String> {
-    let mut err = max_error as f64;
-    let mut last = delatin::triangulate(heights, (width, height), delatin::Error(err))
-        .map_err(|e| format!("{e:?}"))?;
-    if let Some(cap) = max_triangles {
-        while last.1.len() > cap as usize && err < 1_000.0 {
-            err *= 1.5;
-            last = delatin::triangulate(heights, (width, height), delatin::Error(err))
-                .map_err(|e| format!("{e:?}"))?;
-        }
-    }
-    Ok(last)
 }

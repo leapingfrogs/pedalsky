@@ -73,10 +73,8 @@ impl WaterSubsystem {
         let device = &gpu.device;
 
         let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
-        let composed = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &live_src,
-        ]);
+        let composed =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &live_src]);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("water/water.wgsl"),
             source: wgpu::ShaderSource::Wgsl(composed.into()),
@@ -93,7 +91,7 @@ impl WaterSubsystem {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<WaterParamsGpu>() as u64,
+                        std::mem::size_of::<WaterParamsGpu>() as u64
                     ),
                 },
                 count: None,
@@ -298,10 +296,7 @@ fn build_grid_mesh(n: u32) -> (Vec<[f32; 2]>, Vec<u32>) {
     let mut vertices: Vec<[f32; 2]> = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
     for j in 0..=n {
         for i in 0..=n {
-            vertices.push([
-                i as f32 / n as f32,
-                j as f32 / n as f32,
-            ]);
+            vertices.push([i as f32 / n as f32, j as f32 / n as f32]);
         }
     }
     let stride = n + 1;
@@ -333,11 +328,7 @@ impl SubsystemFactory for WaterFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.water
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(WaterSubsystem::new(config, gpu)))
     }
 }

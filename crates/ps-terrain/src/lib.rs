@@ -33,10 +33,12 @@ pub mod tile;
 
 pub use augment::{ErosionAugment, ErosionParams, HeightmapAugment, PassthroughAugment};
 pub use cache::BinaryCache;
-pub use mesh::{MeshData, build_grid_mesh};
+pub use mesh::{build_grid_mesh, MeshData};
 pub use progress::{NullProgressSink, TerrainProgressSink, TerrainStage};
-pub use simplify::{DelatinSimplify, DecimationParams, MeshSimplify, PassthroughSimplify, SimplifyTarget};
-pub use source::{HeightmapSource, copernicus_glo30::CopernicusGlo30};
+pub use simplify::{
+    DecimationParams, DelatinSimplify, MeshSimplify, PassthroughSimplify, SimplifyTarget,
+};
+pub use source::{copernicus_glo30::CopernicusGlo30, HeightmapSource};
 pub use tile::{GeoExtent, HeightmapTile, TileRequest};
 
 use std::path::PathBuf;
@@ -134,8 +136,7 @@ impl HeightmapPipeline {
         );
 
         let augmented = self.augment.augment_with_progress(raw, progress)?;
-        validate_tile(&augmented)
-            .map_err(TerrainError::AugmentInvalid)?;
+        validate_tile(&augmented).map_err(TerrainError::AugmentInvalid)?;
         tracing::info!(
             target: "ps_terrain",
             stage = self.augment.name(),

@@ -21,8 +21,7 @@
 
 use naga::front::wgsl::Frontend;
 
-const CLOUD_UNIFORMS_WGSL: &str =
-    include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
+const CLOUD_UNIFORMS_WGSL: &str = include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
 const PRECIP_ADVANCE_WGSL: &str =
     include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
 
@@ -76,13 +75,14 @@ fn assert_field_offsets(
     expected: &[(&str, u32)],
 ) {
     for (rust_name, rust_off) in expected {
-        let Some((_, wgsl_off)) =
-            wgsl_members.iter().find(|(name, _)| name == rust_name)
-        else {
+        let Some((_, wgsl_off)) = wgsl_members.iter().find(|(name, _)| name == rust_name) else {
             panic!(
                 "{struct_label}: WGSL has no member named `{rust_name}` \
                  (members: {:?})",
-                wgsl_members.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+                wgsl_members
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
             );
         };
         assert_eq!(
@@ -113,27 +113,78 @@ fn cloud_params_layout_matches_wgsl() {
         "CloudParams",
         &members,
         &[
-            ("sigma_s", std::mem::offset_of!(CloudParamsGpu, sigma_s) as u32),
-            ("sigma_a", std::mem::offset_of!(CloudParamsGpu, sigma_a) as u32),
+            (
+                "sigma_s",
+                std::mem::offset_of!(CloudParamsGpu, sigma_s) as u32,
+            ),
+            (
+                "sigma_a",
+                std::mem::offset_of!(CloudParamsGpu, sigma_a) as u32,
+            ),
             (
                 "droplet_diameter_bias",
                 std::mem::offset_of!(CloudParamsGpu, droplet_diameter_bias) as u32,
             ),
-            ("detail_strength", std::mem::offset_of!(CloudParamsGpu, detail_strength) as u32),
-            ("curl_strength", std::mem::offset_of!(CloudParamsGpu, curl_strength) as u32),
-            ("powder_strength", std::mem::offset_of!(CloudParamsGpu, powder_strength) as u32),
-            ("multi_scatter_a", std::mem::offset_of!(CloudParamsGpu, multi_scatter_a) as u32),
-            ("multi_scatter_b", std::mem::offset_of!(CloudParamsGpu, multi_scatter_b) as u32),
-            ("multi_scatter_c", std::mem::offset_of!(CloudParamsGpu, multi_scatter_c) as u32),
-            ("ambient_strength", std::mem::offset_of!(CloudParamsGpu, ambient_strength) as u32),
-            ("base_scale_m", std::mem::offset_of!(CloudParamsGpu, base_scale_m) as u32),
-            ("detail_scale_m", std::mem::offset_of!(CloudParamsGpu, detail_scale_m) as u32),
-            ("weather_scale_m", std::mem::offset_of!(CloudParamsGpu, weather_scale_m) as u32),
-            ("light_steps", std::mem::offset_of!(CloudParamsGpu, light_steps) as u32),
-            ("cloud_steps", std::mem::offset_of!(CloudParamsGpu, cloud_steps) as u32),
-            ("multi_scatter_octaves", std::mem::offset_of!(CloudParamsGpu, multi_scatter_octaves) as u32),
-            ("cloud_layer_count", std::mem::offset_of!(CloudParamsGpu, cloud_layer_count) as u32),
-            ("temporal_jitter", std::mem::offset_of!(CloudParamsGpu, temporal_jitter) as u32),
+            (
+                "detail_strength",
+                std::mem::offset_of!(CloudParamsGpu, detail_strength) as u32,
+            ),
+            (
+                "curl_strength",
+                std::mem::offset_of!(CloudParamsGpu, curl_strength) as u32,
+            ),
+            (
+                "powder_strength",
+                std::mem::offset_of!(CloudParamsGpu, powder_strength) as u32,
+            ),
+            (
+                "multi_scatter_a",
+                std::mem::offset_of!(CloudParamsGpu, multi_scatter_a) as u32,
+            ),
+            (
+                "multi_scatter_b",
+                std::mem::offset_of!(CloudParamsGpu, multi_scatter_b) as u32,
+            ),
+            (
+                "multi_scatter_c",
+                std::mem::offset_of!(CloudParamsGpu, multi_scatter_c) as u32,
+            ),
+            (
+                "ambient_strength",
+                std::mem::offset_of!(CloudParamsGpu, ambient_strength) as u32,
+            ),
+            (
+                "base_scale_m",
+                std::mem::offset_of!(CloudParamsGpu, base_scale_m) as u32,
+            ),
+            (
+                "detail_scale_m",
+                std::mem::offset_of!(CloudParamsGpu, detail_scale_m) as u32,
+            ),
+            (
+                "weather_scale_m",
+                std::mem::offset_of!(CloudParamsGpu, weather_scale_m) as u32,
+            ),
+            (
+                "light_steps",
+                std::mem::offset_of!(CloudParamsGpu, light_steps) as u32,
+            ),
+            (
+                "cloud_steps",
+                std::mem::offset_of!(CloudParamsGpu, cloud_steps) as u32,
+            ),
+            (
+                "multi_scatter_octaves",
+                std::mem::offset_of!(CloudParamsGpu, multi_scatter_octaves) as u32,
+            ),
+            (
+                "cloud_layer_count",
+                std::mem::offset_of!(CloudParamsGpu, cloud_layer_count) as u32,
+            ),
+            (
+                "temporal_jitter",
+                std::mem::offset_of!(CloudParamsGpu, temporal_jitter) as u32,
+            ),
             (
                 "wind_drift_strength",
                 std::mem::offset_of!(CloudParamsGpu, wind_drift_strength) as u32,
@@ -169,12 +220,30 @@ fn cloud_layer_gpu_layout_matches_wgsl() {
         &[
             ("base_m", std::mem::offset_of!(CloudLayerGpu, base_m) as u32),
             ("top_m", std::mem::offset_of!(CloudLayerGpu, top_m) as u32),
-            ("coverage", std::mem::offset_of!(CloudLayerGpu, coverage) as u32),
-            ("density_scale", std::mem::offset_of!(CloudLayerGpu, density_scale) as u32),
-            ("cloud_type", std::mem::offset_of!(CloudLayerGpu, cloud_type) as u32),
-            ("shape_bias", std::mem::offset_of!(CloudLayerGpu, shape_bias) as u32),
-            ("detail_bias", std::mem::offset_of!(CloudLayerGpu, detail_bias) as u32),
-            ("anvil_bias", std::mem::offset_of!(CloudLayerGpu, anvil_bias) as u32),
+            (
+                "coverage",
+                std::mem::offset_of!(CloudLayerGpu, coverage) as u32,
+            ),
+            (
+                "density_scale",
+                std::mem::offset_of!(CloudLayerGpu, density_scale) as u32,
+            ),
+            (
+                "cloud_type",
+                std::mem::offset_of!(CloudLayerGpu, cloud_type) as u32,
+            ),
+            (
+                "shape_bias",
+                std::mem::offset_of!(CloudLayerGpu, shape_bias) as u32,
+            ),
+            (
+                "detail_bias",
+                std::mem::offset_of!(CloudLayerGpu, detail_bias) as u32,
+            ),
+            (
+                "anvil_bias",
+                std::mem::offset_of!(CloudLayerGpu, anvil_bias) as u32,
+            ),
             (
                 "droplet_diameter_um",
                 std::mem::offset_of!(CloudLayerGpu, droplet_diameter_um) as u32,
@@ -204,17 +273,47 @@ fn precip_uniforms_layout_matches_wgsl() {
         "PrecipUniforms",
         &members,
         &[
-            ("camera_position", std::mem::offset_of!(PrecipUniformsGpu, camera_position) as u32),
-            ("wind_velocity", std::mem::offset_of!(PrecipUniformsGpu, wind_velocity) as u32),
-            ("intensity_mm_per_h", std::mem::offset_of!(PrecipUniformsGpu, intensity_mm_per_h) as u32),
-            ("dt_seconds", std::mem::offset_of!(PrecipUniformsGpu, dt_seconds) as u32),
-            ("simulated_seconds", std::mem::offset_of!(PrecipUniformsGpu, simulated_seconds) as u32),
+            (
+                "camera_position",
+                std::mem::offset_of!(PrecipUniformsGpu, camera_position) as u32,
+            ),
+            (
+                "wind_velocity",
+                std::mem::offset_of!(PrecipUniformsGpu, wind_velocity) as u32,
+            ),
+            (
+                "intensity_mm_per_h",
+                std::mem::offset_of!(PrecipUniformsGpu, intensity_mm_per_h) as u32,
+            ),
+            (
+                "dt_seconds",
+                std::mem::offset_of!(PrecipUniformsGpu, dt_seconds) as u32,
+            ),
+            (
+                "simulated_seconds",
+                std::mem::offset_of!(PrecipUniformsGpu, simulated_seconds) as u32,
+            ),
             ("kind", std::mem::offset_of!(PrecipUniformsGpu, kind) as u32),
-            ("particle_count", std::mem::offset_of!(PrecipUniformsGpu, particle_count) as u32),
-            ("spawn_radius_m", std::mem::offset_of!(PrecipUniformsGpu, spawn_radius_m) as u32),
-            ("spawn_top_m", std::mem::offset_of!(PrecipUniformsGpu, spawn_top_m) as u32),
-            ("fall_speed_mps", std::mem::offset_of!(PrecipUniformsGpu, fall_speed_mps) as u32),
-            ("user_seed", std::mem::offset_of!(PrecipUniformsGpu, user_seed) as u32),
+            (
+                "particle_count",
+                std::mem::offset_of!(PrecipUniformsGpu, particle_count) as u32,
+            ),
+            (
+                "spawn_radius_m",
+                std::mem::offset_of!(PrecipUniformsGpu, spawn_radius_m) as u32,
+            ),
+            (
+                "spawn_top_m",
+                std::mem::offset_of!(PrecipUniformsGpu, spawn_top_m) as u32,
+            ),
+            (
+                "fall_speed_mps",
+                std::mem::offset_of!(PrecipUniformsGpu, fall_speed_mps) as u32,
+            ),
+            (
+                "user_seed",
+                std::mem::offset_of!(PrecipUniformsGpu, user_seed) as u32,
+            ),
         ],
     );
 }

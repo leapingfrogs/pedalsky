@@ -208,7 +208,9 @@ struct AloftAnchor {
 impl AloftProfile {
     fn build(scene: &Scene, surface_speed: f32, dir_to_rad: f32) -> Self {
         if scene.surface.winds_aloft.is_empty() {
-            return Self { anchors: Vec::new() };
+            return Self {
+                anchors: Vec::new(),
+            };
         }
         let mut anchors: Vec<AloftAnchor> = Vec::with_capacity(scene.surface.winds_aloft.len() + 1);
 
@@ -234,7 +236,7 @@ impl AloftProfile {
         // can land on a zero-width segment.
         let mut last_alt = Z_REF_M;
         for s in &scene.surface.winds_aloft {
-            if !(s.altitude_m > last_alt + 1.0) {
+            if s.altitude_m <= last_alt + 1.0 {
                 continue;
             }
             let (u, v) = dir_speed_to_uv(s.speed_mps, s.dir_deg);
@@ -287,7 +289,6 @@ impl AloftProfile {
         (top.u, top.v)
     }
 }
-
 
 /// Small Gaussian thermal column under any low-base cumulus layer.
 fn vertical_wind(scene: &Scene, world_x: f32, world_z: f32, alt_m: f32) -> f32 {
@@ -486,10 +487,7 @@ mod tests {
             u_mid.abs() < 0.1,
             "midpoint u between east and west should cancel: {u_mid}"
         );
-        assert!(
-            v_mid.abs() < 0.1,
-            "midpoint v should be near zero: {v_mid}"
-        );
+        assert!(v_mid.abs() < 0.1, "midpoint v should be near zero: {v_mid}");
     }
 
     /// Phase 14.B — the empty-aloft path is unchanged from the

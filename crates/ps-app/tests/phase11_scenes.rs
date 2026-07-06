@@ -32,8 +32,8 @@ fn all_reference_scenes_load_and_validate() {
     let root = workspace_root();
     for name in SCENES {
         let path = root.join("tests").join("scenes").join(name);
-        let scene = ps_core::Scene::load(&path)
-            .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+        let scene =
+            ps_core::Scene::load(&path).unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
         scene
             .validate()
             .unwrap_or_else(|e| panic!("validate {}: {e}", path.display()));
@@ -54,8 +54,8 @@ fn mountain_wave_coverage_grid_binary_exists() {
         .join("scenes")
         .join("presets")
         .join("mountain_wave_lozenges_128x128.bin");
-    let metadata = std::fs::metadata(&path)
-        .unwrap_or_else(|e| panic!("missing {}: {e}", path.display()));
+    let metadata =
+        std::fs::metadata(&path).unwrap_or_else(|e| panic!("missing {}: {e}", path.display()));
     // 128 × 128 × 4 bytes (f32) = 65,536 bytes.
     assert_eq!(
         metadata.len(),

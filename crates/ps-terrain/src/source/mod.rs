@@ -6,7 +6,10 @@
 
 pub mod copernicus_glo30;
 
-use crate::{tile::{HeightmapTile, TileRequest}, TerrainError};
+use crate::{
+    tile::{HeightmapTile, TileRequest},
+    TerrainError,
+};
 
 /// Source of heightmap tiles.
 ///

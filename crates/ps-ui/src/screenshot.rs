@@ -15,7 +15,8 @@ pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()
     }
     let img = image::RgbaImage::from_raw(width, height, rgba.to_vec())
         .ok_or_else(|| anyhow::anyhow!("PNG buffer length mismatch"))?;
-    img.save(path).with_context(|| format!("write {}", path.display()))?;
+    img.save(path)
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
 

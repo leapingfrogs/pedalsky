@@ -101,27 +101,23 @@ fn top_bar(ctx: &egui::Context, state: &mut UiState) {
                     )
                     .clicked()
                 {
-                    let now = state
-                        .pending
-                        .set_world_utc
-                        .unwrap_or_else(chrono::Utc::now);
-                    state.pending.fetch_real_weather =
-                        Some(crate::state::WeatherFetchRequest {
-                            lat: state.live_config.world.latitude_deg,
-                            lon: state.live_config.world.longitude_deg,
-                            time: now,
-                            enrich_with_metar: true,
-                            // Phase 15.A — always fetch Kp on the
-                            // same button click. The endpoint is
-                            // free, cached for an hour, and gives
-                            // the aurora subsystem its only path to
-                            // real geomagnetic data.
-                            fetch_kp_index: true,
-                            // Phase 15.B — OVATION is the
-                            // per-location intensity nowcast. Same
-                            // free-and-cheap deal, 5-minute cache.
-                            fetch_ovation: true,
-                        });
+                    let now = state.pending.set_world_utc.unwrap_or_else(chrono::Utc::now);
+                    state.pending.fetch_real_weather = Some(crate::state::WeatherFetchRequest {
+                        lat: state.live_config.world.latitude_deg,
+                        lon: state.live_config.world.longitude_deg,
+                        time: now,
+                        enrich_with_metar: true,
+                        // Phase 15.A — always fetch Kp on the
+                        // same button click. The endpoint is
+                        // free, cached for an hour, and gives
+                        // the aurora subsystem its only path to
+                        // real geomagnetic data.
+                        fetch_kp_index: true,
+                        // Phase 15.B — OVATION is the
+                        // per-location intensity nowcast. Same
+                        // free-and-cheap deal, 5-minute cache.
+                        fetch_ovation: true,
+                    });
                 }
             });
             // Show last fetch result inline (success → green
@@ -181,34 +177,35 @@ fn default_scenes_dir() -> std::path::PathBuf {
 fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
     ui.collapsing("World", |ui| {
         // Read-out
-        egui::Grid::new("world-readout").striped(true).show(ui, |ui| {
-            ui.label("Sun altitude");
-            ui.label(format!("{:>8.3}°", state.world_readout.sun_alt_deg));
-            ui.end_row();
-            ui.label("Sun azimuth");
-            ui.label(format!("{:>8.3}°", state.world_readout.sun_az_deg));
-            ui.end_row();
-            ui.label("Moon altitude");
-            ui.label(format!("{:>8.3}°", state.world_readout.moon_alt_deg));
-            ui.end_row();
-            ui.label("Moon azimuth");
-            ui.label(format!("{:>8.3}°", state.world_readout.moon_az_deg));
-            ui.end_row();
-            ui.label("Julian day");
-            ui.label(format!("{:>14.5}", state.world_readout.julian_day));
-            ui.end_row();
-            // Phase 14.F — surface wind (10 m AGL) summary. The
-            // compass-rose overlay shows direction visually; this
-            // line carries the exact numbers for debug / scene
-            // tuning.
-            ui.label("Surface wind");
-            ui.label(format!(
-                "{:>5.1} m/s @ {:>5.1}°",
-                state.world_readout.wind_speed_mps,
-                state.world_readout.wind_dir_deg,
-            ));
-            ui.end_row();
-        });
+        egui::Grid::new("world-readout")
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Sun altitude");
+                ui.label(format!("{:>8.3}°", state.world_readout.sun_alt_deg));
+                ui.end_row();
+                ui.label("Sun azimuth");
+                ui.label(format!("{:>8.3}°", state.world_readout.sun_az_deg));
+                ui.end_row();
+                ui.label("Moon altitude");
+                ui.label(format!("{:>8.3}°", state.world_readout.moon_alt_deg));
+                ui.end_row();
+                ui.label("Moon azimuth");
+                ui.label(format!("{:>8.3}°", state.world_readout.moon_az_deg));
+                ui.end_row();
+                ui.label("Julian day");
+                ui.label(format!("{:>14.5}", state.world_readout.julian_day));
+                ui.end_row();
+                // Phase 14.F — surface wind (10 m AGL) summary. The
+                // compass-rose overlay shows direction visually; this
+                // line carries the exact numbers for debug / scene
+                // tuning.
+                ui.label("Surface wind");
+                ui.label(format!(
+                    "{:>5.1} m/s @ {:>5.1}°",
+                    state.world_readout.wind_speed_mps, state.world_readout.wind_dir_deg,
+                ));
+                ui.end_row();
+            });
 
         // Phase 14.F — winds aloft. Skipped entirely when the scene
         // carries no upper-air samples (synthetic / offline renders),
@@ -216,20 +213,22 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
         if !state.world_readout.winds_aloft.is_empty() {
             ui.separator();
             ui.label("Winds aloft");
-            egui::Grid::new("winds-aloft-readout").striped(true).show(ui, |ui| {
-                ui.label("hPa");
-                ui.label("alt (m)");
-                ui.label("speed");
-                ui.label("dir");
-                ui.end_row();
-                for s in &state.world_readout.winds_aloft {
-                    ui.label(format!("{}", s.pressure_hpa));
-                    ui.label(format!("{:>6.0}", s.altitude_m));
-                    ui.label(format!("{:>5.1} m/s", s.speed_mps));
-                    ui.label(format!("{:>5.1}°", s.dir_deg));
+            egui::Grid::new("winds-aloft-readout")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("hPa");
+                    ui.label("alt (m)");
+                    ui.label("speed");
+                    ui.label("dir");
                     ui.end_row();
-                }
-            });
+                    for s in &state.world_readout.winds_aloft {
+                        ui.label(format!("{}", s.pressure_hpa));
+                        ui.label(format!("{:>6.0}", s.altitude_m));
+                        ui.label(format!("{:>5.1} m/s", s.speed_mps));
+                        ui.label(format!("{:>5.1}°", s.dir_deg));
+                        ui.end_row();
+                    }
+                });
         }
 
         // Phase 15.C — aurora read-out (Kp + OVATION). Show only
@@ -242,35 +241,37 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             if a.kp_index > 0.0 || a.intensity_override >= 0.0 {
                 ui.separator();
                 ui.label("Aurora (NOAA SWPC)");
-                egui::Grid::new("aurora-readout").striped(true).show(ui, |ui| {
-                    ui.label("Kp index");
-                    ui.label(format!("{:.2}", a.kp_index));
-                    ui.end_row();
-                    if a.intensity_override >= 0.0 {
-                        ui.label("OVATION (local)");
-                        ui.label(format!("{:.2}", a.intensity_override));
+                egui::Grid::new("aurora-readout")
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Kp index");
+                        ui.label(format!("{:.2}", a.kp_index));
                         ui.end_row();
-                    } else {
-                        ui.label("OVATION (local)");
-                        ui.label("(derived from Kp)");
+                        if a.intensity_override >= 0.0 {
+                            ui.label("OVATION (local)");
+                            ui.label(format!("{:.2}", a.intensity_override));
+                            ui.end_row();
+                        } else {
+                            ui.label("OVATION (local)");
+                            ui.label("(derived from Kp)");
+                            ui.end_row();
+                        }
+                        // NOAA G-scale equivalent so the user can tell at
+                        // a glance whether they're looking at a quiet day
+                        // or a storm. Boundaries from
+                        // swpc.noaa.gov/noaa-scales-explanation.
+                        let g = match a.kp_index {
+                            k if k >= 9.0 => "G5 extreme",
+                            k if k >= 8.0 => "G4 severe",
+                            k if k >= 7.0 => "G3 strong",
+                            k if k >= 6.0 => "G2 moderate",
+                            k if k >= 5.0 => "G1 minor",
+                            _ => "below storm",
+                        };
+                        ui.label("Storm level");
+                        ui.label(g);
                         ui.end_row();
-                    }
-                    // NOAA G-scale equivalent so the user can tell at
-                    // a glance whether they're looking at a quiet day
-                    // or a storm. Boundaries from
-                    // swpc.noaa.gov/noaa-scales-explanation.
-                    let g = match a.kp_index {
-                        k if k >= 9.0 => "G5 extreme",
-                        k if k >= 8.0 => "G4 severe",
-                        k if k >= 7.0 => "G3 strong",
-                        k if k >= 6.0 => "G2 moderate",
-                        k if k >= 5.0 => "G1 minor",
-                        _ => "below storm",
-                    };
-                    ui.label("Storm level");
-                    ui.label(g);
-                    ui.end_row();
-                });
+                    });
             }
         }
 
@@ -357,19 +358,24 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                     .hint_text("e.g. Dunblane")
                     .desired_width(160.0),
             );
-            let submit = (response.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            let submit = (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 || ui
                     .add_enabled(
                         !search_disabled && !state.geocode.input_buffer.trim().is_empty(),
-                        egui::Button::new(if search_disabled { "Searching…" } else { "Search" }),
+                        egui::Button::new(if search_disabled {
+                            "Searching…"
+                        } else {
+                            "Search"
+                        }),
                     )
                     .clicked();
             if submit {
                 let q = state.geocode.input_buffer.trim().to_string();
                 if !q.is_empty() {
-                    state.pending.geocode_query =
-                        Some(crate::state::GeocodeRequest { query: q, count: 10 });
+                    state.pending.geocode_query = Some(crate::state::GeocodeRequest {
+                        query: q,
+                        count: 10,
+                    });
                 }
             }
         });
@@ -382,8 +388,7 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             // surfaces first; ties retain upstream order.
             // Clone into a local Vec so we can freely mutate
             // `state.geocode.results` later (e.g. on selection).
-            let mut sorted: Vec<crate::state::GeocodeMatch> =
-                state.geocode.results.clone();
+            let mut sorted: Vec<crate::state::GeocodeMatch> = state.geocode.results.clone();
             sorted.sort_by(|a, b| b.population.cmp(&a.population));
             let last_query = state.geocode.last_query.clone();
             ui.label(format!("Matches for \"{last_query}\":"));
@@ -403,10 +408,7 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                             label.push_str(", ");
                             label.push_str(&m.country);
                         }
-                        label.push_str(&format!(
-                            "  ({:.3}°, {:.3}°)",
-                            m.latitude, m.longitude
-                        ));
+                        label.push_str(&format!("  ({:.3}°, {:.3}°)", m.latitude, m.longitude));
                         if ui.small_button(label).clicked() {
                             chosen = Some((m.latitude, m.longitude, m.elevation));
                         }
@@ -447,8 +449,7 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 .changed()
             {
                 state.live_config.world.latitude_deg = lat;
-                state.pending.set_lat_lon =
-                    Some((lat, state.live_config.world.longitude_deg));
+                state.pending.set_lat_lon = Some((lat, state.live_config.world.longitude_deg));
                 state.pending.config_dirty = true;
             }
             ui.label("lon");
@@ -461,8 +462,7 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 .changed()
             {
                 state.live_config.world.longitude_deg = lon;
-                state.pending.set_lat_lon =
-                    Some((state.live_config.world.latitude_deg, lon));
+                state.pending.set_lat_lon = Some((state.live_config.world.latitude_deg, lon));
                 state.pending.config_dirty = true;
             }
         });
@@ -542,14 +542,14 @@ fn world_panel(ui: &mut egui::Ui, state: &mut UiState) {
             let done = state.imagery_fetch.progress_done.min(total);
             let frac = done as f32 / total as f32;
             let pct = (frac * 100.0).round() as u32;
-            ui.add(
-                egui::ProgressBar::new(frac)
-                    .text(format!("{pct}% — {done} / {total} tiles")),
-            );
+            ui.add(egui::ProgressBar::new(frac).text(format!("{pct}% — {done} / {total} tiles")));
         }
         ui.horizontal(|ui| {
             let mut overlay_on = state.imagery_fetch.overlay_enabled;
-            if ui.checkbox(&mut overlay_on, "Show satellite overlay").changed() {
+            if ui
+                .checkbox(&mut overlay_on, "Show satellite overlay")
+                .changed()
+            {
                 state.imagery_fetch.overlay_enabled = overlay_on;
                 state.pending.set_satellite_overlay_enabled = Some(overlay_on);
             }
@@ -927,7 +927,10 @@ fn terrain_section(ui: &mut egui::Ui, state: &mut UiState) {
                 .default_open(false)
                 .show(ui, |ui| {
                     let mut has_cap = p.max_triangles_per_lod.is_some();
-                    if ui.checkbox(&mut has_cap, "Enforce max triangle count").changed() {
+                    if ui
+                        .checkbox(&mut has_cap, "Enforce max triangle count")
+                        .changed()
+                    {
                         p.max_triangles_per_lod = if has_cap { Some(200_000) } else { None };
                     }
                     if let Some(cap) = p.max_triangles_per_lod.as_mut() {
@@ -1005,9 +1008,7 @@ fn jump_calendar(state: &mut UiState, day: CalendarDay) {
     state.live_config.time.hour = 12;
     state.live_config.time.minute = 0;
     state.live_config.time.second = 0;
-    if let chrono::offset::LocalResult::Single(utc) =
-        Utc.with_ymd_and_hms(year, mo, d, 12, 0, 0)
-    {
+    if let chrono::offset::LocalResult::Single(utc) = Utc.with_ymd_and_hms(year, mo, d, 12, 0, 0) {
         state.pending.set_world_utc = Some(utc);
         state.pending.config_dirty = true;
     }
@@ -1040,12 +1041,12 @@ fn jump_solar(state: &mut UiState, event: SolarEvent) {
     // for rising events; noon..midnight+24h for setting events.
     // Simpler: walk in 1-minute increments from local-day midnight.
     let lon_hours = lon / 15.0;
-    let local_midnight_utc =
-        Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).single();
+    let local_midnight_utc = Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).single();
     let Some(local_midnight_utc) = local_midnight_utc else {
         return;
     };
-    let local_midnight_utc = local_midnight_utc - chrono::Duration::minutes((lon_hours * 60.0) as i64);
+    let local_midnight_utc =
+        local_midnight_utc - chrono::Duration::minutes((lon_hours * 60.0) as i64);
 
     // Sample altitudes at 5-minute granularity over the next 24 h, find
     // sign changes around target, refine with linear interp.
@@ -1081,7 +1082,6 @@ fn jump_solar(state: &mut UiState, event: SolarEvent) {
         state.pending.config_dirty = true;
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Camera panel — fov / near / speed (plan §0.4)
@@ -1165,10 +1165,7 @@ fn render_panel(ui: &mut egui::Ui, state: &mut UiState) {
                         ("ACESFilmic", TonemapMode::AcesFilmic),
                         ("Passthrough", TonemapMode::Passthrough),
                     ] {
-                        if ui
-                            .selectable_label(current == opt, opt_label)
-                            .clicked()
-                        {
+                        if ui.selectable_label(current == opt, opt_label).clicked() {
                             current = opt;
                         }
                     }
@@ -1274,7 +1271,9 @@ fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
         // Tuning toggles (config-side).
         let a = &mut state.live_config.render.atmosphere;
         let mut tuning_changed = false;
-        tuning_changed |= ui.checkbox(&mut a.multi_scattering, "Multi-scattering").changed();
+        tuning_changed |= ui
+            .checkbox(&mut a.multi_scattering, "Multi-scattering")
+            .changed();
         tuning_changed |= ui.checkbox(&mut a.sun_disk, "Sun disk").changed();
         tuning_changed |= ui.checkbox(&mut a.ozone_enabled, "Ozone").changed();
         tuning_changed |= Slider::new(&mut a.sun_angular_radius_deg, 0.05..=2.0)
@@ -1297,40 +1296,106 @@ fn atmosphere_panel(ui: &mut egui::Ui, state: &mut UiState) {
         let defaults = ps_core::AtmosphereParams::default();
         let mut any = false;
         // Planet geometry.
-        any |= f32_with_reset(ui, &mut atmo.planet_radius_m, defaults.planet_radius_m,
-                              "planet_radius_m", 1.0e6..=1.0e8, 1000.0);
-        any |= f32_with_reset(ui, &mut atmo.atmosphere_top_m, defaults.atmosphere_top_m,
-                              "atmosphere_top_m", 1.0e4..=1.0e8, 1000.0);
-        any |= f32_with_reset(ui, &mut atmo.rayleigh_scale_height_m,
-                              defaults.rayleigh_scale_height_m,
-                              "rayleigh_scale_height_m", 100.0..=20000.0, 100.0);
-        any |= f32_with_reset(ui, &mut atmo.mie_scale_height_m, defaults.mie_scale_height_m,
-                              "mie_scale_height_m", 100.0..=10000.0, 100.0);
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.planet_radius_m,
+            defaults.planet_radius_m,
+            "planet_radius_m",
+            1.0e6..=1.0e8,
+            1000.0,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.atmosphere_top_m,
+            defaults.atmosphere_top_m,
+            "atmosphere_top_m",
+            1.0e4..=1.0e8,
+            1000.0,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.rayleigh_scale_height_m,
+            defaults.rayleigh_scale_height_m,
+            "rayleigh_scale_height_m",
+            100.0..=20000.0,
+            100.0,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.mie_scale_height_m,
+            defaults.mie_scale_height_m,
+            "mie_scale_height_m",
+            100.0..=10000.0,
+            100.0,
+        );
         // Rayleigh scattering (per-channel).
         ui.label("Rayleigh scattering (per metre)");
-        any |= vec3_with_reset(ui, &mut atmo.rayleigh_scattering,
-                                defaults.rayleigh_scattering, "rayleigh", 1e-7);
+        any |= vec3_with_reset(
+            ui,
+            &mut atmo.rayleigh_scattering,
+            defaults.rayleigh_scattering,
+            "rayleigh",
+            1e-7,
+        );
         // Mie scattering / absorption.
         ui.label("Mie scattering (per metre)");
-        any |= vec3_with_reset(ui, &mut atmo.mie_scattering,
-                                defaults.mie_scattering, "mie_s", 1e-7);
+        any |= vec3_with_reset(
+            ui,
+            &mut atmo.mie_scattering,
+            defaults.mie_scattering,
+            "mie_s",
+            1e-7,
+        );
         ui.label("Mie absorption (per metre)");
-        any |= vec3_with_reset(ui, &mut atmo.mie_absorption,
-                                defaults.mie_absorption, "mie_a", 1e-7);
-        any |= f32_with_reset(ui, &mut atmo.mie_g, defaults.mie_g,
-                              "mie_g (HG anisotropy)", 0.0..=0.99, 0.01);
+        any |= vec3_with_reset(
+            ui,
+            &mut atmo.mie_absorption,
+            defaults.mie_absorption,
+            "mie_a",
+            1e-7,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.mie_g,
+            defaults.mie_g,
+            "mie_g (HG anisotropy)",
+            0.0..=0.99,
+            0.01,
+        );
         // Ozone.
         ui.label("Ozone absorption (per metre)");
-        any |= vec3_with_reset(ui, &mut atmo.ozone_absorption,
-                                defaults.ozone_absorption, "ozone", 1e-8);
-        any |= f32_with_reset(ui, &mut atmo.ozone_center_m, defaults.ozone_center_m,
-                              "ozone_center_m", 0.0..=80000.0, 100.0);
-        any |= f32_with_reset(ui, &mut atmo.ozone_thickness_m, defaults.ozone_thickness_m,
-                              "ozone_thickness_m", 100.0..=80000.0, 100.0);
+        any |= vec3_with_reset(
+            ui,
+            &mut atmo.ozone_absorption,
+            defaults.ozone_absorption,
+            "ozone",
+            1e-8,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.ozone_center_m,
+            defaults.ozone_center_m,
+            "ozone_center_m",
+            0.0..=80000.0,
+            100.0,
+        );
+        any |= f32_with_reset(
+            ui,
+            &mut atmo.ozone_thickness_m,
+            defaults.ozone_thickness_m,
+            "ozone_thickness_m",
+            100.0..=80000.0,
+            100.0,
+        );
         // Ground albedo (for atmosphere bounce).
         ui.label("Ground albedo (atmosphere bounce)");
-        any |= vec3_with_reset(ui, &mut atmo.ground_albedo,
-                                defaults.ground_albedo, "albedo", 0.01);
+        any |= vec3_with_reset(
+            ui,
+            &mut atmo.ground_albedo,
+            defaults.ground_albedo,
+            "albedo",
+            0.01,
+        );
 
         if ui.button("Reset all to Earth defaults").clicked() {
             atmo = defaults;
@@ -1398,7 +1463,12 @@ fn vec3_with_reset(
                 1 => value.y,
                 _ => value.z,
             };
-            if DragValue::new(&mut v).speed(speed).max_decimals(8).ui(ui).changed() {
+            if DragValue::new(&mut v)
+                .speed(speed)
+                .max_decimals(8)
+                .ui(ui)
+                .changed()
+            {
                 match i {
                     0 => value.x = v,
                     1 => value.y = v,
@@ -1444,7 +1514,6 @@ fn drag_f32(
     })
     .inner
 }
-
 
 // ---------------------------------------------------------------------------
 // Clouds panel — every CloudsTuning field + per-layer accordions
@@ -1558,10 +1627,7 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
         // a 3×3 neighbourhood, blends at ~1/8 weight.
         ui.add_enabled_ui(!c.freeze_time, |ui| {
             tuning_changed |= ui
-                .checkbox(
-                    &mut c.temporal_taa,
-                    "Temporal AA (history reprojection)",
-                )
+                .checkbox(&mut c.temporal_taa, "Temporal AA (history reprojection)")
                 .on_hover_text(
                     "Blend the current cloud march with the \
                      previous frame's resolved output (EMA, 3×3 \
@@ -1626,10 +1692,7 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
         // shape/detail biases. Sun-position driven, so the world
         // clock pausing already freezes it.
         tuning_changed |= ui
-            .add(
-                egui::Slider::new(&mut c.diurnal_strength, 0.0..=2.0)
-                    .text("Diurnal modulation"),
-            )
+            .add(egui::Slider::new(&mut c.diurnal_strength, 0.0..=2.0).text("Diurnal modulation"))
             .on_hover_text(
                 "Scales the cumulus / Sc / Ac / Cb shape + detail \
                  bias by solar altitude. At noon convective clouds \
@@ -1654,10 +1717,8 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
         let mut layers_changed = false;
         for (i, layer) in new_scene.clouds.layers.iter_mut().enumerate() {
             ui.collapsing(format!("Layer {i}: {:?}", layer.cloud_type), |ui| {
-                layers_changed |= drag_f32(ui, &mut layer.base_m, "base_m",
-                                            0.0..=18000.0, 10.0);
-                layers_changed |= drag_f32(ui, &mut layer.top_m, "top_m",
-                                            0.0..=18000.0, 10.0);
+                layers_changed |= drag_f32(ui, &mut layer.base_m, "base_m", 0.0..=18000.0, 10.0);
+                layers_changed |= drag_f32(ui, &mut layer.top_m, "top_m", 0.0..=18000.0, 10.0);
                 layers_changed |= Slider::new(&mut layer.coverage, 0.0..=1.0)
                     .text("coverage")
                     .max_decimals(4)
@@ -1668,8 +1729,7 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 // effective value (current Some, else default) and
                 // write Some(v) on change so the user's edit becomes
                 // explicit.
-                let density_default =
-                    ps_core::default_density_scale(layer.cloud_type);
+                let density_default = ps_core::default_density_scale(layer.cloud_type);
                 let mut density_val = layer.density_scale.unwrap_or(density_default);
                 let density_resp = Slider::new(&mut density_val, 0.0..=4.0)
                     .text("density_scale")
@@ -1701,10 +1761,7 @@ fn clouds_panel(ui: &mut egui::Ui, state: &mut UiState) {
                                 CloudType::Cumulonimbus,
                             ] {
                                 if ui
-                                    .selectable_label(
-                                        layer.cloud_type == k,
-                                        format!("{k:?}"),
-                                    )
+                                    .selectable_label(layer.cloud_type == k, format!("{k:?}"))
                                     .clicked()
                                     && layer.cloud_type != k
                                 {
@@ -1896,10 +1953,7 @@ fn precipitation_panel(ui: &mut egui::Ui, state: &mut UiState) {
                         PrecipKind::Sleet,
                     ] {
                         if ui
-                            .selectable_label(
-                                new_scene.precipitation.kind == k,
-                                format!("{k:?}"),
-                            )
+                            .selectable_label(new_scene.precipitation.kind == k, format!("{k:?}"))
                             .clicked()
                             && new_scene.precipitation.kind != k
                         {
@@ -2086,14 +2140,11 @@ fn aurora_panel(ui: &mut egui::Ui, state: &mut UiState) {
                 .max_decimals(1)
                 .ui(ui)
                 .changed();
-            scene_changed |= Slider::new(
-                &mut new_scene.aurora.intensity_override,
-                -1.0..=1.0,
-            )
-            .text("intensity_override (-1 = derive from kp)")
-            .max_decimals(2)
-            .ui(ui)
-            .changed();
+            scene_changed |= Slider::new(&mut new_scene.aurora.intensity_override, -1.0..=1.0)
+                .text("intensity_override (-1 = derive from kp)")
+                .max_decimals(2)
+                .ui(ui)
+                .changed();
 
             ui.horizontal(|ui| {
                 use ps_core::AuroraColour;
@@ -2176,7 +2227,10 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         let d = &mut state.live_config.debug;
         let mut any = false;
         any |= ui
-            .checkbox(&mut d.atmosphere_lut_overlay, "Atmosphere LUT overlay (2x2)")
+            .checkbox(
+                &mut d.atmosphere_lut_overlay,
+                "Atmosphere LUT overlay (2x2)",
+            )
             .changed();
         any |= ui.checkbox(&mut d.auto_exposure, "Auto exposure").changed();
         if any {
@@ -2191,8 +2245,11 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         let g = d.gpu_validation;
         let mut r_dummy = r;
         let mut g_dummy = g;
-        ui.add_enabled(false, egui::Checkbox::new(&mut r_dummy, "Shader hot reload"))
-            .on_disabled_hover_text("Startup-only — edit pedalsky.toml and restart.");
+        ui.add_enabled(
+            false,
+            egui::Checkbox::new(&mut r_dummy, "Shader hot reload"),
+        )
+        .on_disabled_hover_text("Startup-only — edit pedalsky.toml and restart.");
         ui.add_enabled(false, egui::Checkbox::new(&mut g_dummy, "GPU validation"))
             .on_disabled_hover_text("Startup-only — edit pedalsky.toml and restart.");
 
@@ -2253,7 +2310,10 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ];
         ui.colored_label(
             Color32::LIGHT_BLUE,
-            format!("optical depth (total) R={:.4} G={:.4} B={:.4}", od[0], od[1], od[2]),
+            format!(
+                "optical depth (total) R={:.4} G={:.4} B={:.4}",
+                od[0], od[1], od[2]
+            ),
         );
         // Phase 13.10 — per-component OD breakdown along the same
         // view ray. Sum should equal the total above (within
@@ -2280,21 +2340,25 @@ fn debug_panel(ui: &mut egui::Ui, state: &mut UiState) {
         ui.separator();
         ui.label("GPU timings");
         if state.frame_stats.gpu_passes.is_empty() {
-            ui.label("(awaiting first frame's resolved timestamps — \
-                     feature requires TIMESTAMP_QUERY_INSIDE_ENCODERS)");
+            ui.label(
+                "(awaiting first frame's resolved timestamps — \
+                     feature requires TIMESTAMP_QUERY_INSIDE_ENCODERS)",
+            );
         } else {
-            egui::Grid::new("ps-ui-gpu-timings").striped(true).show(ui, |ui| {
-                let mut total_ms = 0.0;
-                for (name, ms) in &state.frame_stats.gpu_passes {
-                    ui.label(*name);
-                    ui.label(format!("{ms:>8.3} ms"));
+            egui::Grid::new("ps-ui-gpu-timings")
+                .striped(true)
+                .show(ui, |ui| {
+                    let mut total_ms = 0.0;
+                    for (name, ms) in &state.frame_stats.gpu_passes {
+                        ui.label(*name);
+                        ui.label(format!("{ms:>8.3} ms"));
+                        ui.end_row();
+                        total_ms += ms;
+                    }
+                    ui.label("(total)");
+                    ui.label(format!("{total_ms:>8.3} ms"));
                     ui.end_row();
-                    total_ms += ms;
-                }
-                ui.label("(total)");
-                ui.label(format!("{total_ms:>8.3} ms"));
-                ui.end_row();
-            });
+                });
         }
     });
 }
@@ -2377,19 +2441,14 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
             // Use a fixed canvas. egui's allocate_painter sizes the
             // overlay to this rect, so no auto-shrink.
             let canvas_size = egui::vec2(150.0, 150.0);
-            let (response, painter) =
-                ui.allocate_painter(canvas_size, egui::Sense::hover());
+            let (response, painter) = ui.allocate_painter(canvas_size, egui::Sense::hover());
             let rect = response.rect;
             let centre = rect.center();
             let radius = (rect.width().min(rect.height()) * 0.5) - 6.0;
 
             // Background disc (semi-transparent so the rendered scene
             // shows through).
-            painter.circle_filled(
-                centre,
-                radius,
-                Color32::from_black_alpha(140),
-            );
+            painter.circle_filled(centre, radius, Color32::from_black_alpha(140));
             painter.circle_stroke(
                 centre,
                 radius,
@@ -2427,11 +2486,7 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
             );
             // Small arrowhead.
             for side in [-1.0_f32, 1.0] {
-                let p = polar_point(
-                    centre,
-                    radius - 18.0,
-                    yaw_az_deg + 8.0 * side,
-                );
+                let p = polar_point(centre, radius - 18.0, yaw_az_deg + 8.0 * side);
                 painter.line_segment(
                     [cam_tip, p],
                     egui::Stroke::new(2.0, Color32::from_rgb(240, 220, 60)),
@@ -2467,10 +2522,7 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
                 let from_rim = polar_point(centre, radius - 4.0, r.wind_dir_deg);
                 let toward_centre = polar_point(centre, radius - 4.0 - len, r.wind_dir_deg);
                 let blue = Color32::from_rgb(120, 180, 240);
-                painter.line_segment(
-                    [from_rim, toward_centre],
-                    egui::Stroke::new(2.0, blue),
-                );
+                painter.line_segment([from_rim, toward_centre], egui::Stroke::new(2.0, blue));
                 // Barb tick at the upwind end.
                 let perp_az = r.wind_dir_deg + 90.0;
                 let tip_a = polar_offset(toward_centre, 6.0, perp_az);
@@ -2499,8 +2551,7 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
                     let inset = 12.0 + (i as f32) * 4.0;
                     let len = (s.speed_mps / 60.0).clamp(0.15, 0.95) * (radius - 10.0);
                     let from_rim = polar_point(centre, radius - inset, s.dir_deg);
-                    let toward_centre =
-                        polar_point(centre, radius - inset - len, s.dir_deg);
+                    let toward_centre = polar_point(centre, radius - inset - len, s.dir_deg);
                     // Lerp colour from surface blue (RGB ≈ 120,180,240)
                     // toward a warm amber for the topmost sample.
                     let t = (i as f32 + 1.0) / (n + 1.0);
@@ -2508,10 +2559,7 @@ fn compass_overlay(ctx: &egui::Context, state: &UiState) {
                     let gcol = (180.0 + (160.0 - 180.0) * t) as u8;
                     let bcol = (240.0 + (60.0 - 240.0) * t) as u8;
                     let col = Color32::from_rgb(rcol, gcol, bcol);
-                    painter.line_segment(
-                        [from_rim, toward_centre],
-                        egui::Stroke::new(1.2, col),
-                    );
+                    painter.line_segment([from_rim, toward_centre], egui::Stroke::new(1.2, col));
                     let perp_az = s.dir_deg + 90.0;
                     let tip_a = polar_offset(toward_centre, 4.0, perp_az);
                     let tip_b = polar_offset(toward_centre, -4.0, perp_az);
@@ -2556,10 +2604,6 @@ fn paint_celestial(
     if alt_deg >= 0.0 {
         painter.circle_filled(p, 4.0, colour);
     } else {
-        painter.circle_stroke(
-            p,
-            4.0,
-            egui::Stroke::new(1.2, colour.linear_multiply(0.4)),
-        );
+        painter.circle_stroke(p, 4.0, egui::Stroke::new(1.2, colour.linear_multiply(0.4)));
     }
 }

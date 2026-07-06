@@ -98,12 +98,12 @@ pub fn band_to_cloud_type(pressure_hpa: u32, cover_pct: f32) -> CloudType {
 /// overlapping layers.
 fn band_thickness_m(pressure_hpa: u32) -> f32 {
     match pressure_hpa {
-        1000 => 400.0,  // Stratus/fog
-        925 => 600.0,   // Cumulus/Stratus base
-        850 => 800.0,   // Cumulus mass / Sc
-        700 => 600.0,   // Ac/As mid-level
-        500 => 1000.0,  // As deep sheet
-        300 => 1500.0,  // Ci/Cs high
+        1000 => 400.0, // Stratus/fog
+        925 => 600.0,  // Cumulus/Stratus base
+        850 => 800.0,  // Cumulus mass / Sc
+        700 => 600.0,  // Ac/As mid-level
+        500 => 1000.0, // As deep sheet
+        300 => 1500.0, // Ci/Cs high
         _ => 500.0,
     }
 }
@@ -112,6 +112,7 @@ fn band_thickness_m(pressure_hpa: u32) -> f32 {
 /// Cumulonimbus is detected from the combination of high CAPE +
 /// high total cover + significant precip rate (heuristic
 /// validated against typical thunderstorm soundings).
+#[allow(clippy::field_reassign_with_default)] // readability: one field per line
 pub fn open_meteo_to_scene(resp: &OpenMeteoResponse, target: DateTime<Utc>) -> Scene {
     let idx = resp.hourly.nearest_index(target).unwrap_or(0);
     let h = &resp.hourly;
@@ -375,7 +376,12 @@ pub fn enrich_with_metar(scene: &mut Scene, lat: f64, lon: f64, metar: &MetarRec
     if metar.is_thunderstorm() {
         // Force a cumulonimbus layer if not already present, and
         // ensure lightning is active.
-        if !scene.clouds.layers.iter().any(|l| l.cloud_type == CloudType::Cumulonimbus) {
+        if !scene
+            .clouds
+            .layers
+            .iter()
+            .any(|l| l.cloud_type == CloudType::Cumulonimbus)
+        {
             scene.clouds.layers.push(CloudLayer {
                 cloud_type: CloudType::Cumulonimbus,
                 base_m: 800.0,
@@ -437,7 +443,8 @@ mod tests {
                     "cloud_cover_300hPa": [0.0]
                 }
             }"#,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -587,8 +594,10 @@ mod tests {
             assert!(
                 w[0].top_m <= w[1].base_m,
                 "layers overlap: {:?} top {} vs {:?} base {}",
-                w[0].cloud_type, w[0].top_m,
-                w[1].cloud_type, w[1].base_m,
+                w[0].cloud_type,
+                w[0].top_m,
+                w[1].cloud_type,
+                w[1].base_m,
             );
         }
         scene.validate().expect("scene must validate");
@@ -635,8 +644,14 @@ mod tests {
         let neutral = detail_bias_for(50.0);
         let scattered = detail_bias_for(10.0);
         assert!(smooth < 0.0, "overcast should bias negative: {smooth}");
-        assert!(neutral.abs() < 1e-4, "50% cover should be neutral: {neutral}");
-        assert!(scattered > 0.0, "scattered should bias positive: {scattered}");
+        assert!(
+            neutral.abs() < 1e-4,
+            "50% cover should be neutral: {neutral}"
+        );
+        assert!(
+            scattered > 0.0,
+            "scattered should bias positive: {scattered}"
+        );
         // Magnitude clamps inside the shader's safe ~±0.1 range.
         assert!(smooth.abs() < 0.1);
         assert!(scattered.abs() < 0.1);
@@ -733,7 +748,8 @@ mod tests {
                     "cloud_cover_300hPa": [60.0]
                 }
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         let scene = open_meteo_to_scene(&resp, t());
         assert!(scene.lightning.strikes_per_min_per_km2 > 0.0);
         assert_eq!(scene.precipitation.kind, PrecipKind::Rain);
@@ -752,7 +768,8 @@ mod tests {
                 "rawOb": "METAR EGPN 121300Z 26008KT 9999 FEW040 19/08 Q1016",
                 "clouds": [{"cover": "FEW", "base": 4000}]
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         // EGPN (Dundee) is ~0.96° from Dunblane — outside our
         // 0.35° proximity gate. Verify: enrichment should NOT
         // change temp.
@@ -769,7 +786,8 @@ mod tests {
                 "rawOb": "METAR EGPF 121300Z 26008KT 9999 FEW040 19/08 Q1016",
                 "clouds": []
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         enrich_with_metar(&mut scene, 56.1922, -3.9645, &close);
         assert_eq!(scene.surface.temperature_c, 19.5);
         // 8 knots ≈ 4.116 m/s.
@@ -789,9 +807,14 @@ mod tests {
                 "rawOb": "METAR EGPF 121300Z 24014KT 5000 +TSRA OVC025CB 22/19 Q1000",
                 "clouds": [{"cover": "OVC", "base": 2500}]
             }"#,
-        ).unwrap();
+        )
+        .unwrap();
         enrich_with_metar(&mut scene, 56.1922, -3.9645, &m);
-        assert!(scene.clouds.layers.iter().any(|l| l.cloud_type == CloudType::Cumulonimbus));
+        assert!(scene
+            .clouds
+            .layers
+            .iter()
+            .any(|l| l.cloud_type == CloudType::Cumulonimbus));
         assert!(scene.lightning.strikes_per_min_per_km2 >= 0.5);
     }
 }

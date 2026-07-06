@@ -125,8 +125,8 @@ fn readback_3d_rgba16f_single_pixel(
     let d = size.depth_or_array_layers;
     let bytes_per_pixel = 8u32;
     let unpadded = w * bytes_per_pixel;
-    let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let aligned =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("phase5_diag-3d-staging"),
         size: (aligned * h * d) as u64,
@@ -196,8 +196,8 @@ fn readback_2d_rgba16f_single_pixel(
     let h = size.height;
     let bytes_per_pixel = 8u32;
     let unpadded = w * bytes_per_pixel;
-    let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let aligned =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("phase5_diag-staging"),
         size: (aligned * h) as u64,

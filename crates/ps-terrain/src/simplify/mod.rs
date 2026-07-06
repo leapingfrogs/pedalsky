@@ -25,11 +25,7 @@ pub enum SimplifyTarget {
 /// Mesh transform. Consumes one mesh + a target, returns one mesh.
 pub trait MeshSimplify {
     /// Run the simplification.
-    fn simplify(
-        &self,
-        mesh: MeshData,
-        target: SimplifyTarget,
-    ) -> Result<MeshData, TerrainError>;
+    fn simplify(&self, mesh: MeshData, target: SimplifyTarget) -> Result<MeshData, TerrainError>;
 
     /// Short label used in tracing output.
     fn name(&self) -> &'static str;

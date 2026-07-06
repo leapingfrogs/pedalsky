@@ -39,9 +39,7 @@ enum SlotState {
     Idle,
     /// `map_async` initiated, awaiting GPU completion. The slot is
     /// kept here until the next `try_read` finds `ready == true`.
-    InFlight {
-        ready: Arc<AtomicBool>,
-    },
+    InFlight { ready: Arc<AtomicBool> },
 }
 
 struct ReadbackSlot {
@@ -102,15 +100,17 @@ impl PipelinedReadback {
         let slot = &mut self.slots[self.write_slot];
         let ready = Arc::new(AtomicBool::new(false));
         let ready_cb = Arc::clone(&ready);
-        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            // We only signal `ready = true` on success. On failure
-            // the slot stays InFlight forever — `try_read` will keep
-            // returning None. The caller is expected to recover via
-            // `clear()` if it suspects a stuck slot.
-            if result.is_ok() {
-                ready_cb.store(true, Ordering::Release);
-            }
-        });
+        slot.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                // We only signal `ready = true` on success. On failure
+                // the slot stays InFlight forever — `try_read` will keep
+                // returning None. The caller is expected to recover via
+                // `clear()` if it suspects a stuck slot.
+                if result.is_ok() {
+                    ready_cb.store(true, Ordering::Release);
+                }
+            });
         slot.state = SlotState::InFlight { ready };
         self.write_slot ^= 1;
     }
@@ -148,7 +148,11 @@ impl PipelinedReadback {
         if !ready {
             return None;
         }
-        let bytes = slot.buffer.slice(..self.byte_capacity).get_mapped_range().to_vec();
+        let bytes = slot
+            .buffer
+            .slice(..self.byte_capacity)
+            .get_mapped_range()
+            .to_vec();
         slot.buffer.unmap();
         slot.state = SlotState::Idle;
         Some((read_slot_idx, bytes))

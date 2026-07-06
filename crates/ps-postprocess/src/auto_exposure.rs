@@ -20,8 +20,7 @@ use std::sync::Mutex;
 use bytemuck::{Pod, Zeroable};
 use ps_core::{HdrFramebuffer, PipelinedReadback};
 
-const SHADER_BAKED: &str =
-    include_str!("../../../shaders/postprocess/auto_exposure.comp.wgsl");
+const SHADER_BAKED: &str = include_str!("../../../shaders/postprocess/auto_exposure.comp.wgsl");
 const SHADER_REL: &str = "postprocess/auto_exposure.comp.wgsl";
 
 /// Mirror of the WGSL `AeOutput` struct.
@@ -63,32 +62,31 @@ impl AutoExposure {
             source: wgpu::ShaderSource::Wgsl(live_src.into()),
         });
 
-        let bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("auto-exposure-bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("auto-exposure-bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("auto-exposure-pl"),
@@ -115,8 +113,12 @@ impl AutoExposure {
             "auto-exposure-staging",
             std::mem::size_of::<AeOutputCpu>() as u64,
         );
-        let bind_group =
-            Mutex::new(build_bind_group(device, &bind_group_layout, hdr, &output_buf));
+        let bind_group = Mutex::new(build_bind_group(
+            device,
+            &bind_group_layout,
+            hdr,
+            &output_buf,
+        ));
 
         Self {
             pipeline,
@@ -132,7 +134,10 @@ impl AutoExposure {
     /// so the host can call this through a shared `Arc<AutoExposure>`.
     pub fn rebuild_bindings(&self, device: &wgpu::Device, hdr: &HdrFramebuffer) {
         let bg = build_bind_group(device, &self.bind_group_layout, hdr, &self.output_buf);
-        *self.bind_group.lock().expect("auto-exposure bind group lock") = bg;
+        *self
+            .bind_group
+            .lock()
+            .expect("auto-exposure bind group lock") = bg;
     }
 
     /// Dispatch the auto-exposure compute pass and copy the output to
@@ -182,21 +187,33 @@ impl AutoExposure {
             // Pipeline warm-up or transient miss — keep showing the
             // last known EV100 rather than reverting to None and
             // triggering an exposure flicker.
-            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
+            return *self
+                .last_ev100
+                .lock()
+                .expect("auto-exposure last_ev100 lock");
         };
         drop(readback);
         if bytes.len() < std::mem::size_of::<AeOutputCpu>() {
-            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
+            return *self
+                .last_ev100
+                .lock()
+                .expect("auto-exposure last_ev100 lock");
         }
         let out: AeOutputCpu = *bytemuck::from_bytes(&bytes[..std::mem::size_of::<AeOutputCpu>()]);
         if out.pixel_count <= 0.0 {
-            return *self.last_ev100.lock().expect("auto-exposure last_ev100 lock");
+            return *self
+                .last_ev100
+                .lock()
+                .expect("auto-exposure last_ev100 lock");
         }
         let avg_log_lum = out.log_lum_sum / out.pixel_count;
         let avg_lum = avg_log_lum.exp2().max(1e-6);
         // 0.18 grey × 1.2 (tone-map's denominator constant) = 0.216.
         let ev100 = (avg_lum / 0.216).log2();
-        *self.last_ev100.lock().expect("auto-exposure last_ev100 lock") = Some(ev100);
+        *self
+            .last_ev100
+            .lock()
+            .expect("auto-exposure last_ev100 lock") = Some(ev100);
         Some(ev100)
     }
 }

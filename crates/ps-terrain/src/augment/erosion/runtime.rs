@@ -13,8 +13,7 @@ use super::fractal::FractalBindings;
 use super::hydraulic::HydraulicBindings;
 use super::normal_map::NormalMapBindings;
 use super::params::{
-    ErosionParams, FractalUniformGpu, HydraulicUniformGpu, NormalMapUniformGpu,
-    ThermalUniformGpu,
+    ErosionParams, FractalUniformGpu, HydraulicUniformGpu, NormalMapUniformGpu, ThermalUniformGpu,
 };
 use super::thermal::ThermalBindings;
 use crate::progress::{TerrainProgressSink, TerrainStage};
@@ -39,7 +38,14 @@ impl ErosionRuntime {
         let thermal = ThermalBindings::new(&device);
         let fractal = FractalBindings::new(&device);
         let normal_map = NormalMapBindings::new(&device);
-        Self { device, queue, hydraulic, thermal, fractal, normal_map }
+        Self {
+            device,
+            queue,
+            hydraulic,
+            thermal,
+            fractal,
+            normal_map,
+        }
     }
 }
 
@@ -60,20 +66,23 @@ struct Textures {
 
 impl Textures {
     fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let mk_with = |label: &'static str,
-                       format: wgpu::TextureFormat,
-                       usage: wgpu::TextureUsages| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
+        let mk_with =
+            |label: &'static str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+            };
         let default_usage = wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::COPY_SRC;
@@ -213,7 +222,11 @@ pub(super) fn run(
     // 1×1 dummy texture in whichever slot is unused for that phase.
     let velocity_dummy = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("erosion-velocity-dummy"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -234,33 +247,87 @@ pub(super) fn run(
             label: Some(label),
             layout: &rt.hydraulic.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: rt.hydraulic.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(water_in) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&sed_a_view) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(flux_in) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(vel_write) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(water_out) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(flux_out) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sed_b_view) },
-                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(vel_read) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: rt.hydraulic.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&terrain_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(water_in),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&sed_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(flux_in),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(vel_write),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(water_out),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(flux_out),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&sed_b_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(vel_read),
+                },
             ],
         })
     };
     // Write phase (passes 1+2): velocity at binding 5, dummy at binding 9.
     // Read phase (passes 3+4): dummy at binding 5, velocity at binding 9.
-    let bg_a_write = mk_bg("erosion-hydraulic-bg-a-write",
-        &water_a_view, &flux_a_view, &water_b_view, &flux_b_view,
-        &velocity_view, &velocity_dummy_view);
-    let bg_a_read = mk_bg("erosion-hydraulic-bg-a-read",
-        &water_a_view, &flux_a_view, &water_b_view, &flux_b_view,
-        &velocity_dummy_view, &velocity_read_view);
-    let bg_b_write = mk_bg("erosion-hydraulic-bg-b-write",
-        &water_b_view, &flux_b_view, &water_a_view, &flux_a_view,
-        &velocity_view, &velocity_dummy_view);
-    let bg_b_read = mk_bg("erosion-hydraulic-bg-b-read",
-        &water_b_view, &flux_b_view, &water_a_view, &flux_a_view,
-        &velocity_dummy_view, &velocity_read_view);
+    let bg_a_write = mk_bg(
+        "erosion-hydraulic-bg-a-write",
+        &water_a_view,
+        &flux_a_view,
+        &water_b_view,
+        &flux_b_view,
+        &velocity_view,
+        &velocity_dummy_view,
+    );
+    let bg_a_read = mk_bg(
+        "erosion-hydraulic-bg-a-read",
+        &water_a_view,
+        &flux_a_view,
+        &water_b_view,
+        &flux_b_view,
+        &velocity_dummy_view,
+        &velocity_read_view,
+    );
+    let bg_b_write = mk_bg(
+        "erosion-hydraulic-bg-b-write",
+        &water_b_view,
+        &flux_b_view,
+        &water_a_view,
+        &flux_a_view,
+        &velocity_view,
+        &velocity_dummy_view,
+    );
+    let bg_b_read = mk_bg(
+        "erosion-hydraulic-bg-b-read",
+        &water_b_view,
+        &flux_b_view,
+        &water_a_view,
+        &flux_a_view,
+        &velocity_dummy_view,
+        &velocity_read_view,
+    );
 
     let thermal_out_a_view = view(&textures.thermal_out_a);
     let thermal_out_b_view = view(&textures.thermal_out_b);
@@ -268,10 +335,22 @@ pub(super) fn run(
         label: Some("erosion-thermal-bg"),
         layout: &rt.thermal.bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: rt.thermal.uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&thermal_out_a_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&thermal_out_b_view) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: rt.thermal.uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&terrain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&thermal_out_a_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&thermal_out_b_view),
+            },
         ],
     });
 
@@ -288,10 +367,9 @@ pub(super) fn run(
             (&bg_b_write, &bg_b_read)
         };
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("erosion-hydraulic-iter"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("erosion-hydraulic-iter"),
+        });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("erosion-hydraulic-pass"),
@@ -324,9 +402,9 @@ pub(super) fn run(
         }
         if do_thermal && params.thermal_erosion_rate > 0.0 {
             for _ in 0..params.thermal_iterations_per_cycle.max(1) {
-                let mut th_enc = device.create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor { label: Some("erosion-thermal") },
-                );
+                let mut th_enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("erosion-thermal"),
+                });
                 {
                     let mut tp = th_enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some("erosion-thermal-pass"),
@@ -356,8 +434,14 @@ pub(super) fn run(
             label: Some("erosion-fractal-bg"),
             layout: &rt.fractal.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: rt.fractal.uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: rt.fractal.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&terrain_view),
+                },
             ],
         });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -385,9 +469,18 @@ pub(super) fn run(
         label: Some("erosion-normal-map-bg"),
         layout: &rt.normal_map.bgl,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: rt.normal_map.uniforms.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&terrain_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&nmap_view) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: rt.normal_map.uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&terrain_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&nmap_view),
+            },
         ],
     });
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -435,7 +528,11 @@ fn upload_r32f(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[f32], w: u32, h
             bytes_per_row: Some(w * 4),
             rows_per_image: Some(h),
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
 }
 
@@ -476,7 +573,11 @@ fn readback_r32f(
                 rows_per_image: Some(h),
             },
         },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit(Some(enc.finish()));
 
@@ -485,9 +586,9 @@ fn readback_r32f(
     slice.map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| {
-        TerrainError::AugmentInvalid(format!("device poll failed: {e}"))
-    })?;
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .map_err(|e| TerrainError::AugmentInvalid(format!("device poll failed: {e}")))?;
     rx.recv()
         .map_err(|e| TerrainError::AugmentInvalid(format!("map_async channel closed: {e}")))?
         .map_err(|e| TerrainError::AugmentInvalid(format!("readback map failed: {e}")))?;

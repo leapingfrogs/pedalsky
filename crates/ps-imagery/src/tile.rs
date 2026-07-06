@@ -41,7 +41,10 @@ pub struct GeoExtent {
 impl GeoExtent {
     /// Centre lat/lon.
     pub fn centre(self) -> (f64, f64) {
-        ((self.south + self.north) * 0.5, (self.west + self.east) * 0.5)
+        (
+            (self.south + self.north) * 0.5,
+            (self.west + self.east) * 0.5,
+        )
     }
 }
 
@@ -155,8 +158,9 @@ pub fn lonlat_to_tile_xy(lon_deg: f64, lat_deg: f64, zoom: u32) -> (f64, f64) {
 pub fn tile_xy_to_lonlat_nw(x: u32, y: u32, zoom: u32) -> (f64, f64) {
     let n = (1u64 << zoom) as f64;
     let lon_deg = x as f64 / n * 360.0 - 180.0;
-    let lat_rad =
-        (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan();
+    let lat_rad = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n))
+        .sinh()
+        .atan();
     (lon_deg, lat_rad.to_degrees())
 }
 
@@ -219,13 +223,9 @@ mod tests {
         // Each preset must request strictly more pixels than the last
         // — that's the whole point of the dropdown.
         assert!(
-            ImageryResolution::Standard.target_pixels()
-                < ImageryResolution::High.target_pixels()
+            ImageryResolution::Standard.target_pixels() < ImageryResolution::High.target_pixels()
         );
-        assert!(
-            ImageryResolution::High.target_pixels()
-                < ImageryResolution::Max.target_pixels()
-        );
+        assert!(ImageryResolution::High.target_pixels() < ImageryResolution::Max.target_pixels());
     }
 
     #[test]
@@ -233,16 +233,17 @@ mod tests {
         // At a fixed location + radius, picking a higher preset
         // should map to a zoom >= the lower preset's. Roughly each
         // doubling of pixel count = +1 zoom level.
-        let std_z = pick_zoom_for_radius(
-            56.19, 30_000.0, ImageryResolution::Standard.target_pixels(),
+        let std_z =
+            pick_zoom_for_radius(56.19, 30_000.0, ImageryResolution::Standard.target_pixels());
+        let high_z = pick_zoom_for_radius(56.19, 30_000.0, ImageryResolution::High.target_pixels());
+        let max_z = pick_zoom_for_radius(56.19, 30_000.0, ImageryResolution::Max.target_pixels());
+        assert!(
+            high_z > std_z,
+            "High zoom {high_z} should exceed Standard {std_z}"
         );
-        let high_z = pick_zoom_for_radius(
-            56.19, 30_000.0, ImageryResolution::High.target_pixels(),
+        assert!(
+            max_z > high_z,
+            "Max zoom {max_z} should exceed High {high_z}"
         );
-        let max_z = pick_zoom_for_radius(
-            56.19, 30_000.0, ImageryResolution::Max.target_pixels(),
-        );
-        assert!(high_z > std_z, "High zoom {high_z} should exceed Standard {std_z}");
-        assert!(max_z > high_z, "Max zoom {max_z} should exceed High {high_z}");
     }
 }

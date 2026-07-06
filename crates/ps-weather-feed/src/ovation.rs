@@ -137,7 +137,11 @@ pub fn parse(body: &str) -> anyhow::Result<OvationGrid> {
 
 /// Fetch the OVATION nowcast. Cache key uses lat=0, lon=0 (the data
 /// is global; per-location sampling happens on the parsed grid).
-pub fn fetch(cache_root: &PathBuf, target: DateTime<Utc>, ttl: Duration) -> anyhow::Result<OvationGrid> {
+pub fn fetch(
+    cache_root: &PathBuf,
+    target: DateTime<Utc>,
+    ttl: Duration,
+) -> anyhow::Result<OvationGrid> {
     let cache = Cache::new(cache_root);
 
     if let Some(body) = cache.read_fresh("swpc-ovation", 0.0, 0.0, target, ttl)? {

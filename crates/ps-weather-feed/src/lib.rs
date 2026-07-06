@@ -114,8 +114,8 @@ pub enum FetchError {
 /// Steps: pull Open-Meteo for the configured (lat, lon, hour),
 /// optionally fetch the nearest METAR station and apply surface
 /// + present-weather enrichment, and synthesise a `Scene` with
-/// up to six cloud layers + surface conditions + precipitation +
-/// lightning.
+///   up to six cloud layers + surface conditions + precipitation +
+///   lightning.
 ///
 /// All HTTP calls go through the disk cache; if a request fails
 /// the cache's last-known good response is served as a fallback.

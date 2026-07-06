@@ -130,8 +130,13 @@ impl Tonemap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group =
-            Mutex::new(build_bind_group(device, &bind_group_layout, hdr, &sampler, &uniforms));
+        let bind_group = Mutex::new(build_bind_group(
+            device,
+            &bind_group_layout,
+            hdr,
+            &sampler,
+            &uniforms,
+        ));
 
         Self {
             pipeline,

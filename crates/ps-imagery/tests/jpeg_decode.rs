@@ -38,7 +38,11 @@ fn decode_synthetic_jpeg_to_rgba8() {
     let top = img.get_pixel(128, 0);
     let bot = img.get_pixel(128, 255);
     assert!(top.0[0] < 20, "top row R = {} should be near 0", top.0[0]);
-    assert!(bot.0[0] > 200, "bottom row R = {} should be near 255", bot.0[0]);
+    assert!(
+        bot.0[0] > 200,
+        "bottom row R = {} should be near 255",
+        bot.0[0]
+    );
     // Alpha channel from RGB→RGBA conversion should be 255.
     assert_eq!(top.0[3], 255);
     assert_eq!(bot.0[3], 255);

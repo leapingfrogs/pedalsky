@@ -198,10 +198,7 @@ impl MetarRecord {
             return metres * 1609.344;
         }
         // "5SM" → 5 statute miles. Strip the suffix.
-        let no_unit = trimmed
-            .trim_end_matches("SM")
-            .trim_end_matches("KM")
-            .trim();
+        let no_unit = trimmed.trim_end_matches("SM").trim_end_matches("KM").trim();
         if let Ok(miles) = no_unit.parse::<f32>() {
             return miles * 1609.344;
         }
@@ -376,8 +373,8 @@ mod tests {
     }
 
     /// Regression: METAR endpoint reports `"wdir": "VRB"` for
-    /// variable wind direction (low wind speed, direction shifts
-    /// >60° in 10 min). Default `Option<f32>` deserialiser rejects
+    /// variable wind direction (low wind speed, direction shifting
+    /// more than 60° in 10 min). Default `Option<f32>` deserialiser rejects
     /// this with `invalid type: string "VRB"` and the whole METAR
     /// fetch fails, taking enrichment with it.
     #[test]

@@ -204,17 +204,19 @@ fn subsystem_combinations_render_without_validation_errors() {
     // same sequence every run so failures reproduce.
     let mut rng_state: u32 = 0xc0de_face;
     let mut next = || {
-        rng_state = rng_state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        rng_state = rng_state
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223);
         rng_state
     };
 
     // Build the 48 masks.
     const N_SUBSYSTEMS: u32 = 11;
     let mut masks: Vec<u32> = Vec::new();
-    masks.push(0);                       // all off
+    masks.push(0); // all off
     masks.push((1 << N_SUBSYSTEMS) - 1); // all on
     for i in 0..N_SUBSYSTEMS {
-        masks.push(1 << i);              // one-on cases
+        masks.push(1 << i); // one-on cases
     }
     while masks.len() < 48 {
         masks.push(next() & ((1 << N_SUBSYSTEMS) - 1));
@@ -226,17 +228,17 @@ fn subsystem_combinations_render_without_validation_errors() {
 
     for (idx, &mask) in masks.iter().enumerate() {
         let s = &mut config.render.subsystems;
-        s.ground        = mask & (1 << 0)  != 0;
-        s.atmosphere    = mask & (1 << 1)  != 0;
-        s.clouds        = mask & (1 << 2)  != 0;
-        s.precipitation = mask & (1 << 3)  != 0;
-        s.wet_surface   = mask & (1 << 4)  != 0;
-        s.godrays       = mask & (1 << 5)  != 0;
-        s.lightning     = mask & (1 << 6)  != 0;
-        s.aurora        = mask & (1 << 7)  != 0;
-        s.bloom         = mask & (1 << 8)  != 0;
-        s.windsock      = mask & (1 << 9)  != 0;
-        s.water         = mask & (1 << 10) != 0;
+        s.ground = mask & (1 << 0) != 0;
+        s.atmosphere = mask & (1 << 1) != 0;
+        s.clouds = mask & (1 << 2) != 0;
+        s.precipitation = mask & (1 << 3) != 0;
+        s.wet_surface = mask & (1 << 4) != 0;
+        s.godrays = mask & (1 << 5) != 0;
+        s.lightning = mask & (1 << 6) != 0;
+        s.aurora = mask & (1 << 7) != 0;
+        s.bloom = mask & (1 << 8) != 0;
+        s.windsock = mask & (1 << 9) != 0;
+        s.water = mask & (1 << 10) != 0;
 
         let setup = TestSetup::new(gpu, &config, (48, 32));
         let mut app = HeadlessApp::new(gpu, &config, setup)
@@ -295,7 +297,7 @@ fn atmosphere_toggle_roundtrip_preserves_dependent_subsystems() {
 #[test]
 fn water_subsystem_renders_one_frame() {
     let Some(gpu) = gpu() else { return };
-    use ps_core::{Scene, WorldState, camera::FlyCamera};
+    use ps_core::{camera::FlyCamera, Scene, WorldState};
 
     let mut config = config_with_ev0_passthrough();
     config.render.subsystems.atmosphere = true;
@@ -304,8 +306,10 @@ fn water_subsystem_renders_one_frame() {
     config.render.subsystems.tint = false;
     config.render.subsystems.water = true;
 
-    let mut scene = Scene::default();
-    scene.water = Some(ps_core::Water::default());
+    let scene = Scene {
+        water: Some(ps_core::Water::default()),
+        ..Default::default()
+    };
 
     let setup = TestSetup::new(gpu, &config, (96, 64));
     let mut app = HeadlessApp::new(gpu, &config, setup).expect("HeadlessApp::new");

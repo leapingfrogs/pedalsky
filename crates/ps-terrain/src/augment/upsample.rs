@@ -11,11 +11,7 @@ use crate::tile::HeightmapTile;
 /// `(target_w, target_h)` covering the same geographic extent. If the
 /// source is already at or above the target resolution, returns the
 /// input unchanged.
-pub fn bicubic_upsample(
-    src: HeightmapTile,
-    target_w: u32,
-    target_h: u32,
-) -> HeightmapTile {
+pub fn bicubic_upsample(src: HeightmapTile, target_w: u32, target_h: u32) -> HeightmapTile {
     if src.width >= target_w && src.height >= target_h {
         return src;
     }
@@ -91,10 +87,7 @@ fn cubic_hermite(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
 
 /// Result of figuring out what working resolution to upsample to,
 /// given the source GSD + the target metres-per-pixel.
-pub fn working_resolution(
-    src: &HeightmapTile,
-    target_resolution_m: f32,
-) -> (u32, u32) {
+pub fn working_resolution(src: &HeightmapTile, target_resolution_m: f32) -> (u32, u32) {
     // Source pixel count must scale by (source_gsd_m / target_resolution_m).
     let scale = src.gsd_m_centre / target_resolution_m.max(0.01);
     let new_w = ((src.width as f32) * scale).round().max(2.0) as u32;
@@ -112,7 +105,12 @@ mod tests {
             heights_m: heights,
             width: w,
             height: h,
-            extent_deg: GeoExtent { west: 0.0, east: 1.0, south: 0.0, north: 1.0 },
+            extent_deg: GeoExtent {
+                west: 0.0,
+                east: 1.0,
+                south: 0.0,
+                north: 1.0,
+            },
             source: "test",
             gsd_m_centre: 30.0,
         }
@@ -158,11 +156,7 @@ mod tests {
         let src = tile(
             3,
             3,
-            vec![
-                10.0, 20.0, 30.0,
-                40.0, 50.0, 60.0,
-                70.0, 80.0, 90.0,
-            ],
+            vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0],
         );
         let up = bicubic_upsample(src, 9, 9);
         assert!((up.heights_m[0] - 10.0).abs() < 1e-3);

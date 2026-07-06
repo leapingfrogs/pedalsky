@@ -73,7 +73,6 @@ pub fn synthesise_cloud_layers(layers: &[CloudLayer]) -> Vec<CloudLayerGpu> {
     out
 }
 
-
 /// Map a scene-side coverage value in [0, 1] onto the Schneider 2015
 /// remap's "visible band" so METAR-natural values (0.25 SCT, 0.5 BKN,
 /// 1.0 OVC) produce the cloud structure a meteorologist would expect.
@@ -281,7 +280,10 @@ mod tests {
         let zero = remap_coverage_to_visible_band(0.0);
         let one = remap_coverage_to_visible_band(1.0);
         assert!(zero.abs() < 1e-6, "remap(0.0) = {zero}, expected 0");
-        assert!((one - 0.60).abs() < 1e-6, "remap(1.0) = {one}, expected 0.60");
+        assert!(
+            (one - 0.60).abs() < 1e-6,
+            "remap(1.0) = {one}, expected 0.60"
+        );
 
         // Sweep at 1% increments; each step must not regress and must
         // not jump by more than a small fraction of the visible-band

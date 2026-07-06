@@ -62,8 +62,7 @@ fn required_features(adapter_features: wgpu::Features) -> wgpu::Features {
     // which freezes the render loop. Skip on macOS until the wgpu issue is resolved.
     #[cfg(not(target_os = "macos"))]
     {
-        wanted |= wgpu::Features::TIMESTAMP_QUERY
-            | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        wanted |= wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
     }
     let granted = wanted & adapter_features;
     let missing = wanted - granted;

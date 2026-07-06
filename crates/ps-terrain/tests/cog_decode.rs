@@ -96,8 +96,7 @@ fn full_pipeline_via_passthrough_stages() {
             &self,
             _req: &TileRequest,
         ) -> Result<ps_terrain::HeightmapTile, ps_terrain::TerrainError> {
-            decode_for_tests(&self.0, 56, -4)
-                .map_err(ps_terrain::TerrainError::Decode)
+            decode_for_tests(&self.0, 56, -4).map_err(ps_terrain::TerrainError::Decode)
         }
     }
 

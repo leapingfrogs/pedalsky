@@ -73,7 +73,6 @@ pub fn set_workspace_root(workspace: Option<PathBuf>) {
     let _ = WORKSPACE_SHADERS_ROOT.set(workspace.map(|w| w.join("shaders")));
 }
 
-
 /// Resolve a shader source. `rel_path` is the path under `shaders/`
 /// (e.g. `"clouds/cloud_march.wgsl"`); `baked_fallback` is the
 /// `include_str!`-inlined source the subsystem ships with.

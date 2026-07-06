@@ -21,14 +21,19 @@ const RENDER_H: u32 = 720;
 /// base) so the deck reads as a sheet rather than as a thin band
 /// seen edge-on through 9+ km of haze.
 const SCENES: &[(&str, &str, f32, f32)] = &[
-    ("clear_summer_noon",        "2026-06-21T11:00:00Z", 14.0,  5.0),
-    ("broken_cumulus_afternoon", "2026-05-10T14:30:00Z", 14.0,  5.0),
-    ("overcast_drizzle",         "2026-04-12T10:00:00Z", 14.0, 45.0),
-    ("thunderstorm",             "2026-08-16T16:00:00Z", 14.0,  5.0),
-    ("high_cirrus_sunset",       "2026-09-22T17:30:00Z", 11.0,  5.0),
-    ("winter_overcast_snow",     "2026-01-08T12:00:00Z", 14.0, 60.0),
-    ("twilight_civil",           "2026-12-21T04:30:00Z",  8.0,  5.0),
-    ("mountain_wave_clouds",     "2026-03-15T13:00:00Z", 14.0,  5.0),
+    ("clear_summer_noon", "2026-06-21T11:00:00Z", 14.0, 5.0),
+    (
+        "broken_cumulus_afternoon",
+        "2026-05-10T14:30:00Z",
+        14.0,
+        5.0,
+    ),
+    ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0, 45.0),
+    ("thunderstorm", "2026-08-16T16:00:00Z", 14.0, 5.0),
+    ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0, 5.0),
+    ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0, 60.0),
+    ("twilight_civil", "2026-12-21T08:05:00Z", 8.0, 5.0),
+    ("mountain_wave_clouds", "2026-03-15T13:00:00Z", 14.0, 5.0),
 ];
 
 fn workspace_root() -> Result<PathBuf> {
@@ -52,8 +57,8 @@ fn main() -> Result<()> {
 
     for (name, time_iso, ev100, pitch_deg) in SCENES {
         let pixels = render_one(&gpu, &root, name, time_iso, *ev100, *pitch_deg)?;
-        let img = image::RgbaImage::from_raw(RENDER_W, RENDER_H, pixels)
-            .context("rgba buffer length")?;
+        let img =
+            image::RgbaImage::from_raw(RENDER_W, RENDER_H, pixels).context("rgba buffer length")?;
         let path = golden_dir.join(format!("{name}.png"));
         img.save(&path)
             .with_context(|| format!("write {}", path.display()))?;
@@ -79,7 +84,10 @@ fn render_one(
     config
         .validate_with_base(config_path.parent())
         .context("validate config")?;
-    let scene_path = root.join("tests").join("scenes").join(format!("{name}.toml"));
+    let scene_path = root
+        .join("tests")
+        .join("scenes")
+        .join(format!("{name}.toml"));
     let scene = Scene::load(&scene_path).context("load scene")?;
     scene.validate().context("validate scene")?;
     config.render.subsystems.backdrop = false;

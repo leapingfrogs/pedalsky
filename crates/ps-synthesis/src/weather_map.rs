@@ -155,7 +155,6 @@ fn pixel_to_world((x, y): (u32, u32)) -> (f32, f32) {
     (fx * EXTENT_M - half, fy * EXTENT_M - half)
 }
 
-
 /// Tiny deterministic 2D value-noise so synthesis is reproducible without
 /// pulling in an extra dependency. Output in [0, 1].
 fn value_noise_2d(x: f32, y: f32) -> f32 {

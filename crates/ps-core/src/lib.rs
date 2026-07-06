@@ -31,20 +31,17 @@ pub use app::{App, AppBuilder, AppError, SubsystemFactory};
 pub use atmosphere_luts::{
     atmosphere_lut_bind_group_layout, atmosphere_static_only_bind_group,
     atmosphere_static_only_bind_group_layout, atmosphere_transmittance_only_bind_group,
-    atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts, AP_FAR_M, AP_NEAR_M,
-    AP_SIZE,
+    atmosphere_transmittance_only_bind_group_layout, AtmosphereLuts, AP_FAR_M, AP_NEAR_M, AP_SIZE,
 };
 pub use bind_group_cache::BindGroupCache;
 pub use bind_groups::{frame_bind_group_layout, world_bind_group_layout, FrameWorldBindings};
-pub use pipelined_readback::PipelinedReadback;
 pub use config::{Config, ConfigError, ReprojectionMode, TonemapMode};
 pub use contexts::{
     FrameUniforms, FrameUniformsGpu, GpuContext, HdrFramebuffer, PrepareContext, RenderContext,
 };
 pub use framebuffer::HdrFramebufferImpl;
-pub use hot_reload::{
-    HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE,
-};
+pub use hot_reload::{HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE};
+pub use pipelined_readback::PipelinedReadback;
 pub use scene::{
     default_density_scale, default_droplet_diameter_um, Aurora, AuroraColour, CloudLayer,
     CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation, Scene, SceneError,

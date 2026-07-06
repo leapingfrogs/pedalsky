@@ -109,17 +109,18 @@ fn wet_ground_is_darker_than_dry() {
         ..SurfaceParams::default()
     };
 
-    let dry_pixels =
-        app.render_one_frame_with_surface(gpu, ground_camera(), Some(dry));
-    let wet_pixels =
-        app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet));
+    let dry_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(dry));
+    let wet_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet));
 
     let (dry_avg, dry_n) = ground_pixels_avg(&dry_pixels);
     let (wet_avg, wet_n) = ground_pixels_avg(&wet_pixels);
     eprintln!("dry ground avg ({dry_n} px) = {dry_avg:?}");
     eprintln!("wet ground avg ({wet_n} px) = {wet_avg:?}");
 
-    assert!(dry_n > 100 && wet_n > 100, "expected substantial ground coverage in test frame");
+    assert!(
+        dry_n > 100 && wet_n > 100,
+        "expected substantial ground coverage in test frame"
+    );
 
     // Wet ground should be darker on average (Lagarde dark_albedo via
     // pow(albedo, 3) at wetness=1). Specular highlights can locally
@@ -272,8 +273,7 @@ fn wet_surface_flag_off_disables_wet_path() {
     };
     let dry = SurfaceParams::default();
 
-    let wet_pixels =
-        app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet_no_snow));
+    let wet_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(wet_no_snow));
     let dry_pixels = app.render_one_frame_with_surface(gpu, ground_camera(), Some(dry));
 
     let (wet_avg, _) = ground_pixels_avg(&wet_pixels);

@@ -222,10 +222,7 @@ impl FractalUniformGpu {
             octaves: params.fractal_octaves.max(1),
             ridged: params.fractal_ridged,
             slope_mask_strength: params.slope_mask_strength,
-            slope_mask_threshold_tan: params
-                .slope_mask_threshold_degrees
-                .to_radians()
-                .tan(),
+            slope_mask_threshold_tan: params.slope_mask_threshold_degrees.to_radians().tan(),
             _pad0: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,

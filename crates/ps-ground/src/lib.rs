@@ -105,12 +105,18 @@ impl GroundOverlayController {
 
     /// Toggle the satellite overlay on/off.
     pub fn set_satellite_enabled(&self, enabled: bool) {
-        self.0.lock().expect("GroundOverlayController lock").satellite_enabled = enabled;
+        self.0
+            .lock()
+            .expect("GroundOverlayController lock")
+            .satellite_enabled = enabled;
     }
 
     /// Current satellite-overlay state.
     pub fn satellite_enabled(&self) -> bool {
-        self.0.lock().expect("GroundOverlayController lock").satellite_enabled
+        self.0
+            .lock()
+            .expect("GroundOverlayController lock")
+            .satellite_enabled
     }
 }
 
@@ -181,7 +187,7 @@ fn surface_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<SurfaceParams>() as u64,
+                        std::mem::size_of::<SurfaceParams>() as u64
                     ),
                 },
                 count: None,
@@ -191,9 +197,7 @@ fn surface_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float {
-                        filterable: true,
-                    },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -210,9 +214,7 @@ fn surface_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 binding: 3,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float {
-                        filterable: true,
-                    },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -231,9 +233,9 @@ fn surface_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<GroundOverlayParamsGpu>() as u64,
-                    ),
+                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                        GroundOverlayParamsGpu,
+                    >() as u64),
                 },
                 count: None,
             },
@@ -376,10 +378,22 @@ impl PbrGround {
         let h = QUAD_HALF_EXTENT_M;
         let up = [0.0_f32, 1.0, 0.0];
         let vertices: [Vertex; 4] = [
-            Vertex { position: [-h, 0.0, -h], normal: up }, // 0 NW
-            Vertex { position: [ h, 0.0, -h], normal: up }, // 1 NE
-            Vertex { position: [ h, 0.0,  h], normal: up }, // 2 SE
-            Vertex { position: [-h, 0.0,  h], normal: up }, // 3 SW
+            Vertex {
+                position: [-h, 0.0, -h],
+                normal: up,
+            }, // 0 NW
+            Vertex {
+                position: [h, 0.0, -h],
+                normal: up,
+            }, // 1 NE
+            Vertex {
+                position: [h, 0.0, h],
+                normal: up,
+            }, // 2 SE
+            Vertex {
+                position: [-h, 0.0, h],
+                normal: up,
+            }, // 3 SW
         ];
         let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
 
@@ -440,7 +454,11 @@ impl PbrGround {
         let satellite_size = (1u32, 1u32);
         let satellite_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ground-satellite-tex"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -754,51 +772,43 @@ impl RenderSubsystem for GroundSubsystem {
         // texture view) with `satellite_revision` (rebuilt on every
         // imagery upload; affects the satellite texture view). Two
         // 32-bit halves keep the key cheap.
-        let cache_key = (ctx.weather.revision << 32)
-            | (self.inner.satellite_revision & 0xFFFF_FFFF);
+        let cache_key =
+            (ctx.weather.revision << 32) | (self.inner.satellite_revision & 0xFFFF_FFFF);
         let inner = &self.inner;
-        let bg = self
-            .surface_bg_cache
-            .get_or_build(cache_key, || {
-                ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("ground-surface-bg"),
-                    layout: &inner.surface_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: inner.surface_buf.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(
-                                &ctx.weather.textures.overcast_field_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(
-                                &inner.density_mask_sampler,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(
-                                &inner.satellite_view,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(
-                                &inner.satellite_sampler,
-                            ),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: inner.overlay_buf.as_entire_binding(),
-                        },
-                    ],
-                })
-            });
+        let bg = self.surface_bg_cache.get_or_build(cache_key, || {
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ground-surface-bg"),
+                layout: &inner.surface_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inner.surface_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &ctx.weather.textures.overcast_field_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&inner.density_mask_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&inner.satellite_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&inner.satellite_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: inner.overlay_buf.as_entire_binding(),
+                    },
+                ],
+            })
+        });
         self.live_surface_bg = Some(bg);
     }
 
@@ -915,11 +925,7 @@ impl SubsystemFactory for GroundFactory {
     fn name(&self) -> &'static str {
         "ground"
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(GroundSubsystem::with_inboxes(
             config,
             gpu,

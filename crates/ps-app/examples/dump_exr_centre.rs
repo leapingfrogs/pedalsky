@@ -5,7 +5,9 @@
 use exr::prelude::*;
 
 fn main() -> std::io::Result<()> {
-    let path = std::env::args().nth(1).expect("usage: dump_exr_centre <path>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: dump_exr_centre <path>");
     let image = read_first_rgba_layer_from_file(
         &path,
         |resolution, _channels| {

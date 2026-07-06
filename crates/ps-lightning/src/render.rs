@@ -58,10 +58,8 @@ impl BoltRender {
         });
 
         let live_src = ps_core::shaders::load_shader(SHADER_REL, SHADER_BAKED);
-        let composed = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &live_src,
-        ]);
+        let composed =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &live_src]);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("lightning/bolt.wgsl"),
             source: wgpu::ShaderSource::Wgsl(composed.into()),

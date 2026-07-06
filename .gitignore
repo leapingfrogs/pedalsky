@@ -12,3 +12,11 @@
 /scenes/saved*
 output.log
 /cache/
+
+# Local dev environment state (devenv.sh)
+.devenv/
+.envrc
+devenv.lock
+devenv.nix
+devenv.yaml
+.pre-commit-config.yaml

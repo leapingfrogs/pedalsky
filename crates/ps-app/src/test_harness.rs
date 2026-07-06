@@ -11,14 +11,14 @@ use ps_atmosphere::AtmosphereFactory;
 use ps_aurora::AuroraFactory;
 use ps_backdrop::BackdropFactory;
 use ps_bloom::BloomFactory;
-use ps_godrays::GodraysFactory;
-use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, GpuContext, HdrFramebufferImpl, PrepareContext,
     RenderContext,
 };
+use ps_godrays::GodraysFactory;
 use ps_ground::GroundFactory;
+use ps_lightning::{LightningFactory, LightningPublish};
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
@@ -323,13 +323,7 @@ impl HeadlessApp {
         surface_override: Option<ps_core::SurfaceParams>,
         cloud_mask_override: Option<f32>,
     ) -> Vec<u8> {
-        self.render_one_frame_full(
-            gpu,
-            camera,
-            surface_override,
-            cloud_mask_override,
-            None,
-        )
+        self.render_one_frame_full(gpu, camera, surface_override, cloud_mask_override, None)
     }
 
     /// Phase 11.3 — render one frame using a real synthesised
@@ -417,12 +411,11 @@ impl HeadlessApp {
         let luts_ref = self.atmosphere_luts.as_deref();
         let luts_bind_group = luts_ref.map(|l| &l.bind_group);
         // Tonemap state per current ev100/mode.
-        self.tonemap_handle
-            .set_state(ps_postprocess::TonemapState {
-                ev100: self.ev100,
-                mode: self.tonemap_mode,
-                auto_exposure_enabled: false,
-            });
+        self.tonemap_handle.set_state(ps_postprocess::TonemapState {
+            ev100: self.ev100,
+            mode: self.tonemap_mode,
+            auto_exposure_enabled: false,
+        });
         let mut prepare_ctx = PrepareContext {
             device: &gpu.device,
             queue: &gpu.queue,
@@ -504,6 +497,7 @@ impl HeadlessApp {
     ///
     /// In both cases `world.sun_direction` / `toa_illuminance` are
     /// updated each call so the wall clock animates correctly.
+    #[allow(clippy::too_many_arguments)] // test-harness convenience surface
     pub fn render_animation_frame(
         &mut self,
         gpu: &GpuContext,
@@ -593,12 +587,11 @@ impl HeadlessApp {
             .write(&gpu.queue, &frame_uniforms, &weather.atmosphere);
         let luts_ref = self.atmosphere_luts.as_deref();
         let luts_bind_group = luts_ref.map(|l| &l.bind_group);
-        self.tonemap_handle
-            .set_state(ps_postprocess::TonemapState {
-                ev100: self.ev100,
-                mode: self.tonemap_mode,
-                auto_exposure_enabled: false,
-            });
+        self.tonemap_handle.set_state(ps_postprocess::TonemapState {
+            ev100: self.ev100,
+            mode: self.tonemap_mode,
+            auto_exposure_enabled: false,
+        });
         {
             let mut prepare_ctx = PrepareContext {
                 device: &gpu.device,
@@ -817,12 +810,11 @@ impl HeadlessApp {
         // subsystem; the tonemap pass runs at PassStage::ToneMap inside
         // App::frame writing to render_ctx.tonemap_target (the offscreen
         // output view).
-        self.tonemap_handle
-            .set_state(ps_postprocess::TonemapState {
-                ev100: self.ev100,
-                mode: self.tonemap_mode,
-                auto_exposure_enabled: self.last_config.debug.auto_exposure,
-            });
+        self.tonemap_handle.set_state(ps_postprocess::TonemapState {
+            ev100: self.ev100,
+            mode: self.tonemap_mode,
+            auto_exposure_enabled: self.last_config.debug.auto_exposure,
+        });
         self.app.frame(&mut prepare_ctx, &mut encoder, &render_ctx);
 
         // Copy output → staging.

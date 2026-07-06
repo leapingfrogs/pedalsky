@@ -183,16 +183,17 @@ mod tests {
 
     fn tiny_tile() -> HeightmapTile {
         // 4x3 heightmap (12 pixels) covering a 1°x1° tile.
-        let heights = vec![
-            0.0, 1.0, 2.0, 3.0,
-            1.0, 2.0, 3.0, 4.0,
-            2.0, 3.0, 4.0, 5.0,
-        ];
+        let heights = vec![0.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 4.0, 2.0, 3.0, 4.0, 5.0];
         HeightmapTile {
             heights_m: heights,
             width: 4,
             height: 3,
-            extent_deg: GeoExtent { west: -4.0, east: -3.0, south: 56.0, north: 57.0 },
+            extent_deg: GeoExtent {
+                west: -4.0,
+                east: -3.0,
+                south: 56.0,
+                north: 57.0,
+            },
             source: "test",
             gsd_m_centre: 30.0,
         }

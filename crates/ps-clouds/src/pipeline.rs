@@ -11,20 +11,16 @@ use ps_core::{
     HdrFramebuffer,
 };
 
-const CLOUD_UNIFORMS_BAKED: &str =
-    include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
+const CLOUD_UNIFORMS_BAKED: &str = include_str!("../../../shaders/clouds/cloud_uniforms.wgsl");
 const CLOUD_UNIFORMS_REL: &str = "clouds/cloud_uniforms.wgsl";
 const CLOUD_MARCH_BAKED: &str = include_str!("../../../shaders/clouds/cloud_march.wgsl");
 const CLOUD_MARCH_REL: &str = "clouds/cloud_march.wgsl";
-const CLOUD_COMPOSITE_BAKED: &str =
-    include_str!("../../../shaders/clouds/cloud_composite.wgsl");
+const CLOUD_COMPOSITE_BAKED: &str = include_str!("../../../shaders/clouds/cloud_composite.wgsl");
 const CLOUD_COMPOSITE_REL: &str = "clouds/cloud_composite.wgsl";
 const CLOUD_COMPOSITE_HALFRES_BAKED: &str =
     include_str!("../../../shaders/clouds/cloud_composite_halfres.wgsl");
-const CLOUD_COMPOSITE_HALFRES_REL: &str =
-    "clouds/cloud_composite_halfres.wgsl";
-const CLOUD_TAA_BAKED: &str =
-    include_str!("../../../shaders/clouds/cloud_taa.wgsl");
+const CLOUD_COMPOSITE_HALFRES_REL: &str = "clouds/cloud_composite_halfres.wgsl";
+const CLOUD_TAA_BAKED: &str = include_str!("../../../shaders/clouds/cloud_taa.wgsl");
 const CLOUD_TAA_REL: &str = "clouds/cloud_taa.wgsl";
 
 /// Group-0 bind layout for the full-res composite pass: cloud-
@@ -250,16 +246,12 @@ pub struct CloudPipelines {
 /// Returns `Err` if any of the expected source markers is missing
 /// — that catches a silent drift between this code and the shader.
 fn patch_cloud_march_for_halfres(source: &str) -> Result<String, &'static str> {
-    let inject_marker =
-        "@group(2) @binding(11) var wind_field: texture_3d<f32>;";
-    let inject_replacement =
-        "@group(2) @binding(11) var wind_field: texture_3d<f32>;\n\
+    let inject_marker = "@group(2) @binding(11) var wind_field: texture_3d<f32>;";
+    let inject_replacement = "@group(2) @binding(11) var wind_field: texture_3d<f32>;\n\
          // Half-res variant binding: live cloud-RT size + inverse.\n\
          @group(2) @binding(12) var<uniform> cloud_rt_uniform: vec4<f32>;";
     if !source.contains(inject_marker) {
-        return Err(
-            "cloud_march.wgsl: half-res patch missing binding-11 injection marker",
-        );
+        return Err("cloud_march.wgsl: half-res patch missing binding-11 injection marker");
     }
 
     // Primary view-ray reconstruction. `compute_view_ray` (in
@@ -269,16 +261,14 @@ fn patch_cloud_march_for_halfres(source: &str) -> Result<String, &'static str> {
     // `[-1, 0]`. Pre-scale by `viewport / cloud_rt_uniform` (= (2, 2)
     // at half-res, identity at full-res) before the call.
     let view_ray_call = "let ray = compute_view_ray(in.pos.xy);";
-    let view_ray_call_halfres =
-        "let ray = compute_view_ray(in.pos.xy * \
+    let view_ray_call_halfres = "let ray = compute_view_ray(in.pos.xy * \
          (frame.viewport_size.xy / cloud_rt_uniform.xy));";
     if !source.contains(view_ray_call) {
         return Err("cloud_march.wgsl: half-res patch missing compute_view_ray marker");
     }
 
     let depth_lookup = "let depth_ndc = textureLoad(scene_depth, jitter_xy, 0);";
-    let depth_lookup_halfres =
-        "// Half-res render: jitter_xy is in cloud-RT pixel space \
+    let depth_lookup_halfres = "// Half-res render: jitter_xy is in cloud-RT pixel space \
          (which is smaller than the framebuffer); scale up to the \
          depth buffer's pixel space, which is always full-res.\n    \
          let depth_scale = frame.viewport_size.xy / cloud_rt_uniform.xy;\n    \
@@ -318,8 +308,7 @@ impl CloudPipelines {
         // March pipeline.
         let cloud_uniforms_src =
             ps_core::shaders::load_shader(CLOUD_UNIFORMS_REL, CLOUD_UNIFORMS_BAKED);
-        let cloud_march_src =
-            ps_core::shaders::load_shader(CLOUD_MARCH_REL, CLOUD_MARCH_BAKED);
+        let cloud_march_src = ps_core::shaders::load_shader(CLOUD_MARCH_REL, CLOUD_MARCH_BAKED);
         let march_src = ps_core::shaders::compose(&[
             ps_core::shaders::COMMON_UNIFORMS_WGSL,
             ps_core::shaders::COMMON_MATH_WGSL,
@@ -496,43 +485,39 @@ impl CloudPipelines {
             CLOUD_COMPOSITE_HALFRES_REL,
             CLOUD_COMPOSITE_HALFRES_BAKED,
         );
-        let composite_halfres_module =
-            device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("clouds-composite-halfres-shader"),
-                source: wgpu::ShaderSource::Wgsl(cloud_composite_halfres_src.into()),
-            });
-        let composite_halfres_pl =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("clouds-composite-halfres-pl"),
-                bind_group_layouts: &[Some(&composite_halfres_layout)],
-                immediate_size: 0,
-            });
-        let composite_halfres = device.create_render_pipeline(
-            &wgpu::RenderPipelineDescriptor {
-                label: Some("clouds-composite-halfres"),
-                layout: Some(&composite_halfres_pl),
-                vertex: wgpu::VertexState {
-                    module: &composite_halfres_module,
-                    entry_point: Some("vs_fullscreen"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &composite_halfres_module,
-                    entry_point: Some("fs_main"),
-                    targets: &composite_targets,
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
+        let composite_halfres_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("clouds-composite-halfres-shader"),
+            source: wgpu::ShaderSource::Wgsl(cloud_composite_halfres_src.into()),
+        });
+        let composite_halfres_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("clouds-composite-halfres-pl"),
+            bind_group_layouts: &[Some(&composite_halfres_layout)],
+            immediate_size: 0,
+        });
+        let composite_halfres = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("clouds-composite-halfres"),
+            layout: Some(&composite_halfres_pl),
+            vertex: wgpu::VertexState {
+                module: &composite_halfres_module,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
-        );
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_halfres_module,
+                entry_point: Some("fs_main"),
+                targets: &composite_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // Cloud TAA pipeline. The shader reads two pairs of textures
         // (current march + previous resolved) and `frame.prev_view_proj`
@@ -543,10 +528,8 @@ impl CloudPipelines {
         let cloud_taa_src = ps_core::shaders::load_shader(CLOUD_TAA_REL, CLOUD_TAA_BAKED);
         // Compose with shared uniforms so the shader can declare
         // `var<uniform> frame: FrameUniforms;` against group 1.
-        let taa_src = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &cloud_taa_src,
-        ]);
+        let taa_src =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &cloud_taa_src]);
         let taa_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("clouds-taa-shader"),
             source: wgpu::ShaderSource::Wgsl(taa_src.into()),
@@ -621,8 +604,7 @@ mod tests {
     #[test]
     fn halfres_patch_applies_cleanly() {
         let source = ps_core::shaders::load_shader(CLOUD_MARCH_REL, CLOUD_MARCH_BAKED);
-        let patched =
-            patch_cloud_march_for_halfres(&source).expect("half-res patch failed");
+        let patched = patch_cloud_march_for_halfres(&source).expect("half-res patch failed");
         assert!(
             patched.contains("frame.viewport_size.xy / cloud_rt_uniform.xy"),
             "depth-scale line missing from patched half-res shader"

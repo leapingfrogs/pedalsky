@@ -89,14 +89,7 @@ impl BinaryCache {
     }
 
     /// Write a cache entry, creating the directory tree on demand.
-    pub fn write(
-        &self,
-        source: &str,
-        zoom: u32,
-        x: u32,
-        y: u32,
-        body: &[u8],
-    ) -> io::Result<()> {
+    pub fn write(&self, source: &str, zoom: u32, x: u32, y: u32, body: &[u8]) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
         let path = self.path_for(source, zoom, x, y);
         fs::write(&path, body)
@@ -120,9 +113,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = BinaryCache::new(dir.path());
         let body = b"\xff\xd8\xff\xe0fake-jpeg";
-        cache.write("eox-s2cloudless-2024", 12, 2002, 1271, body).unwrap();
+        cache
+            .write("eox-s2cloudless-2024", 12, 2002, 1271, body)
+            .unwrap();
         let got = cache
-            .read_fresh("eox-s2cloudless-2024", 12, 2002, 1271, Duration::from_secs(60))
+            .read_fresh(
+                "eox-s2cloudless-2024",
+                12,
+                2002,
+                1271,
+                Duration::from_secs(60),
+            )
             .unwrap();
         assert_eq!(got.as_deref(), Some(&body[..]));
     }

@@ -100,9 +100,8 @@ pub fn generate_bolt(origin: Vec3, attach: Vec3, rng: &mut Pcg32) -> Bolt {
         let perp = rng.orthogonal_unit(trunk_dir);
         // Bias the fork dominantly downward + sideways.
         let down = Vec3::new(0.0, -1.0, 0.0);
-        let fork_dir =
-            (down * 0.6 + trunk_dir * 0.2 + perp * 0.4 * rng.range_f32(-1.0, 1.0))
-                .normalize_or_zero();
+        let fork_dir = (down * 0.6 + trunk_dir * 0.2 + perp * 0.4 * rng.range_f32(-1.0, 1.0))
+            .normalize_or_zero();
         let fork_len = total_len * rng.range_f32(0.20, 0.40);
         let fork_end = fork_start + fork_dir * fork_len;
         // Quick 2-level subdivision for forks.

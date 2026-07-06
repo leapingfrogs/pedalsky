@@ -186,7 +186,9 @@ impl TonemapHandle {
     /// Update the per-frame state. Lock-free atomics after audit §M1.
     pub fn set_state(&self, state: TonemapState) {
         if let Some(inner) = self.inner.lock().expect("tonemap inner lock").as_ref() {
-            inner.ev100_bits.store(state.ev100.to_bits(), Ordering::Relaxed);
+            inner
+                .ev100_bits
+                .store(state.ev100.to_bits(), Ordering::Relaxed);
             inner.mode.store(state.mode.as_u32(), Ordering::Relaxed);
             inner
                 .auto_exposure_enabled

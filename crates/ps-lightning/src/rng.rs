@@ -148,6 +148,9 @@ mod tests {
         let total: u32 = (0..n).map(|_| r.poisson(lambda)).sum();
         let mean = total as f32 / n as f32;
         // Generous tolerance — 5000 samples → SE ≈ √(2.5/5000) ≈ 0.022
-        assert!((mean - lambda).abs() < 0.1, "mean={mean} expected ≈ {lambda}");
+        assert!(
+            (mean - lambda).abs() < 0.1,
+            "mean={mean} expected ≈ {lambda}"
+        );
     }
 }

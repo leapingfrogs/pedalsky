@@ -48,7 +48,10 @@ pub struct GeoExtent {
 impl GeoExtent {
     /// Centre latitude/longitude of the extent in degrees.
     pub fn centre(self) -> (f64, f64) {
-        ((self.south + self.north) * 0.5, (self.west + self.east) * 0.5)
+        (
+            (self.south + self.north) * 0.5,
+            (self.west + self.east) * 0.5,
+        )
     }
 }
 
@@ -94,10 +97,7 @@ impl TileRequest {
 ///
 /// If the requested radius is larger than the tile already covers,
 /// the tile is returned unmodified.
-pub(crate) fn crop_to_radius(
-    tile: HeightmapTile,
-    req: &TileRequest,
-) -> HeightmapTile {
+pub(crate) fn crop_to_radius(tile: HeightmapTile, req: &TileRequest) -> HeightmapTile {
     // The Copernicus DSM is in geographic coordinates, so a metre-radius
     // crop has to map back to pixel deltas via the GSD.
     let gsd = tile.gsd_m_centre.max(1.0);
@@ -148,7 +148,12 @@ pub(crate) fn crop_to_radius(
         heights_m: new_heights,
         width: new_w,
         height: new_h,
-        extent_deg: GeoExtent { west, east, south, north },
+        extent_deg: GeoExtent {
+            west,
+            east,
+            south,
+            north,
+        },
         source: tile.source,
         gsd_m_centre: tile.gsd_m_centre,
     }

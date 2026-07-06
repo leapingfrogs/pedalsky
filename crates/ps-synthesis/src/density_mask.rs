@@ -44,10 +44,7 @@ impl TopDownMask {
     /// resulting mask varies spatially. When `None`, the mask is
     /// uniform (the Phase 3 v1 behaviour) using each layer's flat
     /// `coverage` field.
-    pub fn synthesise(
-        layers: &[CloudLayerGpu],
-        grid: Option<&LoadedCoverageGrid>,
-    ) -> Self {
+    pub fn synthesise(layers: &[CloudLayerGpu], grid: Option<&LoadedCoverageGrid>) -> Self {
         let pixels = match grid {
             // Spatially-varying: integrate per pixel using the
             // gridded coverage at that XZ.
@@ -64,8 +61,7 @@ impl TopDownMask {
                         let gy = fy * EXTENT_M - half;
                         let cov = g.sample_world(gx, gy);
                         let col = integrate_column_with_coverage(layers, cov);
-                        out[(y * SIZE + x) as usize] =
-                            (col * 255.0).clamp(0.0, 255.0) as u8;
+                        out[(y * SIZE + x) as usize] = (col * 255.0).clamp(0.0, 255.0) as u8;
                     }
                 }
                 out
@@ -225,13 +221,15 @@ mod tests {
         // Sample left side (world x ≈ -8000) vs right side (x ≈ +8000)
         // — they should differ.
         let left_mask = mask.pixels[(SIZE / 2 * SIZE + SIZE / 4) as usize];
-        let right_mask =
-            mask.pixels[(SIZE / 2 * SIZE + 3 * SIZE / 4) as usize];
+        let right_mask = mask.pixels[(SIZE / 2 * SIZE + 3 * SIZE / 4) as usize];
         assert!(
             left_mask > right_mask,
             "left (full coverage) mask should exceed right (zero coverage) — \
              got left={left_mask}, right={right_mask}"
         );
-        assert!(right_mask < 8, "right side should be near-zero (got {right_mask})");
+        assert!(
+            right_mask < 8,
+            "right side should be near-zero (got {right_mask})"
+        );
     }
 }

@@ -27,17 +27,17 @@ use ps_atmosphere::{
     lut_viewer::{LutViewer, LutViewerUniforms},
     AtmosphereFactory,
 };
-use ps_backdrop::BackdropFactory;
 use ps_aurora::AuroraFactory;
+use ps_backdrop::BackdropFactory;
 use ps_bloom::BloomFactory;
-use ps_godrays::GodraysFactory;
-use ps_lightning::{LightningFactory, LightningPublish};
 use ps_clouds::CloudsFactory;
 use ps_core::{
     App, AppBuilder, Config, FrameUniforms, HdrFramebufferImpl, HotReload, PrepareContext,
     RenderContext, Scene, WatchEvent, DEFAULT_DEBOUNCE,
 };
+use ps_godrays::GodraysFactory;
 use ps_ground::GroundFactory;
+use ps_lightning::{LightningFactory, LightningPublish};
 use ps_postprocess::{Tonemap, TonemapMode};
 use ps_precip::PrecipFactory;
 use ps_tint::TintFactory;
@@ -156,13 +156,16 @@ fn workspace_root_for_shaders(config_path: &std::path::Path) -> PathBuf {
 /// monitor reports no enumerable video modes (e.g. Wayland), and to
 /// `None` if there is no primary monitor — winit will then open windowed.
 fn pick_exclusive_fullscreen(event_loop: &ActiveEventLoop) -> Option<Fullscreen> {
-    let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next())?;
-    let mode = monitor
-        .video_modes()
-        .max_by_key(|m| {
-            let sz = m.size();
-            (sz.width as u64 * sz.height as u64, m.refresh_rate_millihertz())
-        });
+    let monitor = event_loop
+        .primary_monitor()
+        .or_else(|| event_loop.available_monitors().next())?;
+    let mode = monitor.video_modes().max_by_key(|m| {
+        let sz = m.size();
+        (
+            sz.width as u64 * sz.height as u64,
+            m.refresh_rate_millihertz(),
+        )
+    });
     match mode {
         Some(m) => {
             info!(
@@ -399,12 +402,8 @@ impl ps_terrain::TerrainProgressSink for TerrainUiSink {
             ps_terrain::TerrainStage::HydraulicErosion => {
                 ps_ui::TerrainProgressStage::HydraulicErosion
             }
-            ps_terrain::TerrainStage::ThermalErosion => {
-                ps_ui::TerrainProgressStage::ThermalErosion
-            }
-            ps_terrain::TerrainStage::FractalDetail => {
-                ps_ui::TerrainProgressStage::FractalDetail
-            }
+            ps_terrain::TerrainStage::ThermalErosion => ps_ui::TerrainProgressStage::ThermalErosion,
+            ps_terrain::TerrainStage::FractalDetail => ps_ui::TerrainProgressStage::FractalDetail,
             ps_terrain::TerrainStage::NormalMap => ps_ui::TerrainProgressStage::NormalMap,
             ps_terrain::TerrainStage::Cropping | ps_terrain::TerrainStage::BuildingMesh => {
                 ps_ui::TerrainProgressStage::BuildingMesh
@@ -456,9 +455,7 @@ fn translate_erosion(
     }
 }
 
-fn translate_decimation(
-    p: &ps_ui::UiTerrainParams,
-) -> ps_terrain::DecimationParams {
+fn translate_decimation(p: &ps_ui::UiTerrainParams) -> ps_terrain::DecimationParams {
     // LOD 0 from the UI's single slider; carry default values for the
     // other LODs (Section 2 multi-LOD is deferred).
     let defaults = ps_terrain::DecimationParams::default();
@@ -946,8 +943,7 @@ impl RunState {
                     match load_result {
                         Ok(new_config) => {
                             self.ev100 = new_config.render.ev100;
-                            self.tonemap_mode =
-                                new_config.render.tone_mapper;
+                            self.tonemap_mode = new_config.render.tone_mapper;
                             if let Err(e) =
                                 self.app.reconfigure(&new_config, &self.windowed_gpu.gpu)
                             {
@@ -1037,7 +1033,9 @@ impl RunState {
                     Ok(scene) => {
                         let summary = format!(
                             "Open-Meteo @ {:.3}, {:.3} ({} cloud layers)",
-                            opts.lat, opts.lon, scene.clouds.layers.len()
+                            opts.lat,
+                            opts.lon,
+                            scene.clouds.layers.len()
                         );
                         WeatherFetchResult {
                             outcome: Ok(scene),
@@ -1159,16 +1157,14 @@ impl RunState {
                 req.params.lod_max_error_m,
             )),
         };
-        let progress = TerrainUiSink { handle: self.ui_handle.clone() };
+        let progress = TerrainUiSink {
+            handle: self.ui_handle.clone(),
+        };
         std::thread::Builder::new()
             .name("ps-terrain-fetch".into())
             .spawn(move || {
                 let pipeline = ps_terrain::HeightmapPipeline::pedalback(
-                    cache_dir,
-                    device,
-                    queue,
-                    erosion,
-                    decimation,
+                    cache_dir, device, queue, erosion, decimation,
                 );
                 let result = match pipeline.run_with_progress(&tile_req, &progress) {
                     Ok(mesh) => {
@@ -1181,13 +1177,12 @@ impl RunState {
                             mesh.indices.len() / 3,
                         );
                         inbox.post(mesh);
-                        TerrainFetchResult { outcome: Ok(summary) }
+                        TerrainFetchResult {
+                            outcome: Ok(summary),
+                        }
                     }
                     Err(e) => TerrainFetchResult {
-                        outcome: Err(format!(
-                            "terrain fetch failed: {}",
-                            format_error_chain(&e),
-                        )),
+                        outcome: Err(format!("terrain fetch failed: {}", format_error_chain(&e),)),
                     },
                 };
                 let _ = tx.send(result);
@@ -1293,7 +1288,9 @@ impl RunState {
             resolution,
             max_texture_dim,
         };
-        let sink = UiProgressSink { handle: self.ui_handle.clone() };
+        let sink = UiProgressSink {
+            handle: self.ui_handle.clone(),
+        };
         std::thread::Builder::new()
             .name("ps-imagery-fetch".into())
             .spawn(move || {
@@ -1305,7 +1302,9 @@ impl RunState {
                             imagery_req.lat, imagery_req.lon, tile.width, tile.height
                         );
                         inbox.post(tile);
-                        ImageryFetchResult { outcome: Ok(summary) }
+                        ImageryFetchResult {
+                            outcome: Ok(summary),
+                        }
                     }
                     Err(e) => ImageryFetchResult {
                         outcome: Err(format!("imagery fetch failed: {e}")),
@@ -1418,8 +1417,7 @@ impl RunState {
                 self.geocode_rx = None;
                 let mut h = self.ui_handle.lock();
                 h.geocode.in_flight = false;
-                h.geocode.last_error =
-                    Some("geocode thread disconnected without result".into());
+                h.geocode.last_error = Some("geocode thread disconnected without result".into());
                 return;
             }
         };
@@ -1494,12 +1492,7 @@ impl RunState {
                 self.camera.position.z,
                 0.0,
             ),
-            camera_velocity_world: Vec4::new(
-                cam_velocity.x,
-                cam_velocity.y,
-                cam_velocity.z,
-                0.0,
-            ),
+            camera_velocity_world: Vec4::new(cam_velocity.x, cam_velocity.y, cam_velocity.z, 0.0),
             viewport_size: Vec4::new(w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32),
             time_seconds: (now - self.start).as_secs_f32(),
             simulated_seconds: self.world.clock.simulated_seconds() as f32,
@@ -1514,8 +1507,7 @@ impl RunState {
         // subsystem on its first run, so the TAA shader uses the
         // current sample directly). After that the cached value is
         // last frame's `view_proj`.
-        frame_uniforms.prev_view_proj =
-            self.prev_view_proj.unwrap_or(frame_uniforms.view_proj);
+        frame_uniforms.prev_view_proj = self.prev_view_proj.unwrap_or(frame_uniforms.view_proj);
         // Sun angular radius from config (degrees → radians).
         // sun_disk toggle: setting angular radius to zero hides the
         // analytic disk (sky shader's `if (cos_view_sun > cos_disk)`
@@ -1571,11 +1563,8 @@ impl RunState {
         // (group 1) upload is diff-gated inside `write()` so it only
         // hits the wgpu queue when `atmo` actually changes — audit
         // §H2.
-        self.bindings.write(
-            &self.windowed_gpu.gpu.queue,
-            &frame_uniforms,
-            &atmo,
-        );
+        self.bindings
+            .write(&self.windowed_gpu.gpu.queue, &frame_uniforms, &atmo);
 
         let frame = match self.windowed_gpu.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
@@ -1649,12 +1638,11 @@ impl RunState {
         // subsystem. The actual dispatch happens inside App::frame at
         // PassStage::ToneMap, with auto-exposure dispatched before
         // tonemap when the debug flag is on.
-        self.tonemap_handle
-            .set_state(ps_postprocess::TonemapState {
-                ev100: self.ev100,
-                mode: self.tonemap_mode,
-                auto_exposure_enabled: config.debug.auto_exposure,
-            });
+        self.tonemap_handle.set_state(ps_postprocess::TonemapState {
+            ev100: self.ev100,
+            mode: self.tonemap_mode,
+            auto_exposure_enabled: config.debug.auto_exposure,
+        });
         // Phase 10: refresh per-frame UI inputs and run the panel logic
         // before the in-graph Overlay pass picks up the paint output.
         {
@@ -1998,19 +1986,23 @@ impl RunState {
         let unpadded = w * bytes_per_pixel;
         let aligned = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let staging = self.windowed_gpu.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hdr-screenshot-staging"),
-            size: (aligned * h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = self
+        let staging = self
             .windowed_gpu
             .gpu
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("hdr-screenshot-copy"),
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hdr-screenshot-staging"),
+                size: (aligned * h) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
             });
+        let mut encoder =
+            self.windowed_gpu
+                .gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("hdr-screenshot-copy"),
+                });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.hdr.color,
@@ -2069,7 +2061,11 @@ impl RunState {
         let queue = &self.windowed_gpu.gpu.queue;
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("screenshot-target"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -2082,7 +2078,13 @@ impl RunState {
             label: Some("screenshot-tonemap"),
         });
         // Reuse the live Tonemap with current EV/mode settings.
-        self.tonemap.render(&mut encoder, queue, &target_view, self.ev100, self.tonemap_mode);
+        self.tonemap.render(
+            &mut encoder,
+            queue,
+            &target_view,
+            self.ev100,
+            self.tonemap_mode,
+        );
         // Copy target → staging.
         let bytes_per_pixel = 4u32;
         let unpadded = w * bytes_per_pixel;
@@ -2109,7 +2111,11 @@ impl RunState {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.submit([encoder.finish()]);
         let slice = staging.slice(..);
@@ -2158,8 +2164,7 @@ impl RunState {
 
         let (config_path, scene_path): (std::path::PathBuf, std::path::PathBuf) =
             if user_picked_scene_path {
-                let stem_no_scene =
-                    stem.strip_suffix(".scene").unwrap_or(stem);
+                let stem_no_scene = stem.strip_suffix(".scene").unwrap_or(stem);
                 (
                     parent.join(format!("{stem_no_scene}.toml")),
                     path.to_path_buf(),

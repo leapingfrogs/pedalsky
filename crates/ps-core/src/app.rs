@@ -213,11 +213,8 @@ fn build_timings(gpu: &GpuContext, pass_count: usize) -> Option<TimingsState> {
         usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
-    let readback = crate::PipelinedReadback::new(
-        &gpu.device,
-        "ps-core::frame-timings-staging",
-        buf_size,
-    );
+    let readback =
+        crate::PipelinedReadback::new(&gpu.device, "ps-core::frame-timings-staging", buf_size);
     Some(TimingsState {
         query_set,
         resolve_buf,

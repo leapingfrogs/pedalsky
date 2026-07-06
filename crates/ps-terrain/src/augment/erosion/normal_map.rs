@@ -31,9 +31,9 @@ impl NormalMapBindings {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<super::params::NormalMapUniformGpu>() as u64,
-                        ),
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                            super::params::NormalMapUniformGpu,
+                        >() as u64),
                     },
                     count: None,
                 },
@@ -74,6 +74,10 @@ impl NormalMapBindings {
             cache: None,
         });
 
-        Self { uniforms, bgl, pipeline }
+        Self {
+            uniforms,
+            bgl,
+            pipeline,
+        }
     }
 }

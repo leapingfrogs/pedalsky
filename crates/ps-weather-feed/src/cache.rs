@@ -65,9 +65,12 @@ impl Cache {
         // Round the time to the previous hour boundary so that two
         // requests within the same hour collide.
         let hour = time
-            .with_minute(0).expect("0 minutes valid")
-            .with_second(0).expect("0 seconds valid")
-            .with_nanosecond(0).expect("0 nanos valid");
+            .with_minute(0)
+            .expect("0 minutes valid")
+            .with_second(0)
+            .expect("0 seconds valid")
+            .with_nanosecond(0)
+            .expect("0 nanos valid");
         // 3-dp lat/lon; clamp the precision *output* (not the input
         // values) so callers don't have to round before calling.
         format!(

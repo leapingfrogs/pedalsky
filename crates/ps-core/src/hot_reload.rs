@@ -165,8 +165,8 @@ impl ShaderHotReload {
         let (tx, rx) = unbounded::<ShaderWatchEvent>();
         let tx_for_watcher = tx.clone();
 
-        let mut watcher = notify::recommended_watcher(
-            move |res: notify::Result<notify::Event>| match res {
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(event) => {
                     if !is_relevant_event(&event.kind) {
                         return;
@@ -184,8 +184,7 @@ impl ShaderHotReload {
                 Err(err) => {
                     let _ = tx_for_watcher.send(ShaderWatchEvent::Error(err.to_string()));
                 }
-            },
-        )?;
+            })?;
         watcher.watch(shaders_root, RecursiveMode::Recursive)?;
 
         let stop = Arc::new(Mutex::new(false));
@@ -253,7 +252,8 @@ fn shader_debounce_loop(
                 let now = Instant::now();
                 let ready: Vec<PathBuf> = pending
                     .iter()
-                    .filter_map(|(p, d)| (now >= *d).then(|| p.clone()))
+                    .filter(|&(_, d)| now >= *d)
+                    .map(|(p, _)| p.clone())
                     .collect();
                 for p in ready {
                     pending.remove(&p);

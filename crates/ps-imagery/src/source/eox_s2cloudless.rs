@@ -165,12 +165,9 @@ impl ImagerySource for EoxS2Cloudless {
                 };
 
                 // Decode the JPEG and blit into the stitched buffer.
-                let img = image::load_from_memory_with_format(
-                    &bytes,
-                    image::ImageFormat::Jpeg,
-                )
-                .with_context(|| format!("decode tile z{zoom}/x{tile_x}/y{tile_y}"))
-                .map_err(ImageryError::Decode)?;
+                let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+                    .with_context(|| format!("decode tile z{zoom}/x{tile_x}/y{tile_y}"))
+                    .map_err(ImageryError::Decode)?;
                 let rgba = img.to_rgba8();
                 if rgba.width() != TILE_PX || rgba.height() != TILE_PX {
                     return Err(ImageryError::Decode(anyhow!(
@@ -188,8 +185,7 @@ impl ImagerySource for EoxS2Cloudless {
                     let src_off = (row * TILE_PX * 4) as usize;
                     let dst_off = (((dy + row) * stitched_w + dx) * 4) as usize;
                     let src_row = &rgba.as_raw()[src_off..src_off + (TILE_PX as usize) * 4];
-                    pixels_rgba[dst_off..dst_off + (TILE_PX as usize) * 4]
-                        .copy_from_slice(src_row);
+                    pixels_rgba[dst_off..dst_off + (TILE_PX as usize) * 4].copy_from_slice(src_row);
                 }
 
                 done_tiles += 1;
@@ -249,12 +245,7 @@ fn tile_grid_dims(lat: f64, lon: f64, radius_m: f32, zoom: u32) -> (u32, u32) {
 
 /// 2× box-filter downsample until both dimensions fit `cap`. RGBA8 in,
 /// RGBA8 out. Returns the buffer + final `(width, height)`.
-fn downsample_to_fit(
-    mut pixels: Vec<u8>,
-    mut w: u32,
-    mut h: u32,
-    cap: u32,
-) -> (Vec<u8>, u32, u32) {
+fn downsample_to_fit(mut pixels: Vec<u8>, mut w: u32, mut h: u32, cap: u32) -> (Vec<u8>, u32, u32) {
     while w > cap || h > cap {
         let new_w = (w / 2).max(1);
         let new_h = (h / 2).max(1);

@@ -53,7 +53,8 @@ const USER_AGENT: &str = "PedalSky-WeatherFeed/0.1 (https://github.com/anthropic
 
 /// Combined observed + forecast endpoint. The historical observed
 /// values are included alongside the predictions in this one URL.
-const FORECAST_URL: &str = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json";
+const FORECAST_URL: &str =
+    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json";
 
 /// One row of the SWPC Kp series. Time is naive ISO 8601 in UTC;
 /// the API doesn't append a Z but the documentation states UTC.
@@ -86,9 +87,11 @@ impl KpSeries {
     pub fn nearest(&self, target: DateTime<Utc>) -> Option<&KpRow> {
         let mut best: Option<(i64, &KpRow)> = None;
         for row in &self.rows {
-            let Some(t) = parse_swpc_ts(&row.time_tag) else { continue };
+            let Some(t) = parse_swpc_ts(&row.time_tag) else {
+                continue;
+            };
             let diff_secs = (target - t).num_seconds().abs();
-            if best.map_or(true, |(d, _)| diff_secs < d) {
+            if best.is_none_or(|(d, _)| diff_secs < d) {
                 best = Some((diff_secs, row));
             }
         }
@@ -113,7 +116,11 @@ fn parse_swpc_ts(raw: &str) -> Option<DateTime<Utc>> {
 /// Fetch the SWPC Kp series covering the observed history plus the
 /// 3-day forecast. The cache key uses lat=0 lon=0 because the data
 /// is global (Kp is a planetary index).
-pub fn fetch(cache_root: &PathBuf, target: DateTime<Utc>, ttl: Duration) -> anyhow::Result<KpSeries> {
+pub fn fetch(
+    cache_root: &PathBuf,
+    target: DateTime<Utc>,
+    ttl: Duration,
+) -> anyhow::Result<KpSeries> {
     let cache = Cache::new(cache_root);
 
     // Try fresh cache. The hour-truncated `target` is what the cache
@@ -208,6 +215,9 @@ mod tests {
     #[test]
     fn parse_swpc_ts_round_trip() {
         let dt = parse_swpc_ts("2026-05-13T12:34:56").unwrap();
-        assert_eq!(dt.format("%Y-%m-%dT%H:%M:%S").to_string(), "2026-05-13T12:34:56");
+        assert_eq!(
+            dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            "2026-05-13T12:34:56"
+        );
     }
 }

@@ -180,9 +180,7 @@ impl BloomSubsystem {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float {
-                                filterable: true,
-                            },
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
                             view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -191,9 +189,7 @@ impl BloomSubsystem {
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(
-                            wgpu::SamplerBindingType::Filtering,
-                        ),
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
                     wgpu::BindGroupLayoutEntry {
@@ -222,9 +218,7 @@ impl BloomSubsystem {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float {
-                            filterable: true,
-                        },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -233,9 +227,7 @@ impl BloomSubsystem {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(
-                        wgpu::SamplerBindingType::Filtering,
-                    ),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
@@ -262,13 +254,11 @@ impl BloomSubsystem {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(src.into()),
             });
-            let pipeline_layout = device.create_pipeline_layout(
-                &wgpu::PipelineLayoutDescriptor {
-                    label: Some(label),
-                    bind_group_layouts: &[Some(layout)],
-                    immediate_size: 0,
-                },
-            );
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[Some(layout)],
+                immediate_size: 0,
+            });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -313,14 +303,18 @@ impl BloomSubsystem {
                 cache: None,
             })
         };
-        let bright_pipeline =
-            make_pipeline("bloom-bright-rp", BRIGHT_REL, BRIGHT_BAKED, &bright_layout, false);
+        let bright_pipeline = make_pipeline(
+            "bloom-bright-rp",
+            BRIGHT_REL,
+            BRIGHT_BAKED,
+            &bright_layout,
+            false,
+        );
         let down_pipeline =
             make_pipeline("bloom-down-rp", DOWN_REL, DOWN_BAKED, &down_layout, false);
         // Upsample writes additively into the next-larger blurred
         // level, accumulating the pyramid as it climbs.
-        let up_pipeline =
-            make_pipeline("bloom-up-rp", UP_REL, UP_BAKED, &up_layout, true);
+        let up_pipeline = make_pipeline("bloom-up-rp", UP_REL, UP_BAKED, &up_layout, true);
         let composite_pipeline = make_pipeline(
             "bloom-composite-rp",
             COMPOSITE_REL,
@@ -392,10 +386,7 @@ impl BloomSubsystem {
 /// Build the per-size pyramid scratch + the HDR-copy texture. Sized
 /// against the current HDR target; reallocated when the target
 /// resizes.
-fn allocate_pyramid(
-    device: &wgpu::Device,
-    full_size: (u32, u32),
-) -> (HdrCopy, ScratchState) {
+fn allocate_pyramid(device: &wgpu::Device, full_size: (u32, u32)) -> (HdrCopy, ScratchState) {
     let hdr_copy_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("bloom-hdr-copy"),
         size: wgpu::Extent3d {
@@ -413,10 +404,7 @@ fn allocate_pyramid(
     let hdr_copy_view = hdr_copy_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     let mut levels = Vec::with_capacity(PYRAMID_LEVELS as usize);
-    let mut size = (
-        (full_size.0 / 2).max(1),
-        (full_size.1 / 2).max(1),
-    );
+    let mut size = ((full_size.0 / 2).max(1), (full_size.1 / 2).max(1));
     for i in 0..PYRAMID_LEVELS {
         let label = match i {
             0 => "bloom-pyramid-half",
@@ -434,8 +422,7 @@ fn allocate_pyramid(
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: HdrFramebuffer::COLOR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -478,11 +465,8 @@ impl RenderSubsystem for BloomSubsystem {
         let composite = CompositeParamsGpu {
             config: [tuning.intensity, 0.0, 0.0, 0.0],
         };
-        ctx.queue.write_buffer(
-            &self.composite_params,
-            0,
-            bytemuck::bytes_of(&composite),
-        );
+        ctx.queue
+            .write_buffer(&self.composite_params, 0, bytemuck::bytes_of(&composite));
     }
 
     fn register_passes(&self) -> Vec<PassDescriptor> {
@@ -773,11 +757,7 @@ impl SubsystemFactory for BloomFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.bloom
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(BloomSubsystem::new(config, gpu)))
     }
 }

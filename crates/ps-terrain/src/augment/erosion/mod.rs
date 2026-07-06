@@ -35,11 +35,7 @@ pub struct ErosionAugment {
 impl ErosionAugment {
     /// Construct. The first call to [`augment`] builds the compute
     /// pipelines and caches them on the runtime.
-    pub fn new(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        params: ErosionParams,
-    ) -> Self {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, params: ErosionParams) -> Self {
         Self {
             runtime: Arc::new(runtime::ErosionRuntime::new(device, queue)),
             params,
@@ -72,21 +68,20 @@ impl HeightmapAugment for ErosionAugment {
 
         // Stage 1.1 — bicubic upsample.
         progress.stage(TerrainStage::Upsampling, 0, 1);
-        let upsampled = if params.target_resolution_m > 0.0
-            && params.target_resolution_m < tile.gsd_m_centre
-        {
-            let (tw, th) = upsample::working_resolution(&tile, params.target_resolution_m);
-            // Cap the working grid so we don't accidentally allocate
-            // a 32k×32k texture on a 30m source if someone slides
-            // target_resolution_m to 0.1 — wgpu texture limits would
-            // reject it anyway. Cap at 2048 to keep within the
-            // baseline texture-size guarantee.
-            let tw = tw.min(params.max_working_dim);
-            let th = th.min(params.max_working_dim);
-            upsample::bicubic_upsample(tile, tw, th)
-        } else {
-            tile
-        };
+        let upsampled =
+            if params.target_resolution_m > 0.0 && params.target_resolution_m < tile.gsd_m_centre {
+                let (tw, th) = upsample::working_resolution(&tile, params.target_resolution_m);
+                // Cap the working grid so we don't accidentally allocate
+                // a 32k×32k texture on a 30m source if someone slides
+                // target_resolution_m to 0.1 — wgpu texture limits would
+                // reject it anyway. Cap at 2048 to keep within the
+                // baseline texture-size guarantee.
+                let tw = tw.min(params.max_working_dim);
+                let th = th.min(params.max_working_dim);
+                upsample::bicubic_upsample(tile, tw, th)
+            } else {
+                tile
+            };
         progress.stage(TerrainStage::Upsampling, 1, 1);
 
         // Stages 1.2/1.3/1.4/1.5 — run on the GPU. The runtime

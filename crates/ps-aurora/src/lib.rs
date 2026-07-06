@@ -111,7 +111,7 @@ impl AuroraSubsystem {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<AuroraParamsGpu>() as u64,
+                        std::mem::size_of::<AuroraParamsGpu>() as u64
                     ),
                 },
                 count: None,
@@ -209,12 +209,7 @@ impl RenderSubsystem for AuroraSubsystem {
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
         let tuning = self.tuning;
         let lat_abs = ctx.world.latitude_deg.abs() as f32;
-        let lat_gate = latitude_gate(
-            lat_abs,
-            tuning.min_lat,
-            tuning.peak_lat,
-            tuning.fade_lat,
-        );
+        let lat_gate = latitude_gate(lat_abs, tuning.min_lat, tuning.peak_lat, tuning.fade_lat);
 
         let kp = ctx.weather.scene_aurora_kp.max(0.0);
         let intensity = if ctx.weather.scene_aurora_intensity_override >= 0.0 {
@@ -239,12 +234,7 @@ impl RenderSubsystem for AuroraSubsystem {
 
         let params = AuroraParamsGpu {
             emission: [emission.x, emission.y, emission.z, combined],
-            config: [
-                t_motion,
-                tuning.march_steps as f32,
-                curtain_extent,
-                0.0,
-            ],
+            config: [t_motion, tuning.march_steps as f32, curtain_extent, 0.0],
         };
         ctx.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -352,11 +342,7 @@ impl SubsystemFactory for AuroraFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.aurora
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(AuroraSubsystem::new(config, gpu)))
     }
 }
@@ -391,6 +377,9 @@ mod tests {
     #[test]
     fn latitude_gate_ramp_between_min_and_peak() {
         let mid = latitude_gate(57.5, 50.0, 65.0, 80.0);
-        assert!((mid - 0.5).abs() < 1e-2, "expected ~0.5 at midpoint, got {mid}");
+        assert!(
+            (mid - 0.5).abs() < 1e-2,
+            "expected ~0.5 at midpoint, got {mid}"
+        );
     }
 }

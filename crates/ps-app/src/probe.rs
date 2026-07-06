@@ -13,8 +13,7 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
-    atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout,
-    GpuContext,
+    atmosphere_lut_bind_group_layout, frame_bind_group_layout, world_bind_group_layout, GpuContext,
 };
 
 const SHADER_BAKED: &str = include_str!("../../../shaders/debug/probe_transmittance.comp.wgsl");
@@ -223,9 +222,7 @@ impl ProbeReadback {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        gpu.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .ok();
+        gpu.device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let _ = rx.recv();
         let bytes = slice.get_mapped_range().to_vec();
         self.staging_buf.unmap();
@@ -245,11 +242,7 @@ impl ProbeReadback {
                 gpu_view.od_rayleigh[1],
                 gpu_view.od_rayleigh[2],
             ],
-            od_mie: [
-                gpu_view.od_mie[0],
-                gpu_view.od_mie[1],
-                gpu_view.od_mie[2],
-            ],
+            od_mie: [gpu_view.od_mie[0], gpu_view.od_mie[1], gpu_view.od_mie[2]],
             od_ozone: [
                 gpu_view.od_ozone[0],
                 gpu_view.od_ozone[1],

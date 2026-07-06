@@ -151,10 +151,7 @@ impl RenderSubsystem for LightningSubsystem {
         // scene exposes strikes_per_min_per_km2; we count visible
         // 32×32 km² of cloud area, integrate over `dt`, and Poisson-
         // sample.
-        let scene_rate = ctx
-            .weather
-            .scene_strikes_per_min_per_km2
-            .max(0.0);
+        let scene_rate = ctx.weather.scene_strikes_per_min_per_km2.max(0.0);
         let visible_area_km2 = 32.0 * 32.0; // top-down mask extent.
         let dt_minutes = ctx.dt_seconds / 60.0;
         let expected = scene_rate * visible_area_km2 * dt_minutes;
@@ -181,10 +178,8 @@ impl RenderSubsystem for LightningSubsystem {
 
         // Aggregate cloud illumination across active strikes. Pick
         // the strongest as the "origin" for the localised falloff.
-        let (illum_rgb, origin) = aggregate_cloud_illumination(
-            store.active(),
-            tuning.peak_cloud_illuminance,
-        );
+        let (illum_rgb, origin) =
+            aggregate_cloud_illumination(store.active(), tuning.peak_cloud_illuminance);
         // Publish the snapshot for the host to splice into
         // FrameUniforms before the GPU upload — see
         // `LightningPublish` doc.
@@ -235,10 +230,7 @@ impl RenderSubsystem for LightningSubsystem {
 /// (slightly blue-white). Returns the aggregate `(rgb, origin)` where
 /// `origin` is the strongest currently-active strike (used for the
 /// cloud shader's distance falloff).
-fn aggregate_cloud_illumination(
-    active: &[ActiveStrike],
-    peak: f32,
-) -> (Vec3, Vec3) {
+fn aggregate_cloud_illumination(active: &[ActiveStrike], peak: f32) -> (Vec3, Vec3) {
     let mut total = 0.0_f32;
     let mut strongest_intensity = 0.0_f32;
     let mut strongest_origin = Vec3::ZERO;
@@ -291,11 +283,7 @@ impl SubsystemFactory for LightningFactory {
     fn enabled(&self, config: &Config) -> bool {
         config.render.subsystems.lightning
     }
-    fn build(
-        &self,
-        config: &Config,
-        gpu: &GpuContext,
-    ) -> anyhow::Result<Box<dyn RenderSubsystem>> {
+    fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         let (subsys, publish) = LightningSubsystem::new(config, gpu);
         *self
             .publish_dest

@@ -36,8 +36,7 @@ pub use uniforms::{FarRainLayerGpu, PrecipUniformsGpu};
 /// Stable subsystem name (matches `[render.subsystems].precipitation`).
 pub const NAME: &str = "precipitation";
 
-const ADVANCE_BAKED: &str =
-    include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
+const ADVANCE_BAKED: &str = include_str!("../../../shaders/precip/particle_advance.comp.wgsl");
 const ADVANCE_REL: &str = "precip/particle_advance.comp.wgsl";
 const RENDER_BAKED: &str = include_str!("../../../shaders/precip/particle_render.wgsl");
 const RENDER_REL: &str = "precip/particle_render.wgsl";
@@ -320,10 +319,8 @@ impl PrecipSubsystem {
 
         // Particle render pipeline.
         let render_main = ps_core::shaders::load_shader(RENDER_REL, RENDER_BAKED);
-        let render_src = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &render_main,
-        ]);
+        let render_src =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &render_main]);
         let render_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("precip::render"),
             source: wgpu::ShaderSource::Wgsl(render_src.into()),
@@ -335,58 +332,56 @@ impl PrecipSubsystem {
             immediate_size: 0,
         });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("precip::render-pipeline"),
-                layout: Some(&render_pl_layout),
-                vertex: wgpu::VertexState {
-                    module: &render_module,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &render_module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: HdrFramebuffer::DEPTH_FORMAT,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::Greater),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+            label: Some("precip::render-pipeline"),
+            layout: Some(&render_pl_layout),
+            vertex: wgpu::VertexState {
+                module: &render_module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &render_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HdrFramebuffer::COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: HdrFramebuffer::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // Far rain pipeline.
         let far_main = ps_core::shaders::load_shader(FAR_RAIN_REL, FAR_RAIN_BAKED);
-        let far_src = ps_core::shaders::compose(&[
-            ps_core::shaders::COMMON_UNIFORMS_WGSL,
-            &far_main,
-        ]);
+        let far_src =
+            ps_core::shaders::compose(&[ps_core::shaders::COMMON_UNIFORMS_WGSL, &far_main]);
         let far_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("precip::far"),
             source: wgpu::ShaderSource::Wgsl(far_src.into()),
@@ -397,52 +392,52 @@ impl PrecipSubsystem {
             immediate_size: 0,
         });
         let far_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("precip::far-pipeline"),
-                layout: Some(&far_pl_layout),
-                vertex: wgpu::VertexState {
-                    module: &far_module,
-                    entry_point: Some("vs_fullscreen"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &far_module,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: HdrFramebuffer::DEPTH_FORMAT,
-                    depth_write_enabled: Some(false),
-                    // Reverse-Z: draw in front of farther geometry only.
-                    depth_compare: Some(wgpu::CompareFunction::Greater),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+            label: Some("precip::far-pipeline"),
+            layout: Some(&far_pl_layout),
+            vertex: wgpu::VertexState {
+                module: &far_module,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &far_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HdrFramebuffer::COLOR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: HdrFramebuffer::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                // Reverse-Z: draw in front of farther geometry only.
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // Sampler shared by render + far passes.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -969,11 +964,7 @@ fn make_pool(
     })
 }
 
-fn make_far_layers(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    n: u32,
-) -> Vec<Arc<FarRainLayer>> {
+fn make_far_layers(device: &wgpu::Device, queue: &wgpu::Queue, n: u32) -> Vec<Arc<FarRainLayer>> {
     // Plan §8.2 specifies depths 50/200/1000 m for 3 layers. For other
     // counts we interpolate logarithmically between 50 m and 1000 m so
     // the spec defaults are recovered exactly when n=3.
