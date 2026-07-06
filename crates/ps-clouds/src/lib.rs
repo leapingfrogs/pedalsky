@@ -60,6 +60,12 @@ struct CloudCompositeParamsGpu {
     _pad2: u32,
 }
 
+/// Maximum number of host views with independent TAA history (stereo
+/// hosts drive one per eye via [`CloudsSubsystem::set_active_view`]).
+/// Single-view hosts only ever touch view 0 and pay no extra VRAM —
+/// per-view state is allocated lazily on first use.
+pub const MAX_CLOUD_VIEWS: usize = 2;
+
 /// CPU mirror of the WGSL `CloudTaaParams` uniform. 16 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
@@ -108,9 +114,11 @@ pub struct CloudsSubsystem {
     /// upsample mode flag). Rebuilt when `half_res_render` toggles or
     /// when the framebuffer resizes.
     composite_params_buffer: wgpu::Buffer,
-    /// Per-frame uniform for the TAA pass — blend weight + history
-    /// validity flag.
-    taa_params_buffer: wgpu::Buffer,
+    /// Which view's TAA state subsequent dispatches touch. Always 0
+    /// for single-view hosts; stereo hosts set this per eye via
+    /// [`Self::set_active_view`] before each eye's march→taa→composite
+    /// sequence.
+    active_view: usize,
     /// Live half-res toggle, mirrored from `clouds.half_res_render` in
     /// `reconfigure`. Drives both the cloud RT allocation size and the
     /// composite shader's upsample mode.
@@ -120,16 +128,16 @@ pub struct CloudsSubsystem {
     /// screenshots reflect a single frame rather than a temporal
     /// blend).
     temporal_taa: bool,
-    /// Tracks the previous frame's effective `taa_on` so the march
-    /// pass can detect off→on transitions and discard the now-stale
-    /// history.
-    prev_taa_on: bool,
-    /// Per-frame TAA dispatch state — set by the march pass for the
-    /// subsequent TAA + composite passes to read. `None` means "TAA
-    /// off this frame"; `Some(slot)` is the history-slot index that
-    /// the TAA pass will write into and the composite pass will read
-    /// from.
-    taa_dispatch: Option<u32>,
+    /// Tracks the previous dispatch's effective `taa_on` PER VIEW so
+    /// the march pass can detect off→on transitions and discard that
+    /// view's now-stale history.
+    prev_taa_on: [bool; MAX_CLOUD_VIEWS],
+    /// Per-view TAA dispatch state — set by the march pass for the
+    /// subsequent TAA + composite passes of the SAME view to read.
+    /// `None` means "TAA off this dispatch"; `Some(slot)` is the
+    /// history-slot index that the TAA pass will write into and the
+    /// composite pass will read from.
+    taa_dispatch: [Option<u32>; MAX_CLOUD_VIEWS],
     /// Cache for the cloud-march group-2 bind group. Keyed on
     /// `(weather.revision, fb_w, fb_h, half_res)` because the bind
     /// group's entries depend on: the weather-state texture views
@@ -178,12 +186,14 @@ pub struct CloudRt {
     /// **off** — same texture sources as `composite_bg` plus a
     /// `CloudCompositeParams` uniform binding.
     composite_halfres_bg: wgpu::BindGroup,
-    /// TAA ping-pong history pair + bind groups. `None` when TAA
-    /// has never been enabled; allocated lazily on the first frame
-    /// the toggle is on. The fields are kept inside `Option` so a
-    /// user who never touches TAA pays zero VRAM cost (an extra
-    /// 4 RTs at cloud-RT size).
-    taa: Option<TaaState>,
+    /// Per-view TAA ping-pong history + bind groups. `None` when TAA
+    /// has never been enabled for that view; allocated lazily on the
+    /// first frame the toggle is on. The fields are kept inside
+    /// `Option` so a user who never touches TAA pays zero VRAM cost
+    /// (an extra 4 RTs at cloud-RT size per active view). Stereo
+    /// hosts select the view via `CloudsSubsystem::set_active_view`;
+    /// single-view rendering only ever populates slot 0.
+    taa: [Option<TaaState>; MAX_CLOUD_VIEWS],
     /// Pixel size — used to detect framebuffer resize.
     size: (u32, u32),
     /// Cached sampler so the bind-group rebuild on resize is cheap.
@@ -196,6 +206,12 @@ pub struct CloudRt {
 /// frame's TAA shader (and by the current frame's composite, which
 /// reads the just-written slot when TAA is on).
 struct TaaState {
+    /// Per-view uniform for the TAA pass — blend weight + history
+    /// validity. Lives on the view state (not the subsystem) because
+    /// `queue.write_buffer` lands at submit: with two views encoded in
+    /// one encoder, a shared buffer would make view 0's pass read
+    /// view 1's params.
+    params_buffer: wgpu::Buffer,
     history: [TaaHistoryPair; 2],
     /// Bind group selected by `write_slot`: reads scratch + reads
     /// `history[1 - write_slot]`. `taa_input_bg[i]` corresponds to
@@ -279,9 +295,10 @@ impl CloudRt {
         self.composite_halfres_bg = new.composite_halfres_bg;
         self.size = size;
         // Any cached TAA history is at the old size and now references
-        // dangling views. Drop it; the next TAA-on frame reallocates
-        // and sets `history_valid = false` so the shader bootstraps.
-        self.taa = None;
+        // dangling views. Drop it (every view); the next TAA-on frame
+        // reallocates and sets `history_valid = false` so the shader
+        // bootstraps.
+        self.taa = std::array::from_fn(|_| None);
     }
 
     fn build(
@@ -360,7 +377,7 @@ impl CloudRt {
             transmittance_view,
             composite_bg,
             composite_halfres_bg,
-            taa: None,
+            taa: std::array::from_fn(|_| None),
             size: (w.max(1), h.max(1)),
             sampler: sampler.clone(),
         }
@@ -378,8 +395,16 @@ impl CloudRt {
         composite_layout: &wgpu::BindGroupLayout,
         composite_halfres_layout: &wgpu::BindGroupLayout,
         composite_params: &wgpu::Buffer,
-        taa_params: &wgpu::Buffer,
+        view: usize,
     ) {
+        // Per-view TAA params buffer — see the field docs on
+        // `TaaState::params_buffer` for why this cannot be shared.
+        let taa_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("clouds-taa-params"),
+            size: std::mem::size_of::<CloudTaaParamsGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let (w, h) = self.size;
         let make_pair = |label_lum: &'static str, label_trans: &'static str| {
             let make = |label: &'static str| {
@@ -510,7 +535,8 @@ impl CloudRt {
         let composite_bg = [make_composite_bg(0), make_composite_bg(1)];
         let composite_halfres_bg = [make_composite_halfres_bg(0), make_composite_halfres_bg(1)];
 
-        self.taa = Some(TaaState {
+        self.taa[view] = Some(TaaState {
+            params_buffer: taa_params,
             history,
             taa_input_bg,
             composite_bg,
@@ -605,13 +631,6 @@ impl CloudsSubsystem {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let taa_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("clouds-taa-params-ub"),
-            size: std::mem::size_of::<CloudTaaParamsGpu>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let rt = CloudRt::new(
             device,
             &pipelines.composite_layout,
@@ -630,11 +649,11 @@ impl CloudsSubsystem {
             params_buffer,
             layers_buffer,
             composite_params_buffer,
-            taa_params_buffer,
+            active_view: 0,
             half_res_render: c.half_res_render,
             temporal_taa: c.temporal_taa,
-            prev_taa_on: false,
-            taa_dispatch: None,
+            prev_taa_on: [false; MAX_CLOUD_VIEWS],
+            taa_dispatch: [None; MAX_CLOUD_VIEWS],
             data_bg_cache: BindGroupCache::new(),
             freeze_time: c.freeze_time,
             layers_uploaded_at_revision: None,
@@ -653,13 +672,36 @@ impl CloudsSubsystem {
         self.luts = Some(luts);
     }
 
+    /// Select which view's TAA state subsequent dispatches use
+    /// (clamped to [`MAX_CLOUD_VIEWS`]). Stereo hosts call this before
+    /// EACH eye's march→taa→composite sequence — a view's three passes
+    /// must complete before switching, since the march latches
+    /// per-view dispatch state that the later passes consume. The TAA
+    /// reprojection matrices come from whichever group-0 FrameUniforms
+    /// the host binds, so per-view `prev_view_proj` is the host's
+    /// responsibility. Single-view hosts never call this (view 0).
+    pub fn set_active_view(&mut self, view: u32) {
+        self.active_view = (view as usize).min(MAX_CLOUD_VIEWS - 1);
+    }
+
+    /// Discard all views' TAA history (e.g. on a host camera teleport /
+    /// recentre — reprojection across the jump would ghost). The next
+    /// TAA frame bootstraps from the current sample.
+    pub fn invalidate_taa_history(&mut self) {
+        for state in self.rt.taa.iter_mut().flatten() {
+            state.history_valid = false;
+        }
+    }
+
     /// Cloud raymarch into the cloud RT.
     fn dispatch_march(&mut self, encoder: &mut wgpu::CommandEncoder, ctx: &RenderContext<'_>) {
+        let view = self.active_view;
         let Some(luts) = self.luts.as_ref() else {
             // Atmosphere disabled. The TAA + composite passes still
-            // run; clear `taa_dispatch` so the TAA pass skips and the
-            // composite reads the (possibly stale) scratch as before.
-            self.taa_dispatch = None;
+            // run; clear this view's `taa_dispatch` so the TAA pass
+            // skips and the composite reads the (possibly stale)
+            // scratch as before.
+            self.taa_dispatch[view] = None;
             return;
         };
         let fb_size = (ctx.framebuffer.size.0, ctx.framebuffer.size.1);
@@ -693,20 +735,22 @@ impl CloudsSubsystem {
         // `self.taa_dispatch` for the subsequent TAA + composite
         // passes to read.
         let taa_on = self.temporal_taa && !self.freeze_time;
-        let just_enabled = taa_on && !self.prev_taa_on;
-        self.prev_taa_on = taa_on;
+        let just_enabled = taa_on && !self.prev_taa_on[view];
+        self.prev_taa_on[view] = taa_on;
         let taa_dispatch_slot: Option<u32> = if taa_on {
-            if self.rt.taa.is_none() {
+            if self.rt.taa[view].is_none() {
                 self.rt.enable_taa(
                     ctx.device,
                     &self.pipelines.taa_layout,
                     &self.pipelines.composite_layout,
                     &self.pipelines.composite_halfres_layout,
                     &self.composite_params_buffer,
-                    &self.taa_params_buffer,
+                    view,
                 );
             }
-            let taa_state = self.rt.taa.as_mut().expect("just-allocated TAA state");
+            let taa_state = self.rt.taa[view]
+                .as_mut()
+                .expect("just-allocated TAA state");
             // Off→on transition: discard any leftover history (the
             // camera may have moved arbitrarily far while TAA was
             // off, so reprojection of the old data would produce
@@ -736,7 +780,7 @@ impl CloudsSubsystem {
                 config: [blend_weight, history_valid_flag, 0.0, 0.0],
             };
             ctx.queue
-                .write_buffer(&self.taa_params_buffer, 0, bytemuck::bytes_of(&taa_params));
+                .write_buffer(&taa_state.params_buffer, 0, bytemuck::bytes_of(&taa_params));
             // After this frame's TAA pass writes the new resolved
             // slot, next frame's history is unconditionally valid.
             taa_state.history_valid = true;
@@ -744,7 +788,7 @@ impl CloudsSubsystem {
         } else {
             None
         };
-        self.taa_dispatch = taa_dispatch_slot;
+        self.taa_dispatch[view] = taa_dispatch_slot;
 
         // Upload the cloud-RT-size uniform. The buffer is bound twice
         // — at binding 12 of the half-res march pipeline's data bind
@@ -914,10 +958,11 @@ impl CloudsSubsystem {
     /// previous history slot, writes the new resolved slot. Skipped
     /// via early return when `taa_dispatch` is None.
     fn dispatch_taa(&mut self, encoder: &mut wgpu::CommandEncoder, ctx: &RenderContext<'_>) {
-        let Some(write_slot) = self.taa_dispatch else {
+        let view = self.active_view;
+        let Some(write_slot) = self.taa_dispatch[view] else {
             return;
         };
-        let Some(taa_state) = self.rt.taa.as_ref() else {
+        let Some(taa_state) = self.rt.taa[view].as_ref() else {
             return;
         };
         let target = &taa_state.history[write_slot as usize];
@@ -968,7 +1013,7 @@ impl CloudsSubsystem {
     /// target.
     fn dispatch_composite(&mut self, encoder: &mut wgpu::CommandEncoder, ctx: &RenderContext<'_>) {
         let half_res = self.half_res_render;
-        let taa_slot = self.taa_dispatch;
+        let taa_slot = self.taa_dispatch[self.active_view];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clouds::composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -991,14 +1036,18 @@ impl CloudsSubsystem {
         // slot; the TAA-off bind groups point at the scratch.
         if half_res {
             pass.set_pipeline(&self.pipelines.composite_halfres);
-            if let (Some(slot), Some(taa_state)) = (taa_slot, self.rt.taa.as_ref()) {
+            if let (Some(slot), Some(taa_state)) =
+                (taa_slot, self.rt.taa[self.active_view].as_ref())
+            {
                 pass.set_bind_group(0, &taa_state.composite_halfres_bg[slot as usize], &[]);
             } else {
                 pass.set_bind_group(0, &self.rt.composite_halfres_bg, &[]);
             }
         } else {
             pass.set_pipeline(&self.pipelines.composite);
-            if let (Some(slot), Some(taa_state)) = (taa_slot, self.rt.taa.as_ref()) {
+            if let (Some(slot), Some(taa_state)) =
+                (taa_slot, self.rt.taa[self.active_view].as_ref())
+            {
                 pass.set_bind_group(0, &taa_state.composite_bg[slot as usize], &[]);
             } else {
                 pass.set_bind_group(0, &self.rt.composite_bg, &[]);
