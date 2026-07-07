@@ -158,13 +158,16 @@ impl AuroraSubsystem {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Auroras live above the cloud layer and don't need to
-            // depth-test against the scene; they read sky pixels and
-            // additively brighten them.
+            // Auroras live ~100 km up — anything with real depth occludes
+            // them. Reverse-Z GreaterEqual with the fullscreen triangle
+            // at z = 0 (far) passes only where the depth buffer still
+            // holds the clear value, i.e. pure sky: buildings/terrain
+            // mask the curtains instead of being painted over (host
+            // report: curtains overlaying buildings).
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: HdrFramebuffer::DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

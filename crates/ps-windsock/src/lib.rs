@@ -83,6 +83,10 @@ pub struct WindsockSubsystem {
     /// Group-1 bind group built once (only holds the uniform; the LUT
     /// bind group on group 2 comes from the shared frame context).
     params_bg: wgpu::BindGroup,
+    /// Host-supplied world anchor (see [`Self::set_world_anchor`]).
+    /// `None` = derive from the camera pose assuming PedalSky's
+    /// right-handed view convention.
+    world_anchor: Option<Vec3>,
 }
 
 impl WindsockSubsystem {
@@ -215,7 +219,18 @@ impl WindsockSubsystem {
             index_count,
             params_buf,
             params_bg,
+            world_anchor: None,
         }
+    }
+
+    /// Anchor the sock at an explicit world position instead of the
+    /// camera-derived default. Hosts whose view matrices are not
+    /// PedalSky's right-handed convention (e.g. left-handed pedalback,
+    /// where the RH forward derivation points BEHIND the camera) call
+    /// this per frame with their own "ahead of the rider" point.
+    /// `None` restores the built-in camera-relative anchor.
+    pub fn set_world_anchor(&mut self, anchor: Option<Vec3>) {
+        self.world_anchor = anchor;
     }
 }
 
@@ -225,7 +240,7 @@ impl RenderSubsystem for WindsockSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        let params = build_params(ctx);
+        let params = build_params(ctx, self.world_anchor);
         ctx.queue
             .write_buffer(&self.params_buf, 0, bytes_of(&params));
     }
@@ -284,7 +299,7 @@ impl RenderSubsystem for WindsockSubsystem {
 
 /// Build the per-frame `WindsockParamsGpu`: position the cone in front
 /// of the camera, orient it downwind, droop based on wind speed.
-fn build_params(ctx: &PrepareContext<'_>) -> WindsockParamsGpu {
+fn build_params(ctx: &PrepareContext<'_>, world_anchor: Option<Vec3>) -> WindsockParamsGpu {
     let surface = &ctx.weather.surface;
     let wind_dir_deg = surface.wind_dir_deg;
     let wind_speed = surface.wind_speed_mps.max(0.0);
@@ -318,12 +333,15 @@ fn build_params(ctx: &PrepareContext<'_>) -> WindsockParamsGpu {
     let y_axis = cone_axis.cross(x_axis).normalize_or_zero();
     let z_axis = cone_axis;
 
-    // Anchor: 5 m along the camera horizontal forward, 1.5 m up. We
-    // ignore the camera's pitch component so the sock floats at a
-    // constant height regardless of where the user is looking.
-    let cam_pos = ctx.frame_uniforms.camera_position_world.truncate();
-    let cam_forward = camera_horizontal_forward(ctx.frame_uniforms);
-    let anchor = cam_pos + cam_forward * ANCHOR_FORWARD_M + Vec3::Y * ANCHOR_UP_M;
+    // Anchor: host-supplied world position when set (convention-safe);
+    // otherwise 5 m along the camera horizontal forward, 1.5 m up
+    // (right-handed view convention), ignoring pitch so the sock
+    // floats at a constant height regardless of where the user looks.
+    let anchor = world_anchor.unwrap_or_else(|| {
+        let cam_pos = ctx.frame_uniforms.camera_position_world.truncate();
+        let cam_forward = camera_horizontal_forward(ctx.frame_uniforms);
+        cam_pos + cam_forward * ANCHOR_FORWARD_M + Vec3::Y * ANCHOR_UP_M
+    });
 
     // Model matrix: scale local cone by (radius, radius, length), then
     // rotate by the basis, then translate to the anchor. Columns are
