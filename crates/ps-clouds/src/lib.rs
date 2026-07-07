@@ -281,6 +281,13 @@ impl CloudRt {
         composite_params: &wgpu::Buffer,
         size: (u32, u32),
     ) {
+        // Drop the old attachments + all per-view TAA history BEFORE
+        // allocating the new set: on a resize the two generations would
+        // otherwise coexist, doubling the transient VRAM footprint —
+        // enough to tip a near-full card into OutOfMemory (observed on
+        // a 12 GB host mid-session). wgpu reclaims dropped resources at
+        // the next maintain, ahead of the allocations below.
+        self.taa = std::array::from_fn(|_| None);
         let new = Self::build(
             device,
             composite_layout,
