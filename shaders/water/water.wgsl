@@ -1,12 +1,13 @@
 // Phase 13.5 — water surface.
 //
-// A flat rectangular plane at `params.altitude_m`, rendered with GGX
-// specular and a Fresnel-weighted sky reflection sampled from the
-// sky-view LUT at the reflected view direction. Normals are
-// perturbed by a tiny 2D value-noise field advected with the surface
-// wind, so the highlight breaks up at wind-driven scale. No
-// refraction (the v1 plan has no DEM, so there's nothing under the
-// water to refract toward).
+// A water surface mesh in world coordinates (either the scene's
+// rectangular grid built CPU-side by ps-water, or arbitrary
+// host-injected lake/river geometry), rendered with GGX specular and
+// a Fresnel-weighted sky reflection sampled from the sky-view LUT at
+// the reflected view direction. Normals are perturbed by a tiny 2D
+// value-noise field advected with the surface wind, so the highlight
+// breaks up at wind-driven scale. No refraction (the v1 plan has no
+// DEM, so there's nothing under the water to refract toward).
 //
 // Bindings:
 //   group 0 binding 0      FrameUniforms
@@ -20,9 +21,12 @@
 
 struct WaterParams {
     // x = xmin, y = xmax, z = zmin, w = zmax — world bounds.
+    // VESTIGIAL: vertices carry world positions directly now; kept
+    // only for uniform-layout stability.
     bounds: vec4<f32>,
-    // x = altitude (world Y), y = roughness_min, z = roughness_max,
-    // w = simulated time (seconds).
+    // x = altitude (world Y) — VESTIGIAL (baked into vertex Y),
+    // y = roughness_min, z = roughness_max,
+    // w = simulated time (seconds) — unused (frame uniform is used).
     config: vec4<f32>,
     // x = wind_dir_deg (meteorological — direction wind comes from),
     // y = wind_speed_mps, zw unused.
@@ -45,19 +49,12 @@ struct VsOut {
 };
 
 @vertex
-fn vs_main(@location(0) pos_xz: vec2<f32>) -> VsOut {
-    // `pos_xz` lives in normalised [0,1]² (the mesh is a unit grid).
-    // Remap into the world bounds at the configured altitude.
-    let xmin = params.bounds.x;
-    let xmax = params.bounds.y;
-    let zmin = params.bounds.z;
-    let zmax = params.bounds.w;
-    let x = mix(xmin, xmax, pos_xz.x);
-    let z = mix(zmin, zmax, pos_xz.y);
-    let y = params.config.x;
+fn vs_main(@location(0) pos_world: vec3<f32>) -> VsOut {
+    // Vertices arrive in world space (ps-water builds the scene-rect
+    // grid on the CPU; hosts may inject arbitrary water meshes).
     var out: VsOut;
-    out.world_pos = vec3<f32>(x, y, z);
-    out.clip_pos = frame.view_proj * vec4<f32>(out.world_pos, 1.0);
+    out.world_pos = pos_world;
+    out.clip_pos = frame.view_proj * vec4<f32>(pos_world, 1.0);
     return out;
 }
 

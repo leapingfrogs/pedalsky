@@ -8,9 +8,24 @@
 //! refract toward; the body Lambertian term proxies the absorbed light
 //! path with a fixed colour.
 //!
-//! The subsystem activates only when the loaded scene contains a
-//! `[water]` block (`scene.water = Some(_)`). Otherwise it builds
-//! cleanly but its pass closure no-ops.
+//! Geometry comes from one of two sources:
+//!
+//! - **Internal grid** (default): when the loaded scene contains a
+//!   `[water]` block (`scene.water = Some(_)`), a `GRID_RES`-subdivided
+//!   rectangle is built on the CPU in world coordinates from the
+//!   scene's bounds + altitude and uploaded on change.
+//! - **External mesh** (host injection): a host embedding this
+//!   subsystem can supply arbitrary world-space geometry (lake / river
+//!   polygons draped on its own terrain) via
+//!   [`WaterSubsystem::set_external_mesh`]. While an external mesh is
+//!   set it takes precedence over the scene rectangle and the
+//!   subsystem renders whenever weather state is available — no
+//!   `[water]` block is required (hosts have no scene). Roughness
+//!   bounds fall back to the `[water]` defaults, overridable via
+//!   [`WaterSubsystem::set_roughness_range`].
+//!
+//! With neither source present the subsystem builds cleanly but its
+//! pass closure no-ops.
 //!
 //! Render-graph slot: `PassStage::Opaque`. Registered *after* the
 //! ground subsystem in `AppBuilder`, so within-stage registration
@@ -42,15 +57,35 @@ pub const NAME: &str = "water";
 /// horizon.
 const GRID_RES: u32 = 16;
 
+/// Fallback GGX roughness bounds for the external-mesh path when the
+/// scene supplies no `[water]` block. Match `ps_core::Water::default()`.
+const DEFAULT_ROUGHNESS_MIN: f32 = 0.02;
+const DEFAULT_ROUGHNESS_MAX: f32 = 0.10;
+
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable, Debug, Default)]
 struct WaterParamsGpu {
-    /// `(xmin, xmax, zmin, zmax)`.
+    /// `(xmin, xmax, zmin, zmax)`. **Vestigial** — vertices now carry
+    /// world positions directly, so the shader no longer remaps into
+    /// these bounds. Kept (and still populated from the scene rect
+    /// when one exists) purely for uniform-layout stability.
     bounds: [f32; 4],
     /// `(altitude_m, roughness_min, roughness_max, simulated_seconds)`.
+    /// `altitude_m` is vestigial like `bounds` (altitude is baked into
+    /// the vertex Y); roughness min/max drive the wind-roughness lerp
+    /// in the fragment shader. `simulated_seconds` duplicates the frame
+    /// uniform and is unused by the shader.
     config: [f32; 4],
     /// `(wind_dir_deg, wind_speed_mps, _, _)`.
     wind: [f32; 4],
+}
+
+/// Host-injected world-space geometry (see
+/// [`WaterSubsystem::set_external_mesh`]).
+struct ExternalMesh {
+    vertex_buf: wgpu::Buffer,
+    index_buf: wgpu::Buffer,
+    index_count: u32,
 }
 
 /// Phase 13.5 water subsystem.
@@ -61,9 +96,18 @@ pub struct WaterSubsystem {
     index_count: u32,
     params_buf: wgpu::Buffer,
     params_bg: wgpu::BindGroup,
-    /// Active flag: `true` only when the live `WeatherState.scene_water`
-    /// is `Some`. Latched by `prepare` from WeatherState, read by
-    /// `dispatch_pass`.
+    /// Host-injected geometry; takes precedence over the internal
+    /// scene-rect grid while `Some`.
+    external: Option<ExternalMesh>,
+    /// Roughness `(min, max)` used by the external-mesh path when the
+    /// scene supplies no `[water]` block.
+    external_roughness: (f32, f32),
+    /// The `(xmin, xmax, zmin, zmax, altitude_m)` rect the internal
+    /// grid vertex buffer currently holds; `None` until first upload.
+    internal_rect: Option<[f32; 5]>,
+    /// Active flag: `true` when there is geometry to draw — the live
+    /// `WeatherState.scene_water` is `Some`, or an external mesh is
+    /// set. Latched by `prepare`, read by `dispatch_pass`.
     active: bool,
 }
 
@@ -117,9 +161,9 @@ impl WaterSubsystem {
                 module: &shader,
                 entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    array_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
@@ -154,33 +198,27 @@ impl WaterSubsystem {
             cache: None,
         });
 
-        // Build a unit grid: positions are (s, t) in [0,1] and the
-        // vertex shader maps them into the configured bounds.
-        let (vertices, indices) = build_grid_mesh(GRID_RES);
+        // Internal grid: fixed topology, world-space vertices written
+        // by `prepare` when the scene rect first appears (or changes).
+        // The vertex buffer is allocated up front at the grid's fixed
+        // size and left zeroed — nothing draws until `prepare` has
+        // latched a scene rect and uploaded real positions.
+        let vertex_count = (GRID_RES + 1) * (GRID_RES + 1);
         let vertex_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water-vb"),
-            size: std::mem::size_of_val(vertices.as_slice()) as u64,
+            size: u64::from(vertex_count) * std::mem::size_of::<[f32; 3]>() as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: true,
+            mapped_at_creation: false,
         });
-        vertex_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(bytemuck::cast_slice(&vertices));
-        vertex_buf.unmap();
 
+        let indices = grid_indices(GRID_RES);
         let index_count = indices.len() as u32;
-        let index_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("water-ib"),
-            size: std::mem::size_of_val(indices.as_slice()) as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: true,
-        });
-        index_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(bytemuck::cast_slice(&indices));
-        index_buf.unmap();
+        let index_buf = create_init_buffer(
+            device,
+            "water-ib",
+            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            bytemuck::cast_slice(&indices),
+        );
 
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("water-params-ub"),
@@ -204,9 +242,94 @@ impl WaterSubsystem {
             index_count,
             params_buf,
             params_bg,
+            external: None,
+            external_roughness: (DEFAULT_ROUGHNESS_MIN, DEFAULT_ROUGHNESS_MAX),
+            internal_rect: None,
             active: false,
         }
     }
+
+    /// Inject host-provided world-space water geometry, replacing the
+    /// internal scene-rect grid until [`Self::clear_external_mesh`].
+    ///
+    /// `vertices` are world positions `[x, y, z]` (typically OSM lake /
+    /// river polygons triangulated by the host, XZ footprint with a
+    /// per-vertex surface height in Y). `indices` is a `u32` triangle
+    /// list into `vertices`. Wave animation is a per-pixel normal
+    /// perturbation — the mesh needs only enough tessellation for
+    /// frustum clipping, not per-wave detail.
+    ///
+    /// While an external mesh is set the subsystem is active whenever
+    /// weather state is available; no `scene.water` block is required.
+    /// Wind direction/speed come from `WeatherState.surface` and the
+    /// wave clock from the frame uniforms, exactly as for the internal
+    /// path. Roughness min/max come from `scene.water` when present,
+    /// else from [`Self::set_roughness_range`] (default 0.02 / 0.10).
+    ///
+    /// Passing an empty vertex or index slice is equivalent to
+    /// [`Self::clear_external_mesh`].
+    pub fn set_external_mesh(
+        &mut self,
+        device: &wgpu::Device,
+        vertices: &[[f32; 3]],
+        indices: &[u32],
+    ) {
+        if vertices.is_empty() || indices.is_empty() {
+            self.external = None;
+            return;
+        }
+        let vertex_buf = create_init_buffer(
+            device,
+            "water-external-vb",
+            wgpu::BufferUsages::VERTEX,
+            bytemuck::cast_slice(vertices),
+        );
+        let index_buf = create_init_buffer(
+            device,
+            "water-external-ib",
+            wgpu::BufferUsages::INDEX,
+            bytemuck::cast_slice(indices),
+        );
+        self.external = Some(ExternalMesh {
+            vertex_buf,
+            index_buf,
+            index_count: indices.len() as u32,
+        });
+    }
+
+    /// Drop any host-injected geometry and return to the internal
+    /// `scene.water` rectangle path.
+    pub fn clear_external_mesh(&mut self) {
+        self.external = None;
+    }
+
+    /// Override the GGX roughness `(min, max)` used by the
+    /// external-mesh path when the scene supplies no `[water]` block.
+    /// The fragment shader lerps between the two by surface wind
+    /// speed. Defaults to `(0.02, 0.10)` — the `[water]` defaults.
+    pub fn set_roughness_range(&mut self, min: f32, max: f32) {
+        self.external_roughness = (min, max);
+    }
+}
+
+/// Create a buffer initialised with `bytes` (`bytes.len()` must be a
+/// multiple of `wgpu::COPY_BUFFER_ALIGNMENT`, which holds for `[f32; 3]`
+/// vertices and `u32` indices).
+fn create_init_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    usage: wgpu::BufferUsages,
+    bytes: &[u8],
+) -> wgpu::Buffer {
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.len() as u64,
+        usage,
+        mapped_at_creation: true,
+    });
+    buf.slice(..).get_mapped_range_mut().copy_from_slice(bytes);
+    buf.unmap();
+    buf
 }
 
 impl RenderSubsystem for WaterSubsystem {
@@ -215,17 +338,52 @@ impl RenderSubsystem for WaterSubsystem {
     }
 
     fn prepare(&mut self, ctx: &mut PrepareContext<'_>) {
-        let Some(water) = ctx.weather.scene_water.as_ref() else {
-            self.active = false;
-            return;
-        };
+        let scene_water = ctx.weather.scene_water.as_ref();
+
+        // Internal path: needs a scene rect; (re)upload world-space
+        // grid vertices when it first appears or changes. The external
+        // path carries its own geometry and skips all of this.
+        if self.external.is_none() {
+            let Some(water) = scene_water else {
+                self.active = false;
+                return;
+            };
+            let rect = [
+                water.xmin,
+                water.xmax,
+                water.zmin,
+                water.zmax,
+                water.altitude_m,
+            ];
+            if self.internal_rect != Some(rect) {
+                let vertices = grid_world_vertices(
+                    GRID_RES,
+                    [water.xmin, water.xmax, water.zmin, water.zmax],
+                    water.altitude_m,
+                );
+                ctx.queue
+                    .write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&vertices));
+                self.internal_rect = Some(rect);
+            }
+        }
+
+        // Roughness bounds come from the scene when it has a `[water]`
+        // block; the external path falls back to the configured
+        // defaults so `prepare` stays total without a scene.
+        let (roughness_min, roughness_max) = scene_water
+            .map(|w| (w.roughness_min, w.roughness_max))
+            .unwrap_or(self.external_roughness);
         let surface = &ctx.weather.surface;
         let params = WaterParamsGpu {
-            bounds: [water.xmin, water.xmax, water.zmin, water.zmax],
+            // bounds + altitude are vestigial (see WaterParamsGpu);
+            // populated from the scene rect when one exists.
+            bounds: scene_water
+                .map(|w| [w.xmin, w.xmax, w.zmin, w.zmax])
+                .unwrap_or_default(),
             config: [
-                water.altitude_m,
-                water.roughness_min,
-                water.roughness_max,
+                scene_water.map(|w| w.altitude_m).unwrap_or_default(),
+                roughness_min,
+                roughness_max,
                 ctx.frame_uniforms.simulated_seconds,
             ],
             wind: [surface.wind_dir_deg, surface.wind_speed_mps, 0.0, 0.0],
@@ -283,22 +441,40 @@ impl RenderSubsystem for WaterSubsystem {
         pass.set_bind_group(1, ctx.world_bind_group, &[]);
         pass.set_bind_group(2, &self.params_bg, &[]);
         pass.set_bind_group(3, luts_bg, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-        pass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        let (vertex_buf, index_buf, index_count) = match self.external.as_ref() {
+            Some(mesh) => (&mesh.vertex_buf, &mesh.index_buf, mesh.index_count),
+            None => (&self.vertex_buf, &self.index_buf, self.index_count),
+        };
+        pass.set_vertex_buffer(0, vertex_buf.slice(..));
+        pass.set_index_buffer(index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..index_count, 0, 0..1);
     }
 }
 
-/// Build a unit-extent grid mesh in `[0,1]²` with `n × n` subdivisions.
-/// Returns `(vertices, indices)` where each vertex is `[s, t]` and the
-/// index list is triangle list, 6 indices per quad.
-fn build_grid_mesh(n: u32) -> (Vec<[f32; 2]>, Vec<u32>) {
-    let mut vertices: Vec<[f32; 2]> = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
+/// World-space vertices for an `n × n`-subdivided rectangle covering
+/// `bounds = (xmin, xmax, zmin, zmax)` at `altitude_m`.
+///
+/// The remap from grid parameter `(s, t) ∈ [0,1]²` to world XZ
+/// reproduces the WGSL `mix()` the vertex shader historically applied
+/// on the GPU — `e1 * (1 - e3) + e2 * e3` — bit-for-bit in f32, so
+/// moving it to the CPU feeds the shader identical world positions.
+fn grid_world_vertices(n: u32, bounds: [f32; 4], altitude_m: f32) -> Vec<[f32; 3]> {
+    let [xmin, xmax, zmin, zmax] = bounds;
+    let mix = |e1: f32, e2: f32, e3: f32| e1 * (1.0 - e3) + e2 * e3;
+    let mut vertices: Vec<[f32; 3]> = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
     for j in 0..=n {
         for i in 0..=n {
-            vertices.push([i as f32 / n as f32, j as f32 / n as f32]);
+            let s = i as f32 / n as f32;
+            let t = j as f32 / n as f32;
+            vertices.push([mix(xmin, xmax, s), altitude_m, mix(zmin, zmax, t)]);
         }
     }
+    vertices
+}
+
+/// Triangle-list indices for an `n × n`-subdivided grid laid out
+/// row-major as produced by [`grid_world_vertices`]; 6 indices per quad.
+fn grid_indices(n: u32) -> Vec<u32> {
     let stride = n + 1;
     let mut indices: Vec<u32> = Vec::with_capacity((n * n * 6) as usize);
     for j in 0..n {
@@ -315,7 +491,7 @@ fn build_grid_mesh(n: u32) -> (Vec<[f32; 2]>, Vec<u32>) {
             indices.push(i2);
         }
     }
-    (vertices, indices)
+    indices
 }
 
 /// Factory wired by `AppBuilder`.
@@ -330,5 +506,89 @@ impl SubsystemFactory for WaterFactory {
     }
     fn build(&self, config: &Config, gpu: &GpuContext) -> anyhow::Result<Box<dyn RenderSubsystem>> {
         Ok(Box::new(WaterSubsystem::new(config, gpu)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CPU world-coordinate generation must reproduce the remap
+    /// the vertex shader used to perform on the GPU: for grid
+    /// parameter `(s, t) = (i/n, j/n)`, `x = mix(xmin, xmax, s)` and
+    /// `z = mix(zmin, zmax, t)` with WGSL `mix(e1, e2, e3) =
+    /// e1 * (1 - e3) + e2 * e3`, at the configured altitude.
+    #[test]
+    fn grid_world_vertices_match_shader_remap() {
+        let n = GRID_RES;
+        let bounds = [-25.0_f32, 25.0, -15.0, 15.0];
+        let altitude = 0.1_f32;
+        let vertices = grid_world_vertices(n, bounds, altitude);
+        assert_eq!(vertices.len(), ((n + 1) * (n + 1)) as usize);
+        for j in 0..=n {
+            for i in 0..=n {
+                let s = i as f32 / n as f32;
+                let t = j as f32 / n as f32;
+                let expected_x = bounds[0] * (1.0 - s) + bounds[1] * s;
+                let expected_z = bounds[2] * (1.0 - t) + bounds[3] * t;
+                let v = vertices[(j * (n + 1) + i) as usize];
+                assert_eq!(v[0].to_bits(), expected_x.to_bits(), "x at ({i},{j})");
+                assert_eq!(v[1].to_bits(), altitude.to_bits(), "y at ({i},{j})");
+                assert_eq!(v[2].to_bits(), expected_z.to_bits(), "z at ({i},{j})");
+            }
+        }
+        // Corners land exactly on the bounds (s, t ∈ {0, 1}).
+        let last = vertices.len() - 1;
+        assert_eq!(vertices[0][0].to_bits(), bounds[0].to_bits());
+        assert_eq!(vertices[0][2].to_bits(), bounds[2].to_bits());
+        assert_eq!(vertices[last][0].to_bits(), bounds[1].to_bits());
+        assert_eq!(vertices[last][2].to_bits(), bounds[3].to_bits());
+    }
+
+    /// Grid topology: 6 indices per quad, all in range, matching the
+    /// row-major vertex layout.
+    #[test]
+    fn grid_indices_cover_all_quads_in_range() {
+        let n = GRID_RES;
+        let indices = grid_indices(n);
+        assert_eq!(indices.len(), (n * n * 6) as usize);
+        let vertex_count = (n + 1) * (n + 1);
+        assert!(indices.iter().all(|&i| i < vertex_count));
+        // First quad spells out the historical winding.
+        assert_eq!(&indices[..6], &[0, 1, n + 2, 0, n + 2, n + 1]);
+    }
+
+    /// External-mesh lifecycle: setting host geometry installs it,
+    /// empty input is equivalent to clearing, and
+    /// `clear_external_mesh` returns to the internal path. Skips
+    /// silently on machines without a GPU adapter.
+    #[test]
+    fn external_mesh_set_and_clear() {
+        let gpu = match ps_core::gpu::init_headless() {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                eprintln!("skipping external_mesh_set_and_clear — no GPU adapter: {e}");
+                return;
+            }
+        };
+        let config = Config::default();
+        let mut sub = WaterSubsystem::new(&config, &gpu);
+        assert!(sub.external.is_none());
+
+        let vertices = [[0.0_f32, 0.1, 0.0], [10.0, 0.1, 0.0], [0.0, 0.1, 10.0]];
+        let indices = [0_u32, 1, 2];
+        sub.set_external_mesh(&gpu.device, &vertices, &indices);
+        assert_eq!(sub.external.as_ref().map(|m| m.index_count), Some(3));
+
+        // Empty vertex or index input clears rather than installing a
+        // degenerate mesh.
+        sub.set_external_mesh(&gpu.device, &[], &indices);
+        assert!(sub.external.is_none());
+        sub.set_external_mesh(&gpu.device, &vertices, &[]);
+        assert!(sub.external.is_none());
+
+        sub.set_external_mesh(&gpu.device, &vertices, &indices);
+        sub.clear_external_mesh();
+        assert!(sub.external.is_none());
     }
 }
