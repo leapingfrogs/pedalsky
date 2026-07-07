@@ -114,12 +114,14 @@ impl BoltRender {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // Depth test off per scope-doc v1 punt — bolts are
-            // always-on-top emissive geometry.
+            // Reverse-Z depth TEST (no write): bolts occlude behind
+            // terrain/geometry — a strike over the ridge line reads as
+            // distant instead of pasted on top. (Upgraded from the v1
+            // always-on-top punt for the pedalback integration.)
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: HdrFramebuffer::DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

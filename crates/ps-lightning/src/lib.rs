@@ -106,6 +106,10 @@ pub struct LightningSubsystem {
     /// because external callers (ps-app) hold a clone for cross-frame
     /// reads outside the subsystem's `&mut self` access window.
     publish: LightningPublish,
+    /// World-space ground height (m) for strike attach points. Hosts
+    /// with terrain feed it via [`Self::set_ground_height_m`]; the
+    /// default 0.0 preserves the flat-ground behaviour.
+    ground_y_m: f32,
 }
 
 impl LightningSubsystem {
@@ -129,9 +133,16 @@ impl LightningSubsystem {
                 strikes,
                 render,
                 publish: publish_clone,
+                ground_y_m: 0.0,
             },
             publish,
         )
+    }
+
+    /// Set the world-space ground height (m) used for strike attach
+    /// points (same host hook pattern as ps-precip's ground uniform).
+    pub fn set_ground_height_m(&mut self, y: f32) {
+        self.ground_y_m = y;
     }
 }
 
@@ -160,13 +171,27 @@ impl RenderSubsystem for LightningSubsystem {
             // Pick a horizontal origin under the cloud field. Today
             // we pick uniformly within the mask extent; a more
             // careful version would importance-sample the top-down
-            // density mask. Cloud base ≈ 1500m matches the v1 cloud
-            // reference altitude.
+            // density mask. The origin altitude tracks the LOWEST
+            // synthesised cloud layer so bolts start where the
+            // rendered deck actually is (1500 m fallback for empty
+            // skies, which can still strike during transitions).
+            let cloud_base = ctx
+                .weather
+                .cloud_layers
+                .iter()
+                .map(|l| l.base_m)
+                .fold(f32::INFINITY, f32::min);
+            let origin_y = if cloud_base.is_finite() {
+                self.ground_y_m + cloud_base.max(300.0)
+            } else {
+                self.ground_y_m + 1500.0
+            };
             let xz = store.uniform_xz_in_extent(32_000.0);
-            let origin = Vec3::new(xz.x, 1500.0, xz.y);
-            // Ground attach point: 1–5 km horizontal from origin.
+            let origin = Vec3::new(xz.x, origin_y, xz.y);
+            // Ground attach point: 1–5 km horizontal from origin, at
+            // the host-fed terrain height.
             let attach_xz = store.uniform_attach_offset(1000.0, 5000.0) + xz;
-            let attach = Vec3::new(attach_xz.x, 0.0, attach_xz.y);
+            let attach = Vec3::new(attach_xz.x, self.ground_y_m, attach_xz.y);
             let bolt = bolt::generate_bolt(origin, attach, store.rng_mut());
             store.push(ActiveStrike {
                 origin,
