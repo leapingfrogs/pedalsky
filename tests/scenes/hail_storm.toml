@@ -1,0 +1,41 @@
+# tests/scenes/hail_storm.toml
+#
+# Hail-mode fixture — single cumulonimbus 800-11000 m, coverage 0.9,
+# hail 10 mm/h. Exercises the PrecipKind::Hail path (WMO 96/99):
+# fast ballistic fall, small opaque round splats distinct from rain
+# streaks and soft snow flakes.
+#
+# Equivalent METAR (synthetic):
+#   EGPN 161600Z 18020G35KT 3000 +TSGR CB CB050 22/19 Q0996 NOSIG
+
+schema_version = 1
+
+[surface]
+visibility_m   = 3000.0
+temperature_c  = 22.0
+dewpoint_c     = 19.0          # unstable, slightly cooler than the rain storm
+pressure_hpa   = 996.0
+wind_dir_deg   = 180.0
+wind_speed_mps = 10.0
+
+[surface.wetness]
+ground_wetness  = 0.8
+puddle_coverage = 0.4
+puddle_start    = 0.5
+snow_depth_m    = 0.0
+
+[[clouds.layers]]
+type               = "Cumulonimbus"
+base_m             = 800.0
+top_m              = 11000.0
+coverage           = 0.9
+density_scale      = 1.4
+shape_octave_bias  = 0.0
+detail_octave_bias = 0.0
+
+[precipitation]
+type               = "Hail"
+intensity_mm_per_h = 10.0
+
+[lightning]
+strikes_per_min_per_km2 = 0.5

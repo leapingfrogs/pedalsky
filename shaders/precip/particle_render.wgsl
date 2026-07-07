@@ -3,8 +3,8 @@
 // Each instance is a particle. Six vertices of a unit quad in particle-
 // local space; the vertex shader orients the quad along the particle's
 // velocity direction (for rain streaks) or as a screen-aligned splat
-// (for snow). Length scales with velocity * exposure_time so faster
-// particles produce longer streaks.
+// (for snow and hail). Length scales with velocity * exposure_time so
+// faster particles produce longer streaks.
 
 struct Particle {
     position: vec3<f32>,
@@ -27,9 +27,9 @@ struct PrecipUniforms {
     spawn_top_m: f32,
     fall_speed_mps: f32,
     user_seed: u32,
+    ground_y_m: f32,
     _pad_0: f32,
     _pad_1: f32,
-    _pad_2: f32,
 };
 
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -54,6 +54,11 @@ const MP_RADIUS_GAIN: f32 = 0.05;
 // 8000 particles / pi*50^2*30 m^3 cylinder used by the compute pass.
 const POOL_DENSITY_PER_M3: f32 = 0.034;
 const SNOW_RADIUS_M: f32 = 0.04;
+// Hail: small opaque ice spheres. Fixed radius — hail is ballistic and
+// its size distribution is not Marshall-Palmer, so neither the radius
+// nor the alpha is MP-derived.
+const HAIL_RADIUS_M: f32 = 0.02;
+const HAIL_ALPHA: f32 = 0.9;
 const PI_R: f32 = 3.14159265358979;
 
 /// Marshall-Palmer (1948): N(D) = N0 * exp(-Lambda * D).
@@ -76,7 +81,7 @@ struct VsOut {
     @location(0) uv: vec2<f32>,        // local quad uv [-1, 1]
     @location(1) tint: vec3<f32>,      // colour multiplier (cloud/snow tinted)
     @location(2) alpha: f32,           // pre-tinted opacity
-    @location(3) kind: f32,            // 0 = rain, 1 = snow (interpolant-friendly)
+    @location(3) kind: f32,            // 0 = rain, 1 = snow, 2 = hail (interpolant-friendly)
 };
 
 fn world_to_mask_uv(xz: vec2<f32>) -> vec2<f32> {
@@ -129,9 +134,10 @@ fn vs_main(
                              v_perp_len > 1e-4);
         width_axis = normalize(cross(streak_axis, cam_to_p));
     } else {
-        // Snow: round screen-aligned billboard.
-        radius = SNOW_RADIUS_M;
-        length_m = SNOW_RADIUS_M;
+        // Snow / hail: round screen-aligned billboard. Hailstones are
+        // smaller than the soft snow splat.
+        radius = select(SNOW_RADIUS_M, HAIL_RADIUS_M, p.kind == 2u);
+        length_m = radius;
         // Pick any vector not parallel to cam_to_p.
         let helper = select(vec3<f32>(0.0, 1.0, 0.0),
                             vec3<f32>(1.0, 0.0, 0.0),
@@ -172,11 +178,17 @@ fn vs_main(
         // Rain: cool grey-blue.
         out.tint = vec3<f32>(0.5, 0.55, 0.7);
         out.alpha = alpha;
-    } else {
+    } else if (p.kind == 1u) {
         // Snow: bright, white. Snow flakes are larger and brighter than
         // rain droplets at the same intensity; bias the alpha up.
         out.tint = vec3<f32>(0.95, 0.97, 1.0);
         out.alpha = clamp(alpha * 1.5, 0.0, 1.0);
+    } else {
+        // Hail: opaque white ice. Marshall-Palmer density does NOT
+        // apply to hail — the alpha is a fixed near-opaque constant
+        // gated only by cloud occlusion.
+        out.tint = vec3<f32>(1.0, 1.0, 1.0);
+        out.alpha = cloud_gate * HAIL_ALPHA;
     }
     out.kind = f32(p.kind);
     _ = view_pos;
@@ -190,10 +202,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // Rain: smooth across the streak's width, full along its length.
         let d = abs(in.uv.x);
         falloff = clamp(1.0 - d * d, 0.0, 1.0);
-    } else {
+    } else if (in.kind < 1.5) {
         // Snow: round splat.
         let d2 = dot(in.uv, in.uv);
         falloff = clamp(1.0 - d2, 0.0, 1.0);
+    } else {
+        // Hail: hard-edged bright circle — a solid disc with a short
+        // antialiasing ramp at the rim, much sharper than snow's soft
+        // splat.
+        let d2 = dot(in.uv, in.uv);
+        falloff = 1.0 - smoothstep(0.7, 1.0, d2);
     }
     let a = in.alpha * falloff;
     if (a <= 0.001) { discard; }

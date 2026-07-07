@@ -20,7 +20,7 @@ pub struct PrecipUniformsGpu {
     pub dt_seconds: f32,
     /// Simulated seconds (for deterministic respawn seeds).
     pub simulated_seconds: f32,
-    /// Particle kind (0 = rain, 1 = snow).
+    /// Particle kind (0 = rain, 1 = snow, 2 = hail).
     pub kind: u32,
     /// Live particle count.
     pub particle_count: u32,
@@ -36,8 +36,14 @@ pub struct PrecipUniformsGpu {
     /// runs. Defaults to 0 (which still gives a deterministic but
     /// arbitrary distribution).
     pub user_seed: u32,
+    /// World-space ground height near the camera in metres. Particles
+    /// respawn above it and are re-seeded when they fall below it.
+    /// Hosts with terrain feed it (see
+    /// `PrecipSubsystem::set_ground_height_m`); the default `0.0`
+    /// preserves the previous flat-ground-at-origin behaviour.
+    pub ground_y_m: f32,
     /// _pad to bring the struct to a 16 B multiple.
-    pub _pad: [f32; 3],
+    pub _pad: [f32; 2],
 }
 
 impl Default for PrecipUniformsGpu {
@@ -54,7 +60,8 @@ impl Default for PrecipUniformsGpu {
             spawn_top_m: 30.0,
             fall_speed_mps: 6.0,
             user_seed: 0,
-            _pad: [0.0; 3],
+            ground_y_m: 0.0,
+            _pad: [0.0; 2],
         }
     }
 }

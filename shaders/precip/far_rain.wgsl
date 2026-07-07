@@ -18,9 +18,10 @@ struct PrecipUniforms {
     spawn_radius_m: f32,
     spawn_top_m: f32,
     fall_speed_mps: f32,
+    user_seed: u32,
+    ground_y_m: f32,
     _pad_0: f32,
     _pad_1: f32,
-    _pad_2: f32,
 };
 
 struct LayerUniform {

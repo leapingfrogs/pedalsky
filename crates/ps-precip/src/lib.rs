@@ -1,6 +1,6 @@
 //! PedalSky precipitation subsystem (Phase 8: Schneider/Hillaire-style
-//! near rain particles + far-rain screen-space streaks + snow + cloud
-//! occlusion).
+//! near rain particles + far-rain screen-space streaks + snow + hail +
+//! cloud occlusion).
 //!
 //! Pass schedule:
 //! - `Compute` — particle advance (pos += v·dt, respawn outside cylinder).
@@ -47,6 +47,11 @@ const SPAWN_RADIUS_M: f32 = 50.0;
 const SPAWN_TOP_M: f32 = 30.0;
 const RAIN_FALL_MPS: f32 = 6.0;
 const SNOW_FALL_MPS: f32 = 1.0;
+/// Terminal velocity for small hail (~5-10 mm stones). Hail is
+/// ballistic — Marshall-Palmer drop-size statistics don't apply, so
+/// the render path uses a fixed opaque splat rather than MP-derived
+/// alpha/size.
+const HAIL_FALL_MPS: f32 = 12.0;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable, Debug)]
@@ -86,13 +91,14 @@ struct FarRainLayer {
 
 /// Phase 8 precipitation subsystem.
 pub struct PrecipSubsystem {
-    /// Two pools: one for rain, one for snow. Both are always allocated;
-    /// only the kind matching the current `PrecipKind` is dispatched.
+    /// Three pools: rain, snow, hail. All are always allocated; only
+    /// the kind matching the current `PrecipKind` is dispatched.
     /// `Arc` is retained because pool buffers are read by the render
     /// bind groups; reconfigure swaps the Arc when `near_particle_count`
     /// changes.
     rain_pool: Arc<ParticlePool>,
     snow_pool: Arc<ParticlePool>,
+    hail_pool: Arc<ParticlePool>,
 
     /// Pre-built far-rain layers. Reconfigure replaces the Vec when
     /// `far_layers` changes.
@@ -105,7 +111,8 @@ pub struct PrecipSubsystem {
     /// Far-rain render pipeline.
     far_pipeline: wgpu::RenderPipeline,
 
-    /// Most-recent kind from WeatherState (0 none, 1 rain, 2 snow, 3 sleet).
+    /// Most-recent kind from WeatherState (0 none, 1 rain, 2 snow,
+    /// 3 sleet, 4 hail).
     state: PrecipState,
 
     /// Layouts + sampler used to rebuild bind groups in `prepare()`.
@@ -124,7 +131,7 @@ pub struct PrecipSubsystem {
     live_far_bgs: Vec<Arc<wgpu::BindGroup>>,
 
     /// Audit S.H1 — caches keyed on `(kind, weather.revision)`. The
-    /// kind switches the active pool (rain ↔ snow), and the
+    /// kind switches the active pool (rain ↔ snow ↔ hail), and the
     /// revision changes when synthesis publishes new wind_field /
     /// overcast_field views. Pool replacement on reconfigure (when
     /// `near_particle_count` changes) is handled by `invalidate()`.
@@ -138,6 +145,12 @@ pub struct PrecipSubsystem {
     /// the per-particle respawn jitter. Sourced from
     /// `config.debug.seed` (truncated to 32 bits).
     user_seed: u32,
+
+    /// Host-driven world-space ground height near the camera in
+    /// metres (`PrecipUniformsGpu::ground_y_m`). Hosts with terrain
+    /// feed it via [`PrecipSubsystem::set_ground_height_m`]; the
+    /// default `0.0` preserves the flat-ground behaviour.
+    ground_y_m: f32,
 }
 
 #[derive(Default)]
@@ -473,6 +486,7 @@ impl PrecipSubsystem {
 
         let rain_pool = make_pool(device, queue, count, 0, RAIN_FALL_MPS);
         let snow_pool = make_pool(device, queue, count, 1, SNOW_FALL_MPS);
+        let hail_pool = make_pool(device, queue, count, 2, HAIL_FALL_MPS);
 
         let far_layers = make_far_layers(device, queue, config.render.precip.far_layers);
         let _ = placeholder_view;
@@ -504,6 +518,7 @@ impl PrecipSubsystem {
         Self {
             rain_pool,
             snow_pool,
+            hail_pool,
             far_layers,
             advance_pipeline,
             render_pipeline,
@@ -517,6 +532,7 @@ impl PrecipSubsystem {
             render_bg_cache: BindGroupCache::new(),
             far_bg_caches: (0..far_count).map(|_| BindGroupCache::new()).collect(),
             user_seed: config.debug.seed as u32,
+            ground_y_m: 0.0,
         }
     }
 }
@@ -665,13 +681,18 @@ impl RenderSubsystem for PrecipSubsystem {
             0.0,
         ];
 
-        for (pool, active_kind) in [(&self.rain_pool, 0u32), (&self.snow_pool, 1u32)] {
-            // Only feed live intensity to the matching pool; the other
-            // gets zero so its particles are still updated (cheap) but
+        for (pool, active_kind) in [
+            (&self.rain_pool, 0u32),
+            (&self.snow_pool, 1u32),
+            (&self.hail_pool, 2u32),
+        ] {
+            // Only feed live intensity to the matching pool; the others
+            // get zero so their particles are still updated (cheap) but
             // not rendered.
             let live = match (kind, active_kind) {
                 (1, 0) | (3, 0) => intensity, // rain or sleet → rain
                 (2, 1) | (3, 1) => intensity, // snow or sleet → snow
+                (4, 2) => intensity,          // hail → hail
                 _ => 0.0,
             };
             let u = PrecipUniformsGpu {
@@ -686,7 +707,8 @@ impl RenderSubsystem for PrecipSubsystem {
                 spawn_top_m: SPAWN_TOP_M,
                 fall_speed_mps: pool.fall_mps,
                 user_seed: self.user_seed,
-                _pad: [0.0; 3],
+                ground_y_m: self.ground_y_m,
+                _pad: [0.0; 2],
             };
             ctx.queue.write_buffer(&pool.uniforms_buf, 0, bytes_of(&u));
         }
@@ -698,6 +720,7 @@ impl RenderSubsystem for PrecipSubsystem {
         let wind_view = &ctx.weather.textures.wind_field_view;
         let active_pool: &ParticlePool = match kind {
             2 => &self.snow_pool,
+            4 => &self.hail_pool,
             _ => &self.rain_pool,
         };
         // Reset the draw-indirect args for the active pool. Vertex count
@@ -771,6 +794,7 @@ impl RenderSubsystem for PrecipSubsystem {
         }
         let active_pool: &ParticlePool = match self.state.kind {
             2 => &self.snow_pool,
+            4 => &self.hail_pool,
             _ => &self.rain_pool,
         };
         match id {
@@ -869,6 +893,7 @@ impl RenderSubsystem for PrecipSubsystem {
         if new_count != self.rain_pool.count {
             self.rain_pool = make_pool(&gpu.device, &gpu.queue, new_count, 0, RAIN_FALL_MPS);
             self.snow_pool = make_pool(&gpu.device, &gpu.queue, new_count, 1, SNOW_FALL_MPS);
+            self.hail_pool = make_pool(&gpu.device, &gpu.queue, new_count, 2, HAIL_FALL_MPS);
             // Audit S.H1 — pool reallocation invalidates every cached
             // bind group: the buffer handles inside the BGs are now
             // stale. The (kind, revision) cache key wouldn't catch
@@ -908,6 +933,13 @@ impl PrecipSubsystem {
     /// Test helper: returns the rain particle pool's count.
     pub fn rain_particle_count(&self) -> u32 {
         self.rain_pool.count
+    }
+
+    /// Set the host-driven world-space ground height near the camera
+    /// (metres). Particles respawn above it and die below it. Cheap —
+    /// takes effect at the next `prepare`.
+    pub fn set_ground_height_m(&mut self, y: f32) {
+        self.ground_y_m = y;
     }
 }
 

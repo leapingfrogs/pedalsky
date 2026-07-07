@@ -516,6 +516,9 @@ pub enum PrecipKind {
     Snow,
     /// Mixed phase.
     Sleet,
+    /// Hail — small ice spheres with a fast ballistic fall. Mapped
+    /// from WMO weather codes 96/99 (thunderstorm with hail).
+    Hail,
 }
 
 /// `[precipitation]` block.

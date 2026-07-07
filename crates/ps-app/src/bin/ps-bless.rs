@@ -1,5 +1,5 @@
 //! Phase 11.3 helper — `ps-bless` regenerates the golden images for
-//! the eight reference scenes, overwriting `tests/golden/<scene>.png`.
+//! the reference scenes, overwriting `tests/golden/<scene>.png`.
 //!
 //! Run when a *deliberate* visual change has landed. Review the diffs
 //! versus version control before committing.
@@ -30,6 +30,7 @@ const SCENES: &[(&str, &str, f32, f32)] = &[
     ),
     ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0, 45.0),
     ("thunderstorm", "2026-08-16T16:00:00Z", 14.0, 5.0),
+    ("hail_storm", "2026-08-16T16:00:00Z", 14.0, 5.0),
     ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0, 5.0),
     ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0, 60.0),
     ("twilight_civil", "2026-12-21T08:05:00Z", 8.0, 5.0),
@@ -92,6 +93,11 @@ fn render_one(
     scene.validate().context("validate scene")?;
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
+    // Hail mode — must match the golden test (`tests/golden.rs`): the
+    // precipitation subsystem is enabled for the hail fixture only so
+    // the hail render path is covered without re-blessing every
+    // precipitating scene (the shipped config leaves it off).
+    config.render.subsystems.precipitation = name == "hail_storm";
     config.render.ev100 = ev100;
     // Phase 14.I — must match the golden test (`tests/golden.rs`).
     // Zero the wind drift so the bless run isn't sensitive to a

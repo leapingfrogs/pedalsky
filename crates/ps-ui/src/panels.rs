@@ -1951,6 +1951,7 @@ fn precipitation_panel(ui: &mut egui::Ui, state: &mut UiState) {
                         PrecipKind::Rain,
                         PrecipKind::Snow,
                         PrecipKind::Sleet,
+                        PrecipKind::Hail,
                     ] {
                         if ui
                             .selectable_label(new_scene.precipitation.kind == k, format!("{k:?}"))

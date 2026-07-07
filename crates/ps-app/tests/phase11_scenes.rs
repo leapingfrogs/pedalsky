@@ -9,6 +9,7 @@ const SCENES: &[&str] = &[
     "broken_cumulus_afternoon.toml",
     "overcast_drizzle.toml",
     "thunderstorm.toml",
+    "hail_storm.toml",
     "high_cirrus_sunset.toml",
     "winter_overcast_snow.toml",
     "twilight_civil.toml",

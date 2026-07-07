@@ -189,6 +189,17 @@ fn precip_from_open_meteo(h: &Hourly, i: usize) -> Precipitation {
             intensity_mm_per_h: 0.0,
         };
     }
+    // WMO codes 96/99 — thunderstorm with (heavy) hail. The
+    // `weather_code` field is serde-defaulted, so cached payloads
+    // from before the FeedExtras change carry an empty Vec and fall
+    // through to the phase heuristic below.
+    let wmo = h.weather_code.get(i).map(|c| c.round() as u32);
+    if matches!(wmo, Some(96) | Some(99)) {
+        return Precipitation {
+            kind: PrecipKind::Hail,
+            intensity_mm_per_h: total,
+        };
+    }
     let kind = if snow > rain {
         PrecipKind::Snow
     } else if snow > 0.05 && rain > 0.05 {
@@ -462,6 +473,69 @@ mod tests {
         assert!(a_300 > 8000.0 && a_300 < 10_000.0);
         // 1000 hPa ≈ 100 m AMSL.
         assert!(a_1000 < 300.0);
+    }
+
+    fn storm_response(weather_code_json: &str) -> OpenMeteoResponse {
+        // One hour of synthetic data — heavy convective precipitation.
+        // `weather_code_json` is spliced in so tests can exercise the
+        // WMO-code path and the serde-default (absent field) path.
+        serde_json::from_str(&format!(
+            r#"{{
+                "latitude": 56.19, "longitude": -3.96, "elevation": 83.0,
+                "hourly": {{
+                    "time": ["2026-05-12T13:00"],
+                    "temperature_2m": [24.0],
+                    "dew_point_2m": [22.0],
+                    "surface_pressure": [998.0],
+                    "visibility": [2000.0],
+                    "wind_speed_10m": [36.0],
+                    "wind_direction_10m": [180.0],
+                    "precipitation": [12.0],
+                    "rain": [12.0],
+                    "snowfall": [0.0],
+                    "cloud_cover": [95.0],
+                    "cape": [2500.0],
+                    "cloud_cover_1000hPa": [0.0],
+                    "cloud_cover_925hPa": [20.0],
+                    "cloud_cover_850hPa": [90.0],
+                    "cloud_cover_700hPa": [80.0],
+                    "cloud_cover_500hPa": [60.0],
+                    "cloud_cover_300hPa": [40.0]{weather_code_json}
+                }}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn wmo_hail_codes_map_to_hail() {
+        for code in [96.0, 99.0] {
+            let resp = storm_response(&format!(r#", "weather_code": [{code}]"#));
+            let scene = open_meteo_to_scene(&resp, t());
+            assert_eq!(
+                scene.precipitation.kind,
+                PrecipKind::Hail,
+                "WMO {code} must map to Hail"
+            );
+            // Same total intensity as the rain path would have used.
+            assert_eq!(scene.precipitation.intensity_mm_per_h, 12.0);
+        }
+        // Non-hail thunderstorm code keeps the phase heuristic.
+        let resp = storm_response(r#", "weather_code": [95]"#);
+        let scene = open_meteo_to_scene(&resp, t());
+        assert_eq!(scene.precipitation.kind, PrecipKind::Rain);
+    }
+
+    #[test]
+    fn missing_weather_code_keeps_phase_heuristic() {
+        // Cached payloads from before the FeedExtras change have no
+        // `weather_code` array at all — serde default gives an empty
+        // Vec, and the old rain/snow/sleet behaviour must hold.
+        let resp = storm_response("");
+        assert!(resp.hourly.weather_code.is_empty());
+        let scene = open_meteo_to_scene(&resp, t());
+        assert_eq!(scene.precipitation.kind, PrecipKind::Rain);
+        assert_eq!(scene.precipitation.intensity_mm_per_h, 12.0);
     }
 
     #[test]

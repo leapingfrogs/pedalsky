@@ -182,9 +182,9 @@ pub struct SurfaceParams {
     /// here so the Phase 7 ground shader can also consult it (for ripple
     /// strength). `0` when there is no precipitation.
     pub precip_intensity_mm_per_h: f32,
-    /// Precipitation kind. `0` = none, `1` = rain, `2` = snow, `3` = sleet
-    /// (matches `ps_core::PrecipKind` ordering). Stored as `f32` so it
-    /// lives inside the same uniform without alignment surprises.
+    /// Precipitation kind. `0` = none, `1` = rain, `2` = snow, `3` = sleet,
+    /// `4` = hail (matches `ps_core::PrecipKind` ordering). Stored as `f32`
+    /// so it lives inside the same uniform without alignment surprises.
     pub precip_kind: f32,
     /// Phase 13.4 — surface material index (mirrors
     /// `SurfaceMaterial::as_u32`). Stored as `f32` to keep the

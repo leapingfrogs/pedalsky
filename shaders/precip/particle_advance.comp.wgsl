@@ -1,17 +1,17 @@
 // Phase 8.1 / 8.4 — particle advance compute shader.
 //
-// Maintains a fixed-length pool of rain/snow particles around the camera.
-// Each frame:
+// Maintains a fixed-length pool of rain/snow/hail particles around the
+// camera. Each frame:
 //   1. Integrate position by velocity * dt and add wind drift.
 //   2. Re-seed particles that exit a cylinder of radius PRECIP_RADIUS_M
-//      around the camera or fall below the ground (y < 0).
+//      around the camera or fall below the ground (y < ground_y_m).
 //   3. Increment age.
 //
 // Storage layout (matches the Rust Particle struct in ps-precip):
 //   position : vec3<f32>   12 B
 //   age      : f32          4 B
 //   velocity : vec3<f32>   12 B
-//   kind     : u32          4 B   (0 = rain, 1 = snow)
+//   kind     : u32          4 B   (0 = rain, 1 = snow, 2 = hail)
 // Total: 32 B per particle.
 
 struct Particle {
@@ -31,15 +31,15 @@ struct PrecipUniforms {
     intensity_mm_per_h: f32,
     dt_seconds: f32,
     simulated_seconds: f32,
-    kind: u32,                      // 0 = rain, 1 = snow
+    kind: u32,                      // 0 = rain, 1 = snow, 2 = hail
     particle_count: u32,
     spawn_radius_m: f32,            // emitter cylinder radius
     spawn_top_m: f32,               // top of spawn cylinder above camera
     fall_speed_mps: f32,            // terminal velocity
     user_seed: u32,                 // plan §Cross-Cutting/Determinism
+    ground_y_m: f32,                // world-space ground height near camera
     _pad_0: f32,
     _pad_1: f32,
-    _pad_2: f32,
 };
 
 struct DrawIndirectArgs {
@@ -92,7 +92,10 @@ fn respawn(particle_id: u32, frame_seed: u32) -> Particle {
     let dx = cos(theta) * radius;
     let dz = sin(theta) * radius;
     let dy = r.z * precip.spawn_top_m;
-    let pos = precip.camera_position.xyz + vec3<f32>(dx, dy, dz);
+    var pos = precip.camera_position.xyz + vec3<f32>(dx, dy, dz);
+    // Keep the camera-relative cylinder but never spawn below the
+    // ground plane supplied by the host.
+    pos.y = max(pos.y, precip.ground_y_m);
     let v = vec3<f32>(0.0, -precip.fall_speed_mps, 0.0);
     var p: Particle;
     p.position = pos;
@@ -123,9 +126,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Advance. Snow has a much higher wind coupling than rain (drag-to-
     // mass ratio ~1000×) — flakes drift with the air almost 1:1, drops
     // mostly fall straight. Per plan §8.4 "stronger wind influence".
+    // Hail is denser still: near-ballistic fall, barely deflected.
     var wind_gain: f32 = 0.3;
     if (p.kind == 1u) {
         wind_gain = 1.5;
+    } else if (p.kind == 2u) {
+        wind_gain = 0.1;
     }
     // Sample the 3D wind field at the particle's own position so wind
     // varies along the particle's path (Ekman veer aloft, thermal
@@ -140,7 +146,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r2 = dot(dxz, dxz);
     let max_r2 = precip.spawn_radius_m * precip.spawn_radius_m;
     let too_high = (p.position.y - precip.camera_position.y) > precip.spawn_top_m;
-    let below_ground = p.position.y < 0.0;
+    let below_ground = p.position.y < precip.ground_y_m;
     if (r2 > max_r2 || below_ground || too_high) {
         let frame_seed = u32(precip.simulated_seconds * 60.0) ^ (i * 31u)
                        ^ precip.user_seed;

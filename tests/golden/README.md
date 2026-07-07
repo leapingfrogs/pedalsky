@@ -1,9 +1,10 @@
 Phase 11 — golden-image regression
 ==================================
 
-The eight scenes below are the Phase 11 reference scene library. The
-golden PNGs in this directory are the regression baseline; SSIM ≥ 0.99
-is enforced by `cargo test -p ps-app --test golden`.
+The nine scenes below are the reference scene library (the Phase 11
+eight plus the hail-mode fixture). The golden PNGs in this directory
+are the regression baseline; SSIM ≥ 0.99 is enforced by
+`cargo test -p ps-app --test golden`.
 
 How to regenerate after a deliberate visual change:
 
@@ -16,13 +17,14 @@ How to run the regression check:
 Per-scene status
 ----------------
 
-All eight scenes render visible, plausible imagery for the
+All nine scenes render visible, plausible imagery for the
 meteorological situation described:
 
     clear_summer_noon          deep blue sunny sky over sunlit ground
     broken_cumulus_afternoon   visible cumulus puffs over sunlit ground
     overcast_drizzle           visible stratus deck
     thunderstorm               storm cloud + sunlit ground
+    hail_storm                 storm cloud + opaque white hail splats
     high_cirrus_sunset         cirrus wisps + warm horizon
     winter_overcast_snow       overcast cloud + snowy ground
     twilight_civil             pre-dawn red horizon

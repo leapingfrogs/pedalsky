@@ -210,7 +210,7 @@ collapsible accordion.
   coverage, density_scale, biases).
 - **Wet surface** — wetness, puddle_coverage, puddle_start,
   snow_depth_m.
-- **Precipitation** — kind (None/Rain/Snow/Sleet) and
+- **Precipitation** — kind (None/Rain/Snow/Sleet/Hail) and
   intensity_mm_per_h.
 - **Debug** — fullscreen LUT viewers (transmittance / multi-scatter /
   sky-view as 2D, AP with a depth slice slider 0..32 km); per-pixel

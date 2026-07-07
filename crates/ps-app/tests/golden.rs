@@ -40,6 +40,7 @@ const SCENES: &[(&str, &str, f32, f32)] = &[
     ),
     ("overcast_drizzle", "2026-04-12T10:00:00Z", 14.0, 45.0),
     ("thunderstorm", "2026-08-16T16:00:00Z", 14.0, 5.0),
+    ("hail_storm", "2026-08-16T16:00:00Z", 14.0, 5.0),
     ("high_cirrus_sunset", "2026-09-22T17:30:00Z", 11.0, 5.0),
     ("winter_overcast_snow", "2026-01-08T12:00:00Z", 14.0, 60.0),
     ("twilight_civil", "2026-12-21T08:05:00Z", 8.0, 5.0),
@@ -94,6 +95,12 @@ pub fn render_scene(
     scene.validate().expect("validate scene");
     config.render.subsystems.backdrop = false;
     config.render.subsystems.tint = false;
+    // Hail mode — the shipped config leaves the precipitation
+    // subsystem off, so the historical goldens were blessed without
+    // particles. Enable it for the hail fixture only so the hail
+    // render path (opaque round splats, ballistic pool) is covered by
+    // a golden without re-blessing every precipitating scene.
+    config.render.subsystems.precipitation = scene_name == "hail_storm";
     config.render.ev100 = ev100;
     // Phase 14.I — explicitly zero the wind drift so the determinism
     // contract isn't quietly load-bearing on `simulated_seconds = 0`
