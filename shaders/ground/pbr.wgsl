@@ -450,7 +450,15 @@ fn overcast_blocking(p_xz: vec2<f32>) -> f32 {
 /// Spectrum is white (per-channel equal) — overcast scattering
 /// flattens the spectrum, unlike the blue-shifted clear sky.
 fn overcast_diffuse_irradiance(sun_dir: vec3<f32>) -> vec3<f32> {
-    let sun_alt_factor = sqrt(clamp(sun_dir.y, 0.05, 1.0));
+    // Twilight/night: ramp the overcast sheet to zero as the sun sets.
+    // The old 0.05 floor pinned overcast luminance at ~22% of daylight
+    // FOREVER — invisible at a fixed daytime EV, but a blinding white
+    // sky under a night-adapted exposure (host report: overcast nights
+    // rendered solid white). Above sun_alt 0.05 (~3°) this is exactly
+    // the previous value, so daytime scenes are unchanged; the
+    // smoothstep carries the civil-twilight glow down to zero by ~-5°.
+    let horizon_fade = smoothstep(-0.09, 0.05, sun_dir.y);
+    let sun_alt_factor = sqrt(clamp(sun_dir.y, 0.05, 1.0)) * horizon_fade;
     // 25 % forward-scattered fraction. Tuned so winter noon overcast
     // (toa=131000 lx, sun_dir.y≈0.21) gives ~15,000 lx ground
     // illuminance, matching photographic references for snowy

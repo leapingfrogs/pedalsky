@@ -143,7 +143,15 @@ fn sample_overcast_at_view(view_dir: vec3<f32>) -> f32 {
 /// horizon and the lit ground match under thick cloud — the sky
 /// reads as the same flat-grey hemisphere the ground sees.
 fn overcast_diffuse_luminance(sun_dir: vec3<f32>) -> vec3<f32> {
-    let sun_alt_factor = sqrt(clamp(sun_dir.y, 0.05, 1.0));
+    // Twilight/night: ramp the overcast sheet to zero as the sun sets.
+    // The old 0.05 floor pinned overcast luminance at ~22% of daylight
+    // FOREVER — invisible at a fixed daytime EV, but a blinding white
+    // sky under a night-adapted exposure (host report: overcast nights
+    // rendered solid white). Above sun_alt 0.05 (~3°) this is exactly
+    // the previous value, so daytime scenes are unchanged; the
+    // smoothstep carries the civil-twilight glow down to zero by ~-5°.
+    let horizon_fade = smoothstep(-0.09, 0.05, sun_dir.y);
+    let sun_alt_factor = sqrt(clamp(sun_dir.y, 0.05, 1.0)) * horizon_fade;
     let irradiance = frame.sun_illuminance.w * sun_alt_factor * 0.25;
     return vec3<f32>(irradiance);
 }
