@@ -313,6 +313,46 @@ fn planet_centre() -> vec3<f32> {
     return vec3<f32>(0.0, -world.planet_radius_m, 0.0);
 }
 
+/// Atmospheric transmittance from sample `p` toward the sun, earth-
+/// shadow aware (self-contained mirror of common/atmosphere_lut_
+/// sampling's sample_transmittance_lut — the march composes neither
+/// common atmosphere module, and its own helpers use different
+/// parameterisations).
+///
+/// This is what makes night clouds DARK: the sun energy term
+/// previously used the raw TOA illuminance with only in-cloud
+/// extinction, so a deck stayed daylight-bright with the sun below
+/// the horizon — invisible at a fixed daytime EV, a solid white sky
+/// under a night-adapted host exposure. As a bonus, low-sun decks now
+/// redden physically instead of staying noon-white.
+fn sun_transmittance_at(p: vec3<f32>) -> vec3<f32> {
+    let sun_dir = frame.sun_direction.xyz;
+    let centre = planet_centre();
+    let p_atm = p - centre;
+    let r = max(length(p_atm), world.planet_radius_m + 1.0);
+    let up = p_atm / r;
+    let mu = clamp(dot(up, sun_dir), -1.0, 1.0);
+    // Earth shadow: below the geometric horizon at p, the sun is
+    // occluded by the planet — zero transmittance ends the cloud's
+    // direct lighting exactly like the sky's (a35d581).
+    let ratio = world.planet_radius_m / r;
+    let sin_horizon = -sqrt(max(1.0 - ratio * ratio, 0.0));
+    if (mu <= sin_horizon) {
+        return vec3<f32>(0.0);
+    }
+    // Bruneton transmittance-LUT parameterisation (matches the bake).
+    let h_top = world.atmosphere_top_m;
+    let big_h = sqrt(max(h_top * h_top - world.planet_radius_m * world.planet_radius_m, 0.0));
+    let rho = sqrt(max(r * r - world.planet_radius_m * world.planet_radius_m, 0.0));
+    let disc = r * r * (mu * mu - 1.0) + h_top * h_top;
+    let d = max(-r * mu + sqrt(max(disc, 0.0)), 0.0);
+    let d_min = h_top - r;
+    let d_max = rho + big_h;
+    let x_mu = clamp((d - d_min) / max(d_max - d_min, 1.0), 0.0, 1.0);
+    let x_r = rho / max(big_h, 1.0);
+    return textureSampleLevel(transmittance_lut, lut_sampler, vec2<f32>(x_mu, x_r), 0.0).rgb;
+}
+
 /// Stable altitude (metres above sea level) given a precomputed entry
 /// radius `r0`, view-direction cosine `cos_view`, base altitude `h0`,
 /// world-space sample point `p_world`, and march distance `t` from the
@@ -868,13 +908,17 @@ fn fs_main(in: VsOut) -> CloudOut {
                 // Hillaire 2016 multi-octave multiple-scattering: each octave
                 // scales energy×a, optical-depth×b, anisotropy×c. cos_theta
                 // is geometric and never scaled; only g is.
+                // Atmospheric transmittance to the sun (earth-shadow aware)
+                // gates the whole multi-octave sum: zero at night, red at
+                // sunset, ~0.6-0.9 in daylight.
+                let sun_trans = sun_transmittance_at(p);
                 var sun_in = vec3<f32>(0.0);
                 var a = 1.0;
                 var b = 1.0;
                 var c = 1.0;
                 for (var n = 0u; n < params.multi_scatter_octaves; n = n + 1u) {
                     let phase = cloud_phase_with(cos_theta, c, phase_consts);
-                    sun_in = sun_in + a * frame.sun_illuminance.rgb
+                    sun_in = sun_in + a * frame.sun_illuminance.rgb * sun_trans
                                     * phase
                                     * exp(-sigma_t * od_to_sun * b);
                     a = a * params.multi_scatter_a;
