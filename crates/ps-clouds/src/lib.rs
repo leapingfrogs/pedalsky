@@ -699,6 +699,18 @@ impl CloudsSubsystem {
         self.luts = Some(luts);
     }
 
+    /// Set the primary and light march step counts at runtime. Both are
+    /// shader uniforms (params slot 5), uploaded on the next `prepare`, so
+    /// this is a cheap per-frame call with no pipeline rebuild — the host's
+    /// adaptive-quality loop drives it to trade march detail for frame time.
+    /// `cloud` is clamped to [8, 256] and `light` to [1, 16] to keep the
+    /// loops bounded; the defaults (192 / 6) are unchanged, so goldens that
+    /// never call this are unaffected.
+    pub fn set_march_steps(&mut self, cloud: u32, light: u32) {
+        self.params.cloud_steps = cloud.clamp(8, 256);
+        self.params.light_steps = light.clamp(1, 16);
+    }
+
     /// Select which view's TAA state subsequent dispatches use
     /// (clamped to [`MAX_CLOUD_VIEWS`]). Stereo hosts call this before
     /// EACH eye's march→taa→composite sequence — a view's three passes
