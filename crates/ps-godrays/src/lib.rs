@@ -22,7 +22,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Vec4;
 use ps_core::{
     BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
-    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
+    PrepareContext, RenderContext, RenderSubsystem, SharedHdrScratch, SubsystemFactory,
 };
 
 const PASS_RADIAL: PassId = 0;
@@ -64,6 +64,21 @@ pub struct GodraysSubsystem {
     radial_params: wgpu::Buffer,
     composite_params: wgpu::Buffer,
     scratch: Option<ScratchState>,
+    /// Self-owned full-res HDR copy — the radial pass's sample source
+    /// when no host-shared scratch is supplied. `None` while the shared
+    /// scratch is in use (see [`Self::set_shared_hdr_scratch`]), which
+    /// reclaims this VRAM.
+    owned_hdr_copy: Option<OwnedHdrCopy>,
+    /// Host-lent HDR snapshot scratch, shared with bloom to avoid two
+    /// resident full-res copies. When `Some` and sized to match the HDR
+    /// target, the radial pass snapshots into and samples it instead of
+    /// `owned_hdr_copy`.
+    shared_hdr_scratch: Option<SharedHdrScratch>,
+    /// Whether the radial pass sampled the shared scratch last frame.
+    /// A flip (shared↔owned) swaps the sample-source texture identity
+    /// without changing `full_size`, so the size-keyed radial cache must
+    /// be invalidated when it changes.
+    shared_active: bool,
     /// Audit S.H1 — caches keyed on the scratch's `full_size`. The
     /// per-frame params buffer changes (written each frame in
     /// `prepare`), but the buffer **handle** is stable so the bind
@@ -80,14 +95,20 @@ pub struct GodraysSubsystem {
 }
 
 struct ScratchState {
-    /// Held to keep the texture alive while `hdr_copy_view` is in use.
-    #[allow(dead_code)]
-    hdr_copy: wgpu::Texture,
-    hdr_copy_view: wgpu::TextureView,
     /// Held to keep the texture alive while `rays_rt_view` is in use.
     #[allow(dead_code)]
     rays_rt: wgpu::Texture,
     rays_rt_view: wgpu::TextureView,
+    full_size: (u32, u32),
+}
+
+/// Self-owned full-res HDR snapshot (radial-pass sample source when no
+/// host-shared scratch is provided).
+struct OwnedHdrCopy {
+    /// Held to keep the texture alive while `view` is in use.
+    #[allow(dead_code)]
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
     full_size: (u32, u32),
 }
 
@@ -296,6 +317,9 @@ impl GodraysSubsystem {
             radial_params,
             composite_params,
             scratch: None,
+            owned_hdr_copy: None,
+            shared_hdr_scratch: None,
+            shared_active: false,
             radial_bg_cache: BindGroupCache::new(),
             composite_bg_cache: BindGroupCache::new(),
             tuning: TuningSnapshot {
@@ -312,6 +336,17 @@ impl GodraysSubsystem {
     /// doc). Cheap — takes effect at the next `prepare`.
     pub fn set_intensity_scale(&mut self, scale: f32) {
         self.intensity_scale = scale.max(0.0);
+    }
+
+    /// Lend a host-owned HDR scratch texture for the radial pass to
+    /// snapshot into and sample, instead of allocating its own resident
+    /// full-res copy. Share the same [`SharedHdrScratch`] with bloom to
+    /// keep one physical copy across both post-process subsystems. Pass
+    /// `None` to revert to self-allocation. The host must keep the
+    /// texture's lifecycle tied to the HDR target size (reallocate only
+    /// on resize). Call once per frame before the godrays radial pass.
+    pub fn set_shared_hdr_scratch(&mut self, scratch: Option<SharedHdrScratch>) {
+        self.shared_hdr_scratch = scratch;
     }
 }
 
@@ -401,27 +436,27 @@ impl RenderSubsystem for GodraysSubsystem {
                     (full_size.0 / HALF_RES_FACTOR).max(1),
                     (full_size.1 / HALF_RES_FACTOR).max(1),
                 );
-                let needs_alloc = self
+                // Use the host-shared scratch when one is supplied and
+                // sized to match; otherwise fall back to a self-owned
+                // copy.
+                let use_shared =
+                    matches!(&self.shared_hdr_scratch, Some(s) if s.size == full_size);
+                if use_shared != self.shared_active {
+                    // The radial pass's sample-source texture just changed
+                    // identity without a size change — drop the stale
+                    // size-keyed bind group so it rebinds against the new
+                    // view.
+                    self.radial_bg_cache.invalidate();
+                    self.shared_active = use_shared;
+                }
+
+                // The half-res rays RT is subsystem-specific — always
+                // required.
+                let needs_rays = self
                     .scratch
                     .as_ref()
                     .is_none_or(|s| s.full_size != full_size);
-                if needs_alloc {
-                    let hdr_copy = device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("godrays-hdr-copy"),
-                        size: wgpu::Extent3d {
-                            width: full_size.0,
-                            height: full_size.1,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: HdrFramebuffer::COLOR_FORMAT,
-                        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
-                    let hdr_copy_view =
-                        hdr_copy.create_view(&wgpu::TextureViewDescriptor::default());
+                if needs_rays {
                     let rays_rt = device.create_texture(&wgpu::TextureDescriptor {
                         label: Some("godrays-rays-rt"),
                         size: wgpu::Extent3d {
@@ -439,17 +474,57 @@ impl RenderSubsystem for GodraysSubsystem {
                     });
                     let rays_rt_view = rays_rt.create_view(&wgpu::TextureViewDescriptor::default());
                     self.scratch = Some(ScratchState {
-                        hdr_copy,
-                        hdr_copy_view,
                         rays_rt,
                         rays_rt_view,
                         full_size,
                     });
                 }
+
+                // Snapshot source: the shared scratch, or a self-owned copy.
+                let (copy_dst, copy_view) = if use_shared {
+                    // Release any self-owned copy — the shared texture
+                    // reclaims that VRAM.
+                    self.owned_hdr_copy = None;
+                    let s = self
+                        .shared_hdr_scratch
+                        .as_ref()
+                        .expect("use_shared implies Some");
+                    (&s.texture, &s.view)
+                } else {
+                    if self
+                        .owned_hdr_copy
+                        .as_ref()
+                        .is_none_or(|c| c.full_size != full_size)
+                    {
+                        let tex = device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("godrays-hdr-copy"),
+                            size: wgpu::Extent3d {
+                                width: full_size.0,
+                                height: full_size.1,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: HdrFramebuffer::COLOR_FORMAT,
+                            usage: wgpu::TextureUsages::COPY_DST
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        });
+                        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+                        self.owned_hdr_copy = Some(OwnedHdrCopy {
+                            tex,
+                            view,
+                            full_size,
+                        });
+                    }
+                    let c = self.owned_hdr_copy.as_ref().expect("just allocated");
+                    (&c.tex, &c.view)
+                };
                 let scratch = self.scratch.as_ref().expect("just allocated");
 
-                // Copy HDR → hdr_copy so the radial pass can sample
-                // without a read+write conflict on HDR.
+                // Copy HDR → the sample source so the radial pass can
+                // sample without a read+write conflict on HDR.
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: &hdr.color,
@@ -464,7 +539,7 @@ impl RenderSubsystem for GodraysSubsystem {
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
-                        texture: &scratch.hdr_copy,
+                        texture: copy_dst,
                         mip_level: 0,
                         origin: wgpu::Origin3d::ZERO,
                         aspect: wgpu::TextureAspect::All,
@@ -490,9 +565,7 @@ impl RenderSubsystem for GodraysSubsystem {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &scratch.hdr_copy_view,
-                                ),
+                                resource: wgpu::BindingResource::TextureView(copy_view),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,

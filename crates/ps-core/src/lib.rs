@@ -22,6 +22,7 @@ pub mod hot_reload;
 pub mod pipelined_readback;
 pub mod scene;
 pub mod shaders;
+pub mod shared_scratch;
 pub mod subsystem;
 pub mod time;
 pub mod weather;
@@ -42,6 +43,7 @@ pub use contexts::{
 pub use framebuffer::HdrFramebufferImpl;
 pub use hot_reload::{HotReload, ShaderHotReload, ShaderWatchEvent, WatchEvent, DEFAULT_DEBOUNCE};
 pub use pipelined_readback::PipelinedReadback;
+pub use shared_scratch::SharedHdrScratch;
 pub use scene::{
     default_density_scale, default_droplet_diameter_um, Aurora, AuroraColour, CloudLayer,
     CloudType, Clouds, CoverageGrid, Lightning, PrecipKind, Precipitation, Scene, SceneError,

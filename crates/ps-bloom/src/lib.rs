@@ -24,7 +24,7 @@
 use bytemuck::{Pod, Zeroable};
 use ps_core::{
     BindGroupCache, Config, GpuContext, HdrFramebuffer, PassDescriptor, PassId, PassStage,
-    PrepareContext, RenderContext, RenderSubsystem, SubsystemFactory,
+    PrepareContext, RenderContext, RenderSubsystem, SharedHdrScratch, SubsystemFactory,
 };
 use tracing::debug;
 
@@ -131,9 +131,21 @@ pub struct BloomSubsystem {
     down_params: Vec<wgpu::Buffer>,
     /// One per pyramid upsample step (level N-1..0).
     up_params: Vec<wgpu::Buffer>,
-    /// HDR copy used as a sample source for the bright pass without
-    /// a read+write conflict.
+    /// Self-allocated HDR copy used as the bright pass's sample source
+    /// (avoids a read+write conflict on HDR). `None` while a host-shared
+    /// scratch is in use (see [`Self::set_shared_hdr_scratch`]) — the
+    /// shared texture reclaims this VRAM.
     hdr_copy: Option<HdrCopy>,
+    /// Host-lent HDR snapshot scratch, shared with godrays to avoid two
+    /// resident full-res copies. When `Some` and sized to match the HDR
+    /// target, the bright pass snapshots into and samples it instead of
+    /// `hdr_copy`.
+    shared_hdr_scratch: Option<SharedHdrScratch>,
+    /// Whether the bright pass sampled the shared scratch last frame.
+    /// A flip (shared↔owned) swaps the sample-source texture identity
+    /// without changing `full_size`, so the size-keyed bright cache must
+    /// be invalidated when it changes.
+    shared_active: bool,
     /// Per-size pyramid scratch.
     scratch: Option<ScratchState>,
     /// Audit S.H1 — bind-group caches. Pyramid resources are stable
@@ -155,6 +167,17 @@ struct HdrCopy {
 }
 
 impl BloomSubsystem {
+    /// Lend a host-owned HDR scratch texture for the bright pass to
+    /// snapshot into and sample, instead of allocating its own resident
+    /// full-res copy. Share the same [`SharedHdrScratch`] with godrays
+    /// to keep one physical copy across both post-process subsystems.
+    /// Pass `None` to revert to self-allocation. The host must keep the
+    /// texture's lifecycle tied to the HDR target size (reallocate only
+    /// on resize). Call once per frame before the bloom pass.
+    pub fn set_shared_hdr_scratch(&mut self, scratch: Option<SharedHdrScratch>) {
+        self.shared_hdr_scratch = scratch;
+    }
+
     /// Construct.
     pub fn new(config: &Config, gpu: &GpuContext) -> Self {
         let device = &gpu.device;
@@ -373,6 +396,8 @@ impl BloomSubsystem {
             down_params,
             up_params,
             hdr_copy: None,
+            shared_hdr_scratch: None,
+            shared_active: false,
             scratch: None,
             bright_bg_cache: BindGroupCache::new(),
             composite_bg_cache: BindGroupCache::new(),
@@ -383,10 +408,10 @@ impl BloomSubsystem {
     }
 }
 
-/// Build the per-size pyramid scratch + the HDR-copy texture. Sized
-/// against the current HDR target; reallocated when the target
-/// resizes.
-fn allocate_pyramid(device: &wgpu::Device, full_size: (u32, u32)) -> (HdrCopy, ScratchState) {
+/// Build the self-owned full-res HDR-copy texture (the bright pass's
+/// sample source when no host-shared scratch is supplied). Sized
+/// against the current HDR target; reallocated when the target resizes.
+fn allocate_hdr_copy(device: &wgpu::Device, full_size: (u32, u32)) -> HdrCopy {
     let hdr_copy_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("bloom-hdr-copy"),
         size: wgpu::Extent3d {
@@ -402,7 +427,16 @@ fn allocate_pyramid(device: &wgpu::Device, full_size: (u32, u32)) -> (HdrCopy, S
         view_formats: &[],
     });
     let hdr_copy_view = hdr_copy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    HdrCopy {
+        tex: hdr_copy_tex,
+        view: hdr_copy_view,
+        full_size,
+    }
+}
 
+/// Build the per-size pyramid scratch. Sized against the current HDR
+/// target; reallocated when the target resizes.
+fn allocate_scratch(device: &wgpu::Device, full_size: (u32, u32)) -> ScratchState {
     let mut levels = Vec::with_capacity(PYRAMID_LEVELS as usize);
     let mut size = ((full_size.0 / 2).max(1), (full_size.1 / 2).max(1));
     for i in 0..PYRAMID_LEVELS {
@@ -430,14 +464,7 @@ fn allocate_pyramid(device: &wgpu::Device, full_size: (u32, u32)) -> (HdrCopy, S
         size = ((size.0 / 2).max(1), (size.1 / 2).max(1));
     }
 
-    (
-        HdrCopy {
-            tex: hdr_copy_tex,
-            view: hdr_copy_view,
-            full_size,
-        },
-        ScratchState { levels, full_size },
-    )
+    ScratchState { levels, full_size }
 }
 
 impl RenderSubsystem for BloomSubsystem {
@@ -492,30 +519,59 @@ impl RenderSubsystem for BloomSubsystem {
         let hdr = ctx.framebuffer;
         let full_size = hdr.size;
 
-        // (Re)allocate scratch + hdr-copy if size changed.
-        let needs_alloc = match (&self.hdr_copy, &self.scratch) {
-            (Some(c), Some(s)) => c.full_size != full_size || s.full_size != full_size,
-            _ => true,
-        };
-        if needs_alloc {
-            let (c, s) = allocate_pyramid(device, full_size);
-            self.hdr_copy = Some(c);
-            self.scratch = Some(s);
+        // Use the host-shared scratch when one is supplied and sized to
+        // match; otherwise fall back to a self-owned copy.
+        let use_shared = matches!(&self.shared_hdr_scratch, Some(s) if s.size == full_size);
+        if use_shared != self.shared_active {
+            // The bright pass's sample-source texture just changed
+            // identity without a size change — drop the stale size-keyed
+            // bind group so it rebinds against the new view.
+            self.bright_bg_cache.invalidate();
+            self.shared_active = use_shared;
         }
-        let copy_state = self.hdr_copy.as_ref().expect("just allocated");
+
+        // Pyramid scratch is subsystem-specific — always required.
+        let needs_scratch = self.scratch.as_ref().is_none_or(|s| s.full_size != full_size);
+        if needs_scratch {
+            self.scratch = Some(allocate_scratch(device, full_size));
+        }
+
+        // Snapshot source: the shared scratch, or a self-owned copy.
+        let (copy_dst, copy_view) = if use_shared {
+            // Release any self-owned copy — the shared texture reclaims
+            // that VRAM.
+            self.hdr_copy = None;
+            let s = self
+                .shared_hdr_scratch
+                .as_ref()
+                .expect("use_shared implies Some");
+            (&s.texture, &s.view)
+        } else {
+            if self.hdr_copy.as_ref().is_none_or(|c| c.full_size != full_size) {
+                self.hdr_copy = Some(allocate_hdr_copy(device, full_size));
+            }
+            let c = self.hdr_copy.as_ref().expect("just allocated");
+            (&c.tex, &c.view)
+        };
         let scratch_state = self.scratch.as_ref().expect("just allocated");
 
-        // Snapshot HDR → hdr_copy so the bright pass can sample
+        // Snapshot HDR → the sample source so the bright pass can sample
         // without a read+write conflict.
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &hdr.color,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                // Stereo hosts render into an array texture; copy the
+                // layer this framebuffer's color_view targets.
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: hdr.color_layer,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyTextureInfo {
-                texture: &copy_state.tex,
+                texture: copy_dst,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -540,7 +596,6 @@ impl RenderSubsystem for BloomSubsystem {
             let bright_layout = &self.bright_layout;
             let sampler = &self.sampler;
             let bright_params = &self.bright_params;
-            let copy_view = &copy_state.view;
             let bg = self.bright_bg_cache.get_or_build(full_size, || {
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("bloom-bright-bg"),
